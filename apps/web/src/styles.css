@@ -287,3 +287,44 @@ button.ghost:hover:not(:disabled) {
   font-size: 0.76rem;
   color: var(--muted);
 }
+
+/* --- EDL panel (M4) --- */
+
+button.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+.edl-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 10px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.edl-figures {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.9rem;
+}
+
+.edl-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.output-player {
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--panel);
+}

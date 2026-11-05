@@ -20,7 +20,15 @@ from animatter.db import Database
 from animatter.errors import install_error_handlers
 from animatter.log import configure_logging, get_logger
 from animatter.migrate import upgrade_to_head
-from animatter.routers import editing, health, hotwords, projects, proofread, transcribe
+from animatter.routers import (
+    clipping,
+    editing,
+    health,
+    hotwords,
+    projects,
+    proofread,
+    transcribe,
+)
 
 VERSION = "0.1.0"
 
@@ -96,6 +104,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(hotwords.router)
     app.include_router(proofread.router)
     app.include_router(editing.router)
+    app.include_router(clipping.router)
     return app
 
 

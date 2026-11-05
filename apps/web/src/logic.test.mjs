@@ -126,3 +126,43 @@ test("previous from a gap goes back one sentence", () => {
   const current = sentenceAtOrBefore(three, 3500);
   assert.equal(three[Math.max(0, current - 1)].ord, 0);
 });
+
+// --- EDL time mapping (mirrors the backend rule the UI must display)
+
+function toNewMs(keeps, ms) {
+  for (const keep of keeps) {
+    if (keep.orig_start <= ms && ms < keep.orig_end) {
+      return keep.new_start + (ms - keep.orig_start);
+    }
+  }
+  return null;
+}
+
+const keepsWithCuts = [
+  { orig_start: 0, orig_end: 2000, new_start: 0 },
+  { orig_start: 4000, orig_end: 6000, new_start: 2000 },
+];
+
+test("deleted instants map to null so the UI can grey them out", () => {
+  assert.equal(toNewMs(keepsWithCuts, 3000), null);
+});
+
+test("a keep's start maps to its new start", () => {
+  assert.equal(toNewMs(keepsWithCuts, 4000), 2000);
+});
+
+test("a keep's end is exclusive and maps to null when followed by a cut", () => {
+  // Getting this wrong made a deleted cue reappear one frame early.
+  assert.equal(toNewMs(keepsWithCuts, 2000), null);
+});
+
+test("output duration equals the sum of keep lengths", () => {
+  const total = keepsWithCuts.reduce((sum, k) => sum + (k.orig_end - k.orig_start), 0);
+  assert.equal(total, 4000);
+});
+
+test("removed duration equals original minus output", () => {
+  const original = 6000;
+  const output = keepsWithCuts.reduce((sum, k) => sum + (k.orig_end - k.orig_start), 0);
+  assert.equal(original - output, 2000);
+});

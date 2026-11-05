@@ -28,6 +28,11 @@ export interface EdgeHandle {
   sentenceOrd: number;
 }
 
+export interface DeletionSpan {
+  start_ms: number;
+  end_ms: number;
+}
+
 interface Props {
   projectId: string;
   mediaId: string;
@@ -35,6 +40,8 @@ interface Props {
   positionMs: number;
   markers: Marker[];
   handles: EdgeHandle[];
+  /** Deleted spans, drawn as red overlays. */
+  deletions?: DeletionSpan[];
   /** Called once on drop, with the final time. */
   onEdgeCommit: (handle: EdgeHandle, newMs: number) => void;
   onSeek: (ms: number) => void;
@@ -51,6 +58,7 @@ export function Waveform({
   positionMs,
   markers,
   handles,
+  deletions = [],
   onEdgeCommit,
   onSeek,
 }: Props): React.JSX.Element {
@@ -118,6 +126,22 @@ export function Waveform({
       ctx.fillRect(x0, 0, Math.max(1, x1 - x0), CANVAS_HEIGHT);
     }
 
+    // Deleted regions sit above the sentence bands so a cut is unmistakable.
+    for (const span of deletions) {
+      const x0 = msToX(span.start_ms);
+      const x1 = msToX(span.end_ms);
+      ctx.fillStyle = "rgba(220,38,38,0.22)";
+      ctx.fillRect(x0, 0, Math.max(1, x1 - x0), CANVAS_HEIGHT);
+      ctx.strokeStyle = "rgba(220,38,38,0.7)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x0, 0);
+      ctx.lineTo(x0, CANVAS_HEIGHT);
+      ctx.moveTo(x1, 0);
+      ctx.lineTo(x1, CANVAS_HEIGHT);
+      ctx.stroke();
+    }
+
     if (!peaks || peaks.min.length === 0) {
       ctx.fillStyle = "#cbd5e1";
       ctx.fillRect(0, mid - 1, width, 2);
@@ -168,7 +192,7 @@ export function Waveform({
     const playX = msToX(positionMs);
     ctx.fillStyle = "#dc2626";
     ctx.fillRect(Math.min(width - 2, playX), 0, 2, CANVAS_HEIGHT);
-  }, [peaks, markers, handles, positionMs, width, msToX, hovered]);
+  }, [peaks, markers, handles, deletions, positionMs, width, msToX, hovered]);
 
   useEffect(() => {
     draw();
@@ -262,7 +286,7 @@ export function Waveform({
       />
       {loadError ? <p className="error-text">波形加载失败：{loadError}</p> : null}
       <p className="waveform-hint">
-        拖动圆点可调整句边界；蓝线为首尾词，只有被拖的那个词的时间会变。
+        拖动圆点调整句边界（只有被拖的词会变）· 红色区域是已删除 · 点击波形跳转
       </p>
     </div>
   );

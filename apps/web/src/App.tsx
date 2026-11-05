@@ -28,6 +28,17 @@ interface Boot {
   tokens: Token[];
 }
 
+interface EdlState {
+  original_duration_ms: number;
+  output_duration_ms: number;
+  removed_ms: number;
+  segment_count: number;
+  keeps: { orig_start: number; orig_end: number; new_start: number }[];
+  deletions: { start_ms: number; end_ms: number; source: string }[];
+  clamps: { requested: number; applied: number; edge: string; reason: string }[];
+  signature: string;
+}
+
 export function App(): React.JSX.Element {
   const [boot, setBoot] = useState<Boot | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -135,6 +146,26 @@ function Desk({
     [boot.projectId, boot.mediaId],
   );
   const playback = usePlayback(audioUrl, boot.version.duration_ms);
+  const [edl, setEdl] = useState<EdlState | null>(null);
+  const [rendered, setRendered] = useState<{ url: string; durationMs: number } | null>(null);
+  const [showOutput, setShowOutput] = useState(false);
+
+  // The EDL is derived on the server from the deletion set; refetch whenever the
+  // transcript reloads, because a text edit can change token timings.
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .edl(boot.version.id)
+      .then((payload) => {
+        if (!cancelled) setEdl(payload);
+      })
+      .catch(() => {
+        if (!cancelled) setEdl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [boot.version.id, boot.tokens]);
   const activeOrd = findActiveSentence(boot.sentences, playback.positionMs);
   const withinSentence = sentenceForSelection(boot.sentences, selection);
 
@@ -242,6 +273,38 @@ function Desk({
     [boot.version.id, onReload, run, setNotice],
   );
 
+  const deleteSelection = useCallback(async () => {
+    if (!selection) return;
+    const from = Math.min(selection.from, selection.to);
+    const to = Math.max(selection.from, selection.to);
+    const ids = Array.from({ length: to - from }, (_, i) => from + i);
+    await run("删除", async () => {
+      await api.addDeletion(boot.version.id, { token_ids: ids });
+      await onReload();
+      onSelectionChange(null);
+    });
+  }, [boot.version.id, onReload, onSelectionChange, run, selection]);
+
+  const undoDeletion = useCallback(async () => {
+    const rows = await api.deletions(boot.version.id);
+    const last = rows[rows.length - 1];
+    if (!last) return;
+    await run("恢复删除", async () => {
+      await api.removeDeletion(last.id);
+      await onReload();
+    });
+  }, [boot.version.id, onReload, run]);
+
+  const renderOutput = useCallback(
+    async (preview: boolean) => {
+      await run(preview ? "生成预览" : "渲染成片", async () => {
+        const result = await api.render(boot.version.id, { preview, lossless: false });
+        setRendered({ url: result.url, durationMs: result.duration_ms });
+      });
+    },
+    [boot.version.id, run],
+  );
+
   const applyTextEdit = useCallback(
     async (proposed: string) => {
       if (!selection) return;
@@ -335,6 +398,7 @@ function Desk({
         positionMs={playback.positionMs}
         markers={markers}
         handles={handles}
+        deletions={edl?.deletions ?? []}
         onEdgeCommit={(handle, ms) => void commitEdge(handle, ms)}
         onSeek={playback.seek}
       />
@@ -376,6 +440,22 @@ function Desk({
           </button>
           <button
             type="button"
+            className="danger"
+            disabled={!selection || busy}
+            onClick={() => void deleteSelection()}
+          >
+            删除选中
+          </button>
+          <button
+            type="button"
+            className="ghost"
+            disabled={busy}
+            onClick={() => void undoDeletion()}
+          >
+            恢复删除
+          </button>
+          <button
+            type="button"
             className="ghost"
             disabled={busy}
             onClick={() =>
@@ -391,6 +471,43 @@ function Desk({
       </div>
 
       {notice ? <div className="notice">{notice}</div> : null}
+
+      {edl ? (
+        <section className="edl-panel">
+          <div className="edl-figures">
+            <span>
+              成片 <strong>{formatClock(edl.output_duration_ms)}</strong>
+              <span className="muted"> / 原始 {formatClock(edl.original_duration_ms)}</span>
+            </span>
+            <span className="muted">
+              删除 {formatClock(edl.removed_ms)} · {edl.segment_count} 段
+              {edl.clamps.length > 0 ? ` · ${edl.clamps.length} 处吸附` : ""}
+            </span>
+          </div>
+          <div className="edl-actions">
+            <button type="button" disabled={busy} onClick={() => void renderOutput(true)}>
+              预览当前段
+            </button>
+            <button type="button" disabled={busy} onClick={() => void renderOutput(false)}>
+              渲染成片
+            </button>
+            {rendered ? (
+              <button type="button" className="ghost" onClick={() => setShowOutput((v) => !v)}>
+                {showOutput ? "收起成片" : "试听成片"}
+              </button>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
+
+      {rendered && showOutput ? (
+        <div className="output-player">
+          <audio src={rendered.url} controls style={{ width: "100%" }} />
+          <p className="muted">
+            成片时长 {formatClock(rendered.durationMs)}。播放位置相对于成片，不是原始音频。
+          </p>
+        </div>
+      ) : null}
 
       <SentenceList
         sentences={boot.sentences}
@@ -413,4 +530,12 @@ function describe(caught: unknown): string {
       : caught.detail.message;
   }
   return caught instanceof Error ? caught.message : String(caught);
+}
+
+/** mm:ss for the EDL panel, where sub-second precision is noise. */
+function formatClock(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }

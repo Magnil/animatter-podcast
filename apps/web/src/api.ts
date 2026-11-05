@@ -170,6 +170,48 @@ export const api = {
       body: JSON.stringify({ token_index: tokenIndex, edge, new_ms: newMs }),
     }),
 
+  // --- clipping ---------------------------------------------------------
+
+  deletions: (versionId: string) =>
+    request<{ id: string; start_ms: number; end_ms: number; source: string }[]>(
+      `/api/versions/${versionId}/deletions`,
+    ),
+
+  /** Delete by token ids (character selection) or by an explicit time range. */
+  addDeletion: (versionId: string, body: { token_ids?: number[]; start_ms?: number; end_ms?: number }) =>
+    request<{ id: string; start_ms: number; end_ms: number; source: string }[]>(
+      `/api/versions/${versionId}/deletions`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  removeDeletion: (deletionId: string) =>
+    request<void>(`/api/deletions/${deletionId}`, { method: "DELETE" }),
+
+  edl: (versionId: string, snap = true) =>
+    request<{
+      original_duration_ms: number;
+      output_duration_ms: number;
+      removed_ms: number;
+      segment_count: number;
+      keeps: { orig_start: number; orig_end: number; new_start: number }[];
+      deletions: { start_ms: number; end_ms: number; source: string }[];
+      clamps: { requested: number; applied: number; edge: string; reason: string }[];
+      signature: string;
+    }>(`/api/versions/${versionId}/edl?snap=${snap}`),
+
+  render: (versionId: string, options: { preview?: boolean; lossless?: boolean } = {}) => {
+    const params = new URLSearchParams();
+    if (options.preview) params.set("preview", "true");
+    if (options.lossless) params.set("lossless", "true");
+    const query = params.toString();
+    return request<{ id: string; duration_ms: number; status: string; url: string }>(
+      `/api/versions/${versionId}/render${query ? `?${query}` : ""}`,
+      { method: "POST" },
+    );
+  },
+
+  renderUrl: (path: string) => path,
+
   undo: (versionId: string) =>
     request<{ undone: string; op_type: string }>(`/api/versions/${versionId}/undo`, {
       method: "POST",
