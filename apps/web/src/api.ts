@@ -212,6 +212,85 @@ export const api = {
 
   renderUrl: (path: string) => path,
 
+  // --- history ----------------------------------------------------------
+
+  history: (versionId: string) =>
+    request<
+      {
+        id: string;
+        seq: number;
+        op_type: string;
+        label: string;
+        detail: string;
+        created_at: string;
+        undone: boolean;
+        undoable: boolean;
+      }[]
+    >(`/api/versions/${versionId}/history`),
+
+  undoOp: (versionId: string, opId: string) =>
+    request<{ undone: string; op_type: string }>(`/api/versions/${versionId}/undo`, {
+      method: "POST",
+      body: JSON.stringify({ op_id: opId }),
+    }),
+
+  // --- settings ---------------------------------------------------------
+
+  settings: () => request<AppSettings>("/api/settings"),
+
+  saveSettings: (values: Partial<AppSettings>) =>
+    request<AppSettings>("/api/settings", {
+      method: "PATCH",
+      body: JSON.stringify({ values }),
+    }),
+
+  modelOptions: () =>
+    request<{
+      asr: { id: string; instant_vocabulary: boolean; context: boolean; diarization: boolean; max_hotwords: number }[];
+      llm: string[];
+      defaults: Record<string, unknown>;
+    }>("/api/settings/models"),
+
+  // --- hotwords ---------------------------------------------------------
+
+  globalHotwords: () => request<HotwordItem[]>("/api/hotwords"),
+
+  addGlobalHotword: (text: string, weight = 3) =>
+    request<{ accepted: HotwordItem[] }>("/api/hotwords", {
+      method: "POST",
+      body: JSON.stringify([{ text, weight }]),
+    }),
+
+  removeGlobalHotword: (text: string) =>
+    request<void>(`/api/hotwords/${encodeURIComponent(text)}`, { method: "DELETE" }),
+
+  episodeHotwords: (projectId: string, mediaId: string) =>
+    request<HotwordItem[]>(`/api/projects/${projectId}/media/${mediaId}/hotwords`),
+
+  addEpisodeHotword: (projectId: string, mediaId: string, text: string, weight = 3) =>
+    request<{ accepted: HotwordItem[] }>(`/api/projects/${projectId}/media/${mediaId}/hotwords`, {
+      method: "POST",
+      body: JSON.stringify([{ text, weight }]),
+    }),
+
+  removeEpisodeHotword: (projectId: string, mediaId: string, text: string) =>
+    request<void>(
+      `/api/projects/${projectId}/media/${mediaId}/hotwords/${encodeURIComponent(text)}`,
+      { method: "DELETE" },
+    ),
+
+  suggestHotwords: (projectId: string, mediaId: string) =>
+    request<{ terms: HotwordItem[]; warnings: string[] }>(
+      `/api/projects/${projectId}/media/${mediaId}/hotwords/suggest`,
+      { method: "POST" },
+    ),
+
+  saveOutline: (projectId: string, mediaId: string, content: string) =>
+    request<Record<string, unknown>>(`/api/projects/${projectId}/media/${mediaId}/outline`, {
+      method: "PUT",
+      body: JSON.stringify({ content }),
+    }),
+
   undo: (versionId: string) =>
     request<{ undone: string; op_type: string }>(`/api/versions/${versionId}/undo`, {
       method: "POST",
@@ -222,3 +301,43 @@ export const api = {
 };
 
 export const mediaIdFromVersion = (versionId: string): string => versionId;
+
+export interface AppSettings {
+  asr_model: string;
+  llm_model: string;
+  hotword_weight: number;
+  use_hotwords: boolean;
+  diarization: boolean;
+  speaker_count: number;
+  proofread_chunk_size: number;
+  snap_to_silence: boolean;
+  guard_ms: number;
+  min_keep_ms: number;
+  fade_ms: number;
+  realtime_skip: boolean;
+  export_format: "m4a" | "wav";
+  export_bitrate: "128k" | "192k" | "256k" | "320k";
+  subtitle_cps: number;
+  subtitle_max_line: number;
+  subtitle_max_lines: number;
+}
+
+export interface HotwordItem {
+  text: string;
+  weight: number;
+  lang: string;
+  enabled: boolean;
+  hit_count: number;
+  miss_count: number;
+}
+
+export interface HistoryEntry {
+  id: string;
+  seq: number;
+  op_type: string;
+  label: string;
+  detail: string;
+  created_at: string;
+  undone: boolean;
+  undoable: boolean;
+}

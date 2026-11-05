@@ -240,13 +240,6 @@ def test_preview_outside_content_raises(tmp_path: Path) -> None:
 # --- service ------------------------------------------------------------
 
 
-@pytest.fixture()
-def session(client: TestClient) -> Session:
-    db = client.app.state.db  # type: ignore[attr-defined]
-    with db.session() as s:
-        yield s
-
-
 def test_add_and_list_deletions(session: Session) -> None:  # type: ignore[no-untyped-def]
     from tests.test_corrections import seed_version
 

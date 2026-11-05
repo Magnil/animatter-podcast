@@ -268,3 +268,128 @@ test("no deletions means nothing is skipped", () => {
   assert.equal(nextAudible([], 5000), 5000);
   assert.equal(spanAt([], 5000), null);
 });
+
+// --- deletion-aware navigation (bug 1 and 2 from the field report)
+
+function sortSpans(spans) {
+  return [...spans].sort((a, b) => a.start_ms - b.start_ms);
+}
+
+function isDeleted(spans, startMs, endMs) {
+  if (endMs <= startMs) return true;
+  let cursor = startMs;
+  for (const span of sortSpans(spans)) {
+    if (span.end_ms <= cursor) continue;
+    if (span.start_ms > cursor) return false;
+    cursor = Math.max(cursor, span.end_ms);
+    if (cursor >= endMs) return true;
+  }
+  return false;
+}
+
+function audibleStart(spans, sentence) {
+  if (isDeleted(spans, sentence.start_ms, sentence.end_ms)) return null;
+  let pos = sentence.start_ms;
+  for (let guard = 0; guard < spans.length + 1; guard += 1) {
+    const hit = sortSpans(spans).find((s) => pos >= s.start_ms && pos < s.end_ms);
+    if (!hit) break;
+    pos = hit.end_ms;
+  }
+  return pos >= sentence.end_ms ? null : pos;
+}
+
+function previousSentence(spans, sentences, currentOrd) {
+  for (const s of [...sentences].sort((a, b) => b.ord - a.ord)) {
+    if (s.ord >= currentOrd) continue;
+    if (isDeleted(spans, s.start_ms, s.end_ms)) continue;
+    return s;
+  }
+  return null;
+}
+
+function nextSentence(spans, sentences, currentOrd) {
+  for (const s of [...sentences].sort((a, b) => a.ord - b.ord)) {
+    if (s.ord <= currentOrd) continue;
+    if (isDeleted(spans, s.start_ms, s.end_ms)) continue;
+    return s;
+  }
+  return null;
+}
+
+const dialogue = [
+  { ord: 0, start_ms: 0, end_ms: 3000 },
+  { ord: 1, start_ms: 4000, end_ms: 7000 },
+  { ord: 2, start_ms: 8000, end_ms: 12000 },
+];
+
+test("previous sentence skips a fully deleted one", () => {
+  // Bug 2: with sentence 1 deleted, "previous" from sentence 2 must land on 0.
+  const deleted = [{ start_ms: 4000, end_ms: 7000 }];
+  const target = previousSentence(deleted, dialogue, 2);
+  assert.equal(target.ord, 0);
+});
+
+test("previous sentence skips several deleted ones", () => {
+  const deleted = [
+    { start_ms: 4000, end_ms: 7000 },
+    { start_ms: 8000, end_ms: 12000 },
+  ];
+  assert.equal(previousSentence(deleted, dialogue, 2).ord, 0);
+});
+
+test("previous sentence returns null when everything earlier is deleted", () => {
+  const deleted = [{ start_ms: 0, end_ms: 7000 }];
+  assert.equal(previousSentence(deleted, dialogue, 2), null);
+});
+
+test("next sentence skips a fully deleted one", () => {
+  const deleted = [{ start_ms: 4000, end_ms: 7000 }];
+  assert.equal(nextSentence(deleted, dialogue, 0).ord, 2);
+});
+
+test("audibleStart returns null for a fully deleted sentence", () => {
+  // Bug 1: playing a deleted sentence produced silence, because the start was
+  // inside a cut and the stop point ended up behind it.
+  assert.equal(audibleStart([{ start_ms: 4000, end_ms: 7000 }], dialogue[1]), null);
+});
+
+test("audibleStart snaps forward into the surviving part", () => {
+  const partial = [{ start_ms: 0, end_ms: 1500 }];
+  assert.equal(audibleStart(partial, dialogue[0]), 1500);
+});
+
+test("audibleStart leaves an untouched sentence at its own start", () => {
+  assert.equal(audibleStart([], dialogue[2]), 8000);
+});
+
+test("a partially deleted sentence still counts as audible", () => {
+  const deleted = [{ start_ms: 0, end_ms: 1500 }];
+  assert.equal(isDeleted(deleted, 0, 3000), false);
+});
+
+test("a sentence covered by two adjacent cuts counts as deleted", () => {
+  const deleted = [
+    { start_ms: 4000, end_ms: 5500 },
+    { start_ms: 5500, end_ms: 7000 },
+  ];
+  assert.equal(isDeleted(deleted, 4000, 7000), true);
+});
+
+test("isDeleted is false when a surviving gap exists", () => {
+  const deleted = [
+    { start_ms: 0, end_ms: 1000 },
+    { start_ms: 2000, end_ms: 3000 },
+  ];
+  assert.equal(isDeleted(deleted, 0, 3000), false);
+});
+
+test("space over a deleted gap starts at the next audible point", () => {
+  // The clickable area before a deleted sentence: playhead 3500, sentences
+  // 0 [0,3000) and 1 [4000,7000) with 1 deleted.
+  const deleted = [{ start_ms: 4000, end_ms: 7000 }];
+  const from = 3500;
+  assert.equal(isDeleted(deleted, from, from + 1), false);
+  assert.equal(sortSpans(deleted)[0].start_ms, 4000);
+  // Advancing must skip the cut entirely and land on sentence 2.
+  assert.equal(nextSentence(deleted, dialogue, 0).ord, 2);
+});

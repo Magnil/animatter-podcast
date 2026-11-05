@@ -304,3 +304,17 @@ class CorrectionCandidate(Base):
 
     created_at: Mapped[str] = mapped_column(String(32))
     resolved_at: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+
+class Setting(Base):
+    """Single-row JSON blob for user-adjustable settings.
+
+    One row with a JSON payload rather than a column per option: the set of
+    tunables keeps growing, and a blob means adding one needs no migration.
+    """
+
+    __tablename__ = "setting"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    updated_at: Mapped[str] = mapped_column(String(32))

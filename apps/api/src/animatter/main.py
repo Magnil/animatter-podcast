@@ -29,6 +29,7 @@ from animatter.routers import (
     proofread,
     transcribe,
 )
+from animatter.routers import settings as settings_router
 
 VERSION = "0.1.0"
 
@@ -105,6 +106,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(proofread.router)
     app.include_router(editing.router)
     app.include_router(clipping.router)
+    app.include_router(settings_router.router)
     return app
 
 

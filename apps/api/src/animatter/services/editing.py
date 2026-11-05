@@ -355,49 +355,6 @@ def _shift_sentences(session: Session, version_id: str, *, at_token: int, delta:
     session.flush()
 
 
-# --- history ------------------------------------------------------------
-
-
-def list_ops(session: Session, version_id: str) -> list[EditOp]:
-    return list(
-        session.scalars(select(EditOp).where(EditOp.version_id == version_id).order_by(EditOp.seq.desc()))
-    )
-
-
-def undo_last(session: Session, version_id: str) -> dict[str, object]:
-    """Undo the most recent boundary edit.
-
-    Only boundary operations are inverted here. Text edits can change the token
-    count, so their inverse is not this operation's job; the editor sends an
-    explicit reverse text edit instead.
-    """
-    _version_or_raise(session, version_id)
-    op = session.scalars(
-        select(EditOp)
-        .where(EditOp.version_id == version_id, EditOp.undone.is_(False))
-        .order_by(EditOp.seq.desc())
-    ).first()
-    if op is None:
-        raise EditError("nothing_to_undo", "没有可撤销的操作")
-    if op.op_type != "boundary":
-        raise EditError(
-            "undo_unsupported",
-            "文本修改不支持直接撤销",
-            "请用反向替换恢复原文（例如把新写法改回旧写法）。",
-        )
-
-    payload = json.loads(op.payload_json)
-    before = payload.get("before") or []
-    spans = [SentenceSpan(ord=i, token_start=int(s), token_end=int(e)) for i, (s, e) in enumerate(before)]
-    tokens = transcribe_service.load_tokens(session, version_id)
-    validate(spans, len(tokens))
-    _persist_spans(session, version_id, spans)
-    op.undone = True
-    session.flush()
-    log.info("edit.undo", op_id=op.id, action=payload.get("action"))
-    return {"undone": op.id, "op_type": op.op_type}
-
-
 # --- boundary dragging --------------------------------------------------
 
 
@@ -476,3 +433,119 @@ def adjust_boundary_edge(
         "reason": outcome.reason,
         "changed": True,
     }
+
+
+# --- history ------------------------------------------------------------
+
+
+def list_ops(session: Session, version_id: str) -> list[EditOp]:
+    return list(
+        session.scalars(select(EditOp).where(EditOp.version_id == version_id).order_by(EditOp.seq.desc()))
+    )
+
+
+#: Human-readable labels so the history panel does not show raw op codes.
+_OP_LABELS: dict[str, str] = {
+    "boundary": "调整句边界",
+    "text": "修改文字",
+    "boundary_time": "拖动边界时间",
+    "retoken_text": "应用校对修正",
+}
+
+_BOUNDARY_ACTIONS: dict[str, str] = {
+    "new_sentence": "另起一句",
+    "to_prev": "并入上句",
+    "to_next": "并入下句",
+    "merge": "合并句子",
+}
+
+
+def describe_op(op: EditOp) -> dict[str, object]:
+    """Render one history entry for the operations panel."""
+    payload: dict[str, object] = {}
+    try:
+        payload = json.loads(op.payload_json or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+
+    label = _OP_LABELS.get(op.op_type, op.op_type)
+    detail = ""
+    if op.op_type == "boundary":
+        detail = _BOUNDARY_ACTIONS.get(str(payload.get("action", "")), "")
+    elif op.op_type == "text" or op.op_type == "retoken_text":
+        detail = f"「{payload.get('original', '')}」→「{payload.get('proposed', '')}」"
+    elif op.op_type == "boundary_time":
+        before = payload.get("before") or [0, 0]
+        after = payload.get("after") or [0, 0]
+        detail = f"第 {payload.get('token_index', '?')} 字 {before} → {after}"
+
+    return {
+        "id": op.id,
+        "seq": op.seq,
+        "op_type": op.op_type,
+        "label": label,
+        "detail": detail,
+        "created_at": op.created_at,
+        "undone": op.undone,
+        # Only boundary restructuring has a stored full snapshot to restore.
+        "undoable": op.op_type == "boundary" and not op.undone,
+    }
+
+
+def undo_op(session: Session, version_id: str, op_id: str | None = None) -> dict[str, object]:
+    """Undo a specific boundary edit, or the latest one when ``op_id`` is omitted.
+
+    Reverting an *earlier* operation than the last one is deliberately refused:
+    later edits may have shifted token indices, so replaying an old snapshot would
+    silently discard or corrupt them.
+    """
+    _version_or_raise(session, version_id)
+
+    if op_id is None:
+        op = session.scalars(
+            select(EditOp)
+            .where(EditOp.version_id == version_id, EditOp.undone.is_(False))
+            .order_by(EditOp.seq.desc())
+        ).first()
+    else:
+        op = session.get(EditOp, op_id)
+        if op is not None and op.version_id != version_id:
+            op = None
+
+    if op is None:
+        raise EditError("nothing_to_undo", "没有可撤销的操作")
+    if op.undone:
+        raise EditError("already_undone", "该操作已经撤销过了")
+    if op.op_type != "boundary":
+        raise EditError(
+            "undo_unsupported",
+            f"「{_OP_LABELS.get(op.op_type, op.op_type)}」不支持直接撤销",
+            "文字修改请用反向替换恢复原文；删除请用「恢复删除」。",
+        )
+
+    latest = session.scalars(
+        select(EditOp)
+        .where(EditOp.version_id == version_id, EditOp.undone.is_(False))
+        .order_by(EditOp.seq.desc())
+    ).first()
+    if latest is not None and latest.id != op.id:
+        raise EditError(
+            "undo_out_of_order",
+            "只能撤销最近一次边界操作",
+            "更早的操作之后还有别的编辑，回滚它会覆盖掉那些改动。",
+        )
+
+    payload = json.loads(op.payload_json)
+    before = payload.get("before") or []
+    spans = [SentenceSpan(ord=i, token_start=int(s), token_end=int(e)) for i, (s, e) in enumerate(before)]
+    tokens = transcribe_service.load_tokens(session, version_id)
+    validate(spans, len(tokens))
+    _persist_spans(session, version_id, spans)
+    op.undone = True
+    session.flush()
+    log.info("edit.undo", op_id=op.id, action=payload.get("action"))
+    return {"undone": op.id, "op_type": op.op_type}
+
+
+def undo_last(session: Session, version_id: str) -> dict[str, object]:
+    return undo_op(session, version_id)

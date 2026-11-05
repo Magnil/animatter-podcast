@@ -217,22 +217,22 @@ def edit_text(
 
 @router.get("/versions/{version_id}/history")
 def history(version_id: str, session: Session = Depends(_session_dependency)) -> list[dict[str, object]]:
-    ops = edit_service.list_ops(session, version_id)
-    return [
-        {
-            "id": op.id,
-            "seq": op.seq,
-            "op_type": op.op_type,
-            "created_at": op.created_at,
-            "undone": op.undone,
-        }
-        for op in ops
-    ]
+    """Operation log for the history panel, newest first."""
+    return [edit_service.describe_op(op) for op in edit_service.list_ops(session, version_id)]
+
+
+class UndoIn(BaseModel):
+    #: Omit to undo the latest operation.
+    op_id: str | None = None
 
 
 @router.post("/versions/{version_id}/undo")
-def undo(version_id: str, session: Session = Depends(_session_dependency)) -> dict[str, object]:
-    return edit_service.undo_last(session, version_id)
+def undo(
+    version_id: str,
+    session: Session = Depends(_session_dependency),
+    payload: UndoIn | None = None,
+) -> dict[str, object]:
+    return edit_service.undo_op(session, version_id, payload.op_id if payload else None)
 
 
 def _view(tokens: list, span: object) -> dict[str, object]:  # type: ignore[type-arg]

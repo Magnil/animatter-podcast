@@ -33,6 +33,13 @@ export interface DeletionSpan {
   end_ms: number;
 }
 
+export interface Caption {
+  start_ms: number;
+  end_ms: number;
+  text: string;
+  ord: number;
+}
+
 interface Props {
   projectId: string;
   mediaId: string;
@@ -42,12 +49,18 @@ interface Props {
   handles: EdgeHandle[];
   /** Deleted spans, drawn as red overlays. */
   deletions?: DeletionSpan[];
+  /** Subtitles drawn on the waveform so text and audio line up visually. */
+  captions?: Caption[];
+  activeOrd?: number;
+  onCaptionClick?: (ord: number) => void;
   /** Called once on drop, with the final time. */
   onEdgeCommit: (handle: EdgeHandle, newMs: number) => void;
   onSeek: (ms: number) => void;
 }
 
-const CANVAS_HEIGHT = 140;
+const CANVAS_HEIGHT = 168;
+/** Top band reserved for subtitle text. */
+const CAPTION_BAND = 22;
 const BUCKETS_PER_SECOND = 64;
 const HANDLE_HIT_PX = 6;
 
@@ -59,6 +72,9 @@ export function Waveform({
   markers,
   handles,
   deletions = [],
+  captions = [],
+  activeOrd = -1,
+  onCaptionClick,
   onEdgeCommit,
   onSeek,
 }: Props): React.JSX.Element {
@@ -117,7 +133,9 @@ export function Waveform({
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, width, CANVAS_HEIGHT);
 
-    const mid = CANVAS_HEIGHT / 2;
+    // The waveform occupies the area below the caption band.
+    const mid = CAPTION_BAND + (CANVAS_HEIGHT - CAPTION_BAND) / 2;
+    const waveHeight = CANVAS_HEIGHT - CAPTION_BAND;
 
     for (const marker of markers) {
       const x0 = msToX(marker.start_ms);
@@ -158,7 +176,7 @@ export function Waveform({
           low = Math.min(low, peaks.min[i] ?? 0);
           high = Math.max(high, peaks.max[i] ?? 0);
         }
-        ctx.fillRect(x, mid - high * mid, 1, Math.max(1, (high - low) * mid));
+        ctx.fillRect(x, mid - high * (waveHeight / 2), 1, Math.max(1, (high - low) * (waveHeight / 2)));
       }
     }
 
@@ -189,10 +207,33 @@ export function Waveform({
       }
     }
 
+    // Captions sit in the top band, above the waveform, so text never obscures
+    // the shape of the audio it describes.
+    for (const caption of captions) {
+      const x0 = msToX(caption.start_ms);
+      const x1 = msToX(caption.end_ms);
+      const width = x1 - x0;
+      if (width < 12) continue; // too narrow for legible text
+
+      const isActive = caption.ord === activeOrd;
+      ctx.font = `${isActive ? "600 " : ""}11px system-ui, sans-serif`;
+      ctx.fillStyle = isActive ? "#1d4ed8" : "#64748b";
+      ctx.textBaseline = "top";
+
+      // Clip the text to the sentence's own slice of time, so a long sentence
+      // does not bleed into its neighbour.
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x0, 0, Math.max(0, width - 2), CAPTION_BAND);
+      ctx.clip();
+      ctx.fillText(caption.text, x0 + 2, 3);
+      ctx.restore();
+    }
+
     const playX = msToX(positionMs);
     ctx.fillStyle = "#dc2626";
     ctx.fillRect(Math.min(width - 2, playX), 0, 2, CANVAS_HEIGHT);
-  }, [peaks, markers, handles, deletions, positionMs, width, msToX, hovered]);
+  }, [peaks, markers, handles, deletions, captions, activeOrd, positionMs, width, msToX, hovered]);
 
   useEffect(() => {
     draw();
@@ -227,7 +268,24 @@ export function Waveform({
     [handles, msToX],
   );
 
+  const captionAt = useCallback(
+    (clientX: number, clientY: number): Caption | null => {
+      const canvas = canvasRef.current;
+      if (!canvas) return null;
+      const rect = canvas.getBoundingClientRect();
+      if (clientY - rect.top > CAPTION_BAND) return null;
+      const ms = msFromClientX(clientX);
+      return captions.find((c) => ms >= c.start_ms && ms < c.end_ms) ?? null;
+    },
+    [captions, msFromClientX],
+  );
+
   const onPointerDown = (event: React.PointerEvent<HTMLCanvasElement>): void => {
+    const caption = captionAt(event.clientX, event.clientY);
+    if (caption && onCaptionClick) {
+      onCaptionClick(caption.ord);
+      return;
+    }
     const handle = handleAt(event.clientX);
     if (handle) {
       dragRef.current = { handle, previewMs: handle.ms };

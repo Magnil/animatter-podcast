@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
 
 from animatter.config import Settings
 from animatter.main import create_app
@@ -26,3 +27,15 @@ def client(settings: Settings) -> Iterator[TestClient]:
     app = create_app(settings)
     with TestClient(app) as test_client:
         yield test_client
+
+
+@pytest.fixture()
+def session(client: TestClient) -> Iterator[Session]:
+    """A Session bound to the test client's database.
+
+    Shared rather than per-module: several suites need to call service functions
+    directly against the same data the HTTP client sees.
+    """
+    db = client.app.state.db  # type: ignore[attr-defined]
+    with db.session() as s:
+        yield s

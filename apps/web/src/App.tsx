@@ -9,18 +9,28 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   api,
-  RequestFailed,
+  type AppSettings,
+  type HotwordItem,
   type Sentence,
   type Token,
   type Version,
 } from "./api";
-import {
-  SentenceList,
-  findActiveSentence,
-  tokenRangeOfSentences,
-  type TokenSelection,
-} from "./SentenceList";
+import { HistoryPanel } from "./HistoryPanel";
+import { HotwordPanel } from "./HotwordPanel";
+import { MenuBar, type Menu } from "./MenuBar";
+import { SentenceList, findActiveSentence, tokenRangeOfSentences, type TokenSelection } from "./SentenceList";
+import { SettingsDialog } from "./SettingsDialog";
 import { Waveform, type EdgeHandle, type Marker } from "./Waveform";
+import {
+  audibleStart,
+  audibleStop,
+  insideDeletion as isInsideDeletion,
+  nextAudible,
+  nextBoundary,
+  nextSentence,
+  previousSentence,
+  sentenceAtOrBefore,
+} from "./navigation";
 import { usePlayback } from "./usePlayback";
 import { formatDuration, formatTime } from "./format";
 
@@ -52,6 +62,9 @@ export function App(): React.JSX.Element {
   const [selection, setSelection] = useState<TokenSelection | null>(null);
   const [sentenceSelection, setSentenceSelection] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  // Bumped after every successful edit so the history panel refetches.
+  const [historyRevision, setHistoryRevision] = useState(0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -117,6 +130,10 @@ export function App(): React.JSX.Element {
       busy={busy}
       selection={selection}
       sentenceSelection={sentenceSelection}
+      settingsOpen={settingsOpen}
+      setSettingsOpen={setSettingsOpen}
+      onSettingsSaved={() => setHistoryRevision((v) => v + 1)}
+      historyRevision={historyRevision}
       setNotice={setNotice}
       onSelectionChange={setSelection}
       onSentenceSelectionChange={setSentenceSelection}
@@ -136,6 +153,10 @@ interface DeskProps {
   setNotice: (value: string | null) => void;
   onSelectionChange: (selection: TokenSelection | null) => void;
   onSentenceSelectionChange: (selection: Set<number>) => void;
+  settingsOpen: boolean;
+  setSettingsOpen: (value: boolean) => void;
+  onSettingsSaved: (settings: AppSettings) => void;
+  historyRevision: number;
   setBusy: (value: boolean) => void;
   onReload: () => Promise<void>;
   setBoot: (boot: Boot) => void;
@@ -147,6 +168,10 @@ function Desk({
   busy,
   selection,
   sentenceSelection,
+  settingsOpen,
+  setSettingsOpen,
+  onSettingsSaved,
+  historyRevision,
   setNotice,
   onSelectionChange,
   onSentenceSelectionChange,
@@ -160,6 +185,33 @@ function Desk({
   const [edl, setEdl] = useState<EdlState | null>(null);
   const [rendered, setRendered] = useState<{ url: string; durationMs: number } | null>(null);
   const [showOutput, setShowOutput] = useState(false);
+
+  const [episodeHotwords, setEpisodeHotwords] = useState<HotwordItem[]>([]);
+  const [globalHotwords, setGlobalHotwords] = useState<HotwordItem[]>([]);
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+
+  const reloadHotwords = useCallback(async () => {
+    try {
+      const [episode, global] = await Promise.all([
+        api.episodeHotwords(boot.projectId, boot.mediaId),
+        api.globalHotwords(),
+      ]);
+      setEpisodeHotwords(episode);
+      setGlobalHotwords(global);
+    } catch {
+      // A hotword failure must never block editing.
+      setEpisodeHotwords([]);
+      setGlobalHotwords([]);
+    }
+  }, [boot.mediaId, boot.projectId]);
+
+  useEffect(() => {
+    void reloadHotwords();
+  }, [reloadHotwords]);
+
+  useEffect(() => {
+    void api.settings().then(setSettings).catch(() => setSettings(null));
+  }, []);
 
   // Playback skips deleted spans, so a cut is audible immediately — no render.
   const deletedSpans = useMemo(
@@ -239,39 +291,67 @@ function Desk({
 
   const playSentence = useCallback(
     (sentence: Sentence) => {
-      playback.playRange(sentence.start_ms, sentence.end_ms);
+      const startMs = audibleStart(deletedSpans, sentence);
+      if (startMs === null) {
+        setNotice(`第 ${sentence.ord + 1} 句已整句删除，已跳到下一句`);
+        const fallback = nextSentence(deletedSpans, boot.sentences, sentence.ord);
+        if (fallback) {
+          const fallbackStart = audibleStart(deletedSpans, fallback);
+          if (fallbackStart !== null) {
+            const stop = audibleStop(deletedSpans, fallbackStart, fallback.end_ms);
+            playback.playRange(fallbackStart, stop ?? fallback.end_ms);
+          }
+        }
+        return;
+      }
+      const stop = audibleStop(deletedSpans, startMs, sentence.end_ms);
+      playback.playRange(startMs, stop ?? sentence.end_ms);
     },
-    [playback],
+    [boot.sentences, deletedSpans, playback, setNotice],
   );
 
-  // Locate by time, not by activeOrd. Between sentences (silence) activeOrd is
-  // -1, and an index of -1 made both directions land on the first sentence —
-  // which reads as "the bracket keys do nothing".
-  const sentenceAtOrBefore = useCallback(
-    (ms: number): number => {
-      const index = boot.sentences.findIndex((s) => ms < s.start_ms);
-      return index === -1 ? boot.sentences.length - 1 : Math.max(0, index - 1);
-    },
-    [boot.sentences],
+  /** Sentence the playhead sits in, ignoring deletions. */
+  const currentSentence = useCallback(
+    () => sentenceAtOrBefore(boot.sentences, playback.positionMs),
+    [boot.sentences, playback.positionMs],
   );
 
   const playPrevious = useCallback(() => {
-    const current = sentenceAtOrBefore(playback.positionMs);
-    // Rewind within the current sentence first; only then step back a sentence.
-    const sentence = boot.sentences[current];
-    if (sentence && playback.positionMs - sentence.start_ms > 1200) {
-      playback.seek(sentence.start_ms);
+    const current = currentSentence();
+    if (!current) {
+      // Before the first sentence: nothing earlier exists.
       return;
     }
-    const target = boot.sentences[Math.max(0, current - 1)];
-    if (target) playSentence(target);
-  }, [boot.sentences, playSentence, playback, sentenceAtOrBefore]);
+
+    const currentStart = audibleStart(deletedSpans, current);
+    // Rewind inside the current sentence first, but only if the playhead is
+    // actually past its audible start; otherwise "previous" must step back.
+    if (currentStart !== null && playback.positionMs - currentStart > 1200) {
+      playback.seek(currentStart);
+      return;
+    }
+
+    const target = previousSentence(deletedSpans, boot.sentences, current.ord);
+    if (!target) {
+      // Every earlier sentence is deleted: go to the top of surviving audio.
+      const top = nextAudible(deletedSpans, 0);
+      playback.seek(top);
+      return;
+    }
+    const targetStart = audibleStart(deletedSpans, target);
+    if (targetStart === null) return;
+    playback.seek(targetStart);
+  }, [boot.sentences, currentSentence, deletedSpans, playback]);
 
   const playNext = useCallback(() => {
-    const current = sentenceAtOrBefore(playback.positionMs);
-    const target = boot.sentences[Math.min(boot.sentences.length - 1, current + 1)];
-    if (target) playSentence(target);
-  }, [boot.sentences, playSentence, playback.positionMs, sentenceAtOrBefore]);
+    const current = currentSentence();
+    const fromOrd = current ? current.ord : -1;
+    const target = nextSentence(deletedSpans, boot.sentences, fromOrd);
+    if (!target) return;
+    const targetStart = audibleStart(deletedSpans, target);
+    if (targetStart === null) return;
+    playback.seek(targetStart);
+  }, [boot.sentences, currentSentence, deletedSpans, playback]);
 
   const applyBoundary = useCallback(
     async (action: "new_sentence" | "merge" | "to_prev" | "to_next") => {
@@ -334,14 +414,95 @@ function Desk({
     });
   }, [boot.version.id, onReload, run]);
 
-  const renderOutput = useCallback(
-    async (preview: boolean) => {
-      await run(preview ? "生成预览" : "渲染成片", async () => {
-        const result = await api.render(boot.version.id, { preview, lossless: false });
-        setRendered({ url: result.url, durationMs: result.duration_ms });
-      });
-    },
-    [boot.version.id, run],
+  const renderExport = useCallback(async () => {
+    const lossless = settings?.export_format === "wav";
+    await run("导出成片", async () => {
+      const result = await api.render(boot.version.id, { lossless });
+      setRendered({ url: result.url, durationMs: result.duration_ms });
+      setShowOutput(true);
+    });
+  }, [boot.version.id, run, settings?.export_format]);
+
+  const menus: Menu[] = useMemo(
+    () => [
+      {
+        id: "project",
+        label: "项目",
+        items: [
+          { id: "reload", label: "重新载入", hint: "Ctrl+R", onSelect: () => void onReload() },
+          { id: "undo", label: "撤销最近一次编辑", hint: "Ctrl+Z", onSelect: () => void run("撤销", async () => {
+              await api.undo(boot.version.id);
+              await onReload();
+            }) },
+        ],
+      },
+      {
+        id: "settings",
+        label: "设置",
+        items: [
+          { id: "open", label: "模型与参数…", onSelect: () => setSettingsOpen(true) },
+          "separator",
+          {
+            id: "hotwords",
+            label: "转写时启用热词",
+            checked: settings?.use_hotwords ?? false,
+            onSelect: () => {
+              if (!settings) return;
+              const next = { ...settings, use_hotwords: !settings.use_hotwords };
+              setSettings(next);
+              void api.saveSettings({ use_hotwords: next.use_hotwords }).catch(() => undefined);
+            },
+          },
+          {
+            id: "snap",
+            label: "切点吸附到静音",
+            checked: settings?.snap_to_silence ?? true,
+            onSelect: () => {
+              if (!settings) return;
+              const next = { ...settings, snap_to_silence: !settings.snap_to_silence };
+              setSettings(next);
+              void api.saveSettings({ snap_to_silence: next.snap_to_silence }).catch(() => undefined);
+              void onReload();
+            },
+          },
+        ],
+      },
+      {
+        id: "export",
+        label: "导出",
+        items: [
+          {
+            id: "render",
+            label: "导出成片音频…",
+            hint: settings?.export_format === "wav" ? "WAV 无损" : "M4A",
+            disabled: !edl || edl.deletions.length === 0,
+            onSelect: () => void renderExport(),
+          },
+          "separator",
+          {
+            id: "fmt-m4a",
+            label: "格式：M4A（有损）",
+            checked: settings?.export_format === "m4a",
+            onSelect: () => {
+              if (!settings) return;
+              setSettings({ ...settings, export_format: "m4a" });
+              void api.saveSettings({ export_format: "m4a" }).catch(() => undefined);
+            },
+          },
+          {
+            id: "fmt-wav",
+            label: "格式：WAV（无损）",
+            checked: settings?.export_format === "wav",
+            onSelect: () => {
+              if (!settings) return;
+              setSettings({ ...settings, export_format: "wav" });
+              void api.saveSettings({ export_format: "wav" }).catch(() => undefined);
+            },
+          },
+        ],
+      },
+    ],
+    [boot.version.id, edl, onReload, renderExport, run, setSettingsOpen, settings],
   );
 
   const applyTextEdit = useCallback(
@@ -379,14 +540,28 @@ function Desk({
           playback.pause();
           return;
         }
-        const sentence = boot.sentences[sentenceAtOrBefore(playback.positionMs)];
-        if (sentence && playback.positionMs >= sentence.start_ms && playback.positionMs < sentence.end_ms - 50) {
+        const found = sentenceAtOrBefore(boot.sentences, playback.positionMs);
+        const sentence = found
+          ? boot.sentences.find((item) => item.ord === found.ord) ?? null
+          : null;
+        const audible = nextAudible(deletedSpans, playback.positionMs);
+        const resumeHere =
+          sentence !== null &&
+          !isInsideDeletion(deletedSpans, audible) &&
+          audible < sentence.end_ms - 50;
+
+        if (resumeHere) {
           // Resume inside the current sentence rather than restarting it.
           playback.play();
         } else if (sentence) {
+          // The playhead sits in deleted audio, or past the end of the sentence:
+          // start from the next position that still has sound.
           playSentence(sentence);
         } else {
-          playback.play();
+          // No sentence covers this position (leading silence): play from the
+          // first surviving instant instead of from a deleted one.
+          const from = nextAudible(deletedSpans, audible);
+          playback.playRange(from, nextBoundary(deletedSpans, from, boot.version.duration_ms));
         }
       } else if (event.key === "[" || event.code === "BracketLeft") {
         event.preventDefault();
@@ -429,129 +604,117 @@ function Desk({
   })();
 
   return (
-    <main className="desk">
-      <header className="topbar">
-        <div className="title">
-          <strong>{boot.projectName}</strong>
-          <span className="muted">
-            v{boot.version.version} · {boot.version.sentence_count} 句 ·{" "}
-            {boot.version.token_count} 字 · {formatDuration(boot.version.duration_ms)}
-          </span>
-        </div>
-        <div className="transport">
-          <span className="clock">{formatTime(playback.positionMs)}</span>
-          <button type="button" onClick={playback.playing ? playback.pause : playback.play}>
-            {playback.playing ? "⏸ 暂停" : "▶ 播放"}
-          </button>
-          <button type="button" className="ghost" onClick={playPrevious} title="上一句（[）">
-            ⟨ 上一句
-          </button>
-          <button type="button" className="ghost" onClick={playNext} title="下一句（]）">
-            下一句 ⟩
-          </button>
-        </div>
-      </header>
+    <div className="workbench">
+      <MenuBar menus={menus} status={`${boot.projectName} · v${boot.version.version}`} />
 
-      <Waveform
-        projectId={boot.projectId}
-        mediaId={boot.mediaId}
-        durationMs={boot.version.duration_ms}
-        positionMs={playback.positionMs}
-        markers={markers}
-        handles={handles}
-        deletions={edl?.deletions ?? []}
-        onEdgeCommit={(handle, ms) => void commitEdge(handle, ms)}
-        onSeek={playback.seek}
-      />
-
-      <div className="actionbar">
-        <span className="muted">{selectionSummary}</span>
-        <div className="actions">
-          <button
-            type="button"
-            disabled={!canRedraw || busy}
-            onClick={() => void applyBoundary("new_sentence")}
-            title="把当前选区变成独立的一句（整句选区时不可用）"
-          >
-            另起一句
-          </button>
-          <button
-            type="button"
-            disabled={!canJoin || busy}
-            onClick={() => void applyBoundary("to_prev")}
-            title="把选区并入上一句；选中整句时等于合并到上句"
-          >
-            并入上句
-          </button>
-          <button
-            type="button"
-            disabled={!canJoin || busy}
-            onClick={() => void applyBoundary("to_next")}
-            title="把选区并入下一句；选中整句时等于合并到下句"
-          >
-            并入下句
-          </button>
-          <button
-            type="button"
-            disabled={!canMerge || busy}
-            onClick={() => void applyBoundary("merge")}
-            title="把选区涉及的所有句子合并成一句"
-          >
-            合并选区
-          </button>
-          <button
-            type="button"
-            className="danger"
-            disabled={!hasSelection || busy}
-            onClick={() => void deleteRange()}
-            title="删除选区（可多句整句删除）"
-          >
-            删除选中
-          </button>
-          <button
-            type="button"
-            className="ghost"
-            disabled={busy}
-            onClick={() => void undoDeletion()}
-          >
-            恢复删除
-          </button>
-          <button
-            type="button"
-            className="ghost"
-            disabled={busy}
-            onClick={() =>
-              void run("撤销", async () => {
-                await api.undo(boot.version.id);
-                await onReload();
-              })
-            }
-          >
-            撤销边界
-          </button>
-        </div>
-      </div>
-
-      {notice ? <div className="notice">{notice}</div> : null}
-
-      {edl ? (
-        <section className="edl-panel">
-          <div className="edl-figures">
-            <span>
-              成片 <strong>{formatClock(edl.output_duration_ms)}</strong>
-              <span className="muted"> / 原始 {formatClock(edl.original_duration_ms)}</span>
-            </span>
-            <span className="muted">
-              删除 {formatClock(edl.removed_ms)} · {edl.segment_count} 段
-              {edl.clamps.length > 0 ? ` · ${edl.clamps.length} 处吸附` : ""}
-            </span>
+      <div className="bench-body">
+        <aside className="sidebar">
+          <HotwordPanel
+            projectId={boot.projectId}
+            mediaId={boot.mediaId}
+            episodeHotwords={episodeHotwords}
+            globalHotwords={globalHotwords}
+            onChanged={reloadHotwords}
+            onNotice={setNotice}
+          />
+          <div className="sidebar-grow">
+            <SentenceList
+              sentences={boot.sentences}
+              tokens={boot.tokens}
+              positionMs={playback.positionMs}
+              selection={selection}
+              sentenceSelection={sentenceSelection}
+              onSelectionChange={onSelectionChange}
+              onSentenceSelectionChange={onSentenceSelectionChange}
+              onPlaySentence={playSentence}
+              onSeek={playback.seek}
+              onEditSelection={applyTextEdit}
+              deletedRanges={edl?.deletions ?? []}
+            />
           </div>
-          <div className="edl-actions">
-            <button type="button" disabled={busy} onClick={() => void renderOutput(true)}>
-              预览当前段
+          <HistoryPanel
+            versionId={boot.version.id}
+            revision={historyRevision}
+            onUndone={onReload}
+            onNotice={setNotice}
+          />
+        </aside>
+
+        <section className="stage">
+          <div className="stage-top">
+            <span className="clock">{formatTime(playback.positionMs)}</span>
+            <span className="muted small">
+              {boot.version.sentence_count} 句 · {boot.version.token_count} 字 ·{" "}
+              {formatDuration(boot.version.duration_ms)}
+            </span>
+            {edl ? (
+              <span className="muted small">
+                成片 {formatClock(edl.output_duration_ms)} / 原始{" "}
+                {formatClock(edl.original_duration_ms)} · 删除{" "}
+                {formatClock(edl.removed_ms)}
+                {edl.segment_count > 1 ? ` · ${edl.segment_count} 段` : ""}
+                {edl.clamps.length > 0 ? ` · ${edl.clamps.length} 处吸附` : ""}
+              </span>
+            ) : null}
+          </div>
+
+          <Waveform
+            projectId={boot.projectId}
+            mediaId={boot.mediaId}
+            durationMs={boot.version.duration_ms}
+            positionMs={playback.positionMs}
+            markers={markers}
+            handles={handles}
+            deletions={edl?.deletions ?? []}
+            captions={boot.sentences.map((sentence) => ({
+              start_ms: sentence.start_ms,
+              end_ms: sentence.end_ms,
+              text: sentence.text,
+              ord: sentence.ord,
+            }))}
+            activeOrd={activeOrd}
+            onCaptionClick={(ord) => {
+              const sentence = boot.sentences.find((item) => item.ord === ord);
+              if (sentence) playSentence(sentence);
+            }}
+            onEdgeCommit={(handle, ms) => void commitEdge(handle, ms)}
+            onSeek={playback.seek}
+          />
+
+          <div className="transport">
+            <button type="button" onClick={playback.playing ? playback.pause : playback.play}>
+              {playback.playing ? "⏸ 暂停" : "▶ 播放"}
             </button>
-            <button type="button" disabled={busy} onClick={() => void renderOutput(false)}>
-              渲染成片
+            <button type="button" className="ghost" onClick={playPrevious} title="上一句（[）">
+              ⟨ 上一句
+            </button>
+            <button type="button" className="ghost" onClick={playNext} title="下一句（]）">
+              下一句 ⟩
+            </button>
+            <span className="transport-gap" />
+            <button
+              type="button"
+              className="danger"
+              disabled={!hasSelection || busy}
+              onClick={() => void deleteRange()}
+              title="删除选区（可多句整句删除）"
+            >
+              删除选中
+            </button>
+            <button
+              type="button"
+              className="ghost"
+              disabled={busy || (edl?.deletions.length ?? 0) === 0}
+              onClick={() => void undoDeletion()}
+            >
+              恢复删除
+            </button>
+            <button
+              type="button"
+              disabled={busy || !edl || edl.deletions.length === 0}
+              onClick={() => void renderExport()}
+            >
+              导出成片
             </button>
             {rendered ? (
               <button type="button" className="ghost" onClick={() => setShowOutput((v) => !v)}>
@@ -559,42 +722,61 @@ function Desk({
               </button>
             ) : null}
           </div>
+
+          <div className="actionbar">
+            <span className="muted small">{selectionSummary}</span>
+            <div className="actions">
+              <button
+                type="button"
+                disabled={!canRedraw || busy}
+                onClick={() => void applyBoundary("new_sentence")}
+                title="把当前选区变成独立的一句（整句选区时不可用）"
+              >
+                另起一句
+              </button>
+              <button
+                type="button"
+                disabled={!canJoin || busy}
+                onClick={() => void applyBoundary("to_prev")}
+                title="把选区并入上一句；选中整句时等于合并到上句"
+              >
+                并入上句
+              </button>
+              <button
+                type="button"
+                disabled={!canJoin || busy}
+                onClick={() => void applyBoundary("to_next")}
+                title="把选区并入下一句；选中整句时等于合并到下句"
+              >
+                并入下句
+              </button>
+              <button
+                type="button"
+                disabled={!canMerge || busy}
+                onClick={() => void applyBoundary("merge")}
+                title="把选区涉及的所有句子合并成一句"
+              >
+                合并选区
+              </button>
+            </div>
+          </div>
+
+          {notice ? <div className="notice">{notice}</div> : null}
+
+          {rendered && showOutput ? (
+            <div className="output-player">
+              <audio src={rendered.url} controls style={{ width: "100%" }} />
+              <p className="muted small">
+                成片时长 {formatClock(rendered.durationMs)}。播放位置相对于成片，不是原始音频。
+              </p>
+            </div>
+          ) : null}
         </section>
-      ) : null}
+      </div>
 
-      {rendered && showOutput ? (
-        <div className="output-player">
-          <audio src={rendered.url} controls style={{ width: "100%" }} />
-          <p className="muted">
-            成片时长 {formatClock(rendered.durationMs)}。播放位置相对于成片，不是原始音频。
-          </p>
-        </div>
-      ) : null}
-
-      <SentenceList
-        sentences={boot.sentences}
-        tokens={boot.tokens}
-        positionMs={playback.positionMs}
-        selection={selection}
-        sentenceSelection={sentenceSelection}
-        onSelectionChange={onSelectionChange}
-        onSentenceSelectionChange={onSentenceSelectionChange}
-        onPlaySentence={playSentence}
-        onSeek={playback.seek}
-        onEditSelection={applyTextEdit}
-        deletedRanges={edl?.deletions ?? []}
-      />
-    </main>
+      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} onSaved={onSettingsSaved} />
+    </div>
   );
-}
-
-function describe(caught: unknown): string {
-  if (caught instanceof RequestFailed) {
-    return caught.detail.hint
-      ? `${caught.detail.message}\n${caught.detail.hint}`
-      : caught.detail.message;
-  }
-  return caught instanceof Error ? caught.message : String(caught);
 }
 
 /** mm:ss for the EDL panel, where sub-second precision is noise. */
@@ -603,4 +785,10 @@ function formatClock(ms: number): string {
   const minutes = Math.floor(total / 60);
   const seconds = total % 60;
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+/** Turn any thrown value into something a person can read. */
+function describe(caught: unknown): string {
+  if (caught instanceof Error) return caught.message;
+  return String(caught);
 }
