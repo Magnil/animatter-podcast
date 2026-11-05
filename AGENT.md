@@ -505,7 +505,7 @@ sentence = { ord, token_start, token_end }   // 半开区间
 
 #### 两种输入，一套模型
 
-- 删除字级标签 → 该 token 的 `[start_ms, end_ms)` 加入 `deletion(source='token')`；
+- 删除词级标签 → 该 token 的 `[start_ms, end_ms)` 加入 `deletion(source='token')`；
 - 波形框选 → `deletion(source='range')`。
 
 最终都进入区间代数：
@@ -864,7 +864,7 @@ scripts/dev.ps1    一键：建 venv → 装依赖 → check → migrate → ser
 
 ```
 apps/api/src/animatter/
-  core/tokens.py        word → 字级 token（CJK 按字、ASCII 整词、时间插值、标点归属）
+  core/tokens.py        word → 词级 token（一个 ASR 词 = 一个 token，时间原样透传）
   core/sentence.py      句区间代数：split_at / merge_range / extend_into + INV-1..4 校验
   media/ffmpeg.py       probe / 转码 16k 单声道 mp3 / 分段切片 / silencedetect / 切点选择
   providers/http.py     统一 httpx 客户端（trust_env=False，规避本机 SOCKS 代理）
@@ -876,7 +876,7 @@ apps/api/src/animatter/
   services/transcribe.py 完整用例：转码→规划→上传→提交→轮询→下载→归一化→落库
   cli_transcribe.py      `animatter transcribe` 端到端命令
   routers/transcribe.py  登记媒体 / 转写 / 版本列表 / 转录分页读取 / 统计
-apps/api/tests/  119 个用例（+1 live），覆盖字级展开算术、句区间不变量、
+apps/api/tests/  411 个用例（+3 deselected live），覆盖词级展开、句区间不变量、
                  offset 拼接、切点选择、请求体 wire format、per-key 能力裁剪
 samples/speech.wav  17.6s 中文测试音频（SAPI 合成）
 ```
@@ -888,7 +888,7 @@ samples/speech.wav  17.6s 中文测试音频（SAPI 合成）
 | `list_vocabulary` | 200（鉴权与工作空间正确） |
 | 端到端转写 17.6s 音频 | 成功：3 句 / 61 字 / `derived_ratio=0.852` |
 | 中文文本正确性 | ✅「今天我们来聊一聊播客剪辑。首先介绍一下嘉宾张三…」 |
-| 字级切分 | ✅ 逐字拆分，标点挂在末字 `punc_after` |
+| 词级切分 | ✅ 一个 ASR 词 = 一个 token，标点挂在词的 `punc_after` |
 | 时间轴单调性 | ✅ 无倒挂 |
 | live 集成测试 | ✅ 3.6s 音频，1 句 12 token，时间轴断言全过 |
 | 总测试 | **119 passed / 1 deselected（live）** |
@@ -912,7 +912,7 @@ samples/speech.wav  17.6s 中文测试音频（SAPI 合成）
 |---|---|---|---|
 | D1 | 应用形态 | **本地 Web**（FastAPI + React，127.0.0.1），M6 再用 Tauri 打包 | 浏览器入口与桌面壳共用同一套前端 |
 | D2 | 识别模型 | **`qwen-audio-3.1-asr-flash-filetrans`** 为默认；`paraformer-v2` 作降级 | 降级时 `vocabulary` 即时热词不可用，只能走 `vocabulary_id`；能力差异必须在 provider 层声明 |
-| D3 | 字级删除粒度 | 默认**词级吸附**（删字扩为整词，UI 虚线标注）；提供 strict 开关 | strict 必须同时开启静音吸附，否则切在元音中间 |
+| ~~D3~~ | ~~字级删除粒度~~ | **已被词级设计取代（2026-11-06）**：最小单位就是词，不存在"删字切在词中间"；要剪词中间只能在波形上框选时间区间 | — |
 | D4 | 剪辑质量 | **静音吸附 + 5ms fade**，两者都可关 | 关闭后渲染结果可能爆音，UI 需在关闭时警告一次 |
 | D5 | 文稿整理 | LLM 生成，保留 `verbatim` 档位 | 每段必须带 `src_sentences` 才允许导出 |
 | D6 | 立体声分轨 | 自动检测左右声道相关性（<0.5 视为分轨），**提示**用户选择 | 分轨时两次识别分别落 `channel_id=0/1`，计费 ×2，必须写进确认弹窗 |
@@ -931,7 +931,7 @@ samples/speech.wav  17.6s 中文测试音频（SAPI 合成）
 
 ### 15.1 时间与精度
 
-1. **字级时间戳是插值出来的，不是 ASR 给的。** 删单字必然切在词中间 → 需要最小可剪单位。
+1. ~~字级时间戳是插值出来的，不是 ASR 给的~~ → **已改为词级**：一个 token 就是一个观测区间，没有插值，也没有"切在词中间"。
 2. **剪辑后时间轴必须重映射**，否则字幕整体错位，且越到后面错得越多。这是漏了就会全盘返工的一条。
 3. **删除区间吸附到静音谷**能显著提升可听性，但要给用户可见反馈（淡蓝线），否则会觉得"它偷偷挪我的剪辑点"。
 4. 拼接点不加 fade 会爆音。这是物理问题，不是音效偏好。
@@ -960,7 +960,7 @@ samples/speech.wav  17.6s 中文测试音频（SAPI 合成）
 ### 15.4 交互与可用性
 
 19. **校对效率**：仅靠鼠标点句子会累死人。必须有"空格播放当前句 / 自动播下一句"的连续校对流。
-20. **字级标签要能看见时间**：hover 显示 `00:01:23.450–00:01:23.780`，否则用户没法判断该不该删。
+20. **词级标签要能看见时间**：hover 显示 `00:01:23.450–00:01:23.780`，否则用户没法判断该不该删。
 21. **删错了怎么恢复**：删除是"软删除"（`removed=1`），列表里有"已删除"折叠区可恢复，比撤销栈更符合直觉。
 22. **抖动/误删检测**：连续删除产生 <80ms 碎片时要自动并入相邻删除，否则成片会"咯噔咯噔"。
 23. 长句在列表里要显示"超长"警告（CPS 超限），提前提示要断句。
@@ -1112,7 +1112,7 @@ min/max 桶，写入 `PKC1` 二进制缓存（键是媒体 sha256，不是文件
 |---|---|
 | 8 buckets/s | 全览 |
 | 64 | 默认视图 |
-| 512 / 4096 | 放大到字级 |
+| 512 / 4096 | 放大到词级 |
 
 **编辑接口（`services/editing.py`）**：句边界（另起一句/并入上下句/合并）、
 文字修改、撤销。句边界与文字修改用不同 `op_type` 分开记录——这是 §6.4 的要求，
@@ -1122,7 +1122,7 @@ min/max 桶，写入 `PKC1` 二进制缓存（键是媒体 sha256，不是文件
 
 - **波形不用 wavesurfer 解码路径**，只用 canvas 画后端给的桶；播放用原生
   `<audio>` + HTTP Range，拖动不重下整文件。
-- **字级选择是 token 点击/拖拽**，不是 DOM 选区。所有编辑都归约为 token 区间运算，
+- **词级选择是 token 点击/拖拽**，不是 DOM 选区。所有编辑都归约为 token 区间运算，
   contenteditable 的选区模型对不上（§7.3）。
 - **文字修改必须基于选区**：后端在 token 流里逐字定位 `original`，而标点存在
   `punc_after` 而非 token 文本里，所以整句文本（含标点）永远定位不到。
@@ -1265,7 +1265,7 @@ keep 是半开区间 `[orig_start, orig_end)`，当 `ms == keep.orig_end` 时原
 
 两种选区并存，且互相排斥：
 
-- **字级选区**（token 区间）：重划边界、改错字。
+- **词级选区**（token 区间）：重划边界、改错字、删词。
 - **整句选区**（`Set<ord>`）：整句并入上下句、多句批量删除。
 
 分开存而不是互相推导，是因为「选 5 句一起删」应该是点第一下和最后一下，
@@ -1277,8 +1277,8 @@ keep 是半开区间 `[orig_start, orig_end)`，当 `ms == keep.orig_end` 时原
 
 | 按钮 | 需要什么 | 为什么 |
 |---|---|---|
-| 另起一句 | 仅字级、且在一句内 | 整句已是独立一句，再切无意义 |
-| 并入上句/下句 | 字级在句内，或任意整句 | 整句时退化为合并 |
+| 另起一句 | 仅词级、且在一句内 | 整句已是独立一句，再切无意义 |
+| 并入上句/下句 | 词级在句内，或任意整句 | 整句时退化为合并 |
 | 合并选区 | 任意 | — |
 | 删除选中 | 任意 | 多句会合并成一个删除区间 |
 
