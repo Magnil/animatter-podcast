@@ -15,7 +15,7 @@ import {
   type Version,
 } from "./api";
 import { SentenceList, findActiveSentence, sentenceForSelection, type Selection } from "./SentenceList";
-import { Waveform, type Marker } from "./Waveform";
+import { Waveform, type EdgeHandle, type Marker } from "./Waveform";
 import { usePlayback } from "./usePlayback";
 import { formatDuration, formatTime } from "./format";
 
@@ -148,6 +148,23 @@ function Desk({
     [boot.sentences, activeOrd],
   );
 
+  // Only sentence-edge tokens are draggable. Interior tokens are not: moving one
+  // would leave the sentence's own bounds stale, and there is no sensible fix
+  // for that in a waveform drag.
+  const handles: EdgeHandle[] = useMemo(
+    () =>
+      boot.sentences.flatMap((sentence) => {
+        const first = boot.tokens[sentence.token_start];
+        const last = boot.tokens[sentence.token_end - 1];
+        if (!first || !last) return [];
+        return [
+          { tokenIndex: first.idx, edge: "start" as const, ms: first.start_ms, sentenceOrd: sentence.ord },
+          { tokenIndex: last.idx, edge: "end" as const, ms: last.end_ms, sentenceOrd: sentence.ord },
+        ];
+      }),
+    [boot.sentences, boot.tokens],
+  );
+
   const run = useCallback(
     async (label: string, action: () => Promise<void>) => {
       setBusy(true);
@@ -171,17 +188,34 @@ function Desk({
     [playback],
   );
 
+  // Locate by time, not by activeOrd. Between sentences (silence) activeOrd is
+  // -1, and an index of -1 made both directions land on the first sentence —
+  // which reads as "the bracket keys do nothing".
+  const sentenceAtOrBefore = useCallback(
+    (ms: number): number => {
+      const index = boot.sentences.findIndex((s) => ms < s.start_ms);
+      return index === -1 ? boot.sentences.length - 1 : Math.max(0, index - 1);
+    },
+    [boot.sentences],
+  );
+
   const playPrevious = useCallback(() => {
-    const index = boot.sentences.findIndex((s) => s.ord === activeOrd);
-    const target = boot.sentences[Math.max(0, index - 1)] ?? boot.sentences[0];
+    const current = sentenceAtOrBefore(playback.positionMs);
+    // Rewind within the current sentence first; only then step back a sentence.
+    const sentence = boot.sentences[current];
+    if (sentence && playback.positionMs - sentence.start_ms > 1200) {
+      playback.seek(sentence.start_ms);
+      return;
+    }
+    const target = boot.sentences[Math.max(0, current - 1)];
     if (target) playSentence(target);
-  }, [activeOrd, boot.sentences, playSentence]);
+  }, [boot.sentences, playSentence, playback, sentenceAtOrBefore]);
 
   const playNext = useCallback(() => {
-    const index = boot.sentences.findIndex((s) => s.ord === activeOrd);
-    const target = boot.sentences[Math.min(boot.sentences.length - 1, index + 1)];
+    const current = sentenceAtOrBefore(playback.positionMs);
+    const target = boot.sentences[Math.min(boot.sentences.length - 1, current + 1)];
     if (target) playSentence(target);
-  }, [activeOrd, boot.sentences, playSentence]);
+  }, [boot.sentences, playSentence, playback.positionMs, sentenceAtOrBefore]);
 
   const applyBoundary = useCallback(
     async (action: "new_sentence" | "merge" | "to_prev" | "to_next") => {
@@ -195,6 +229,17 @@ function Desk({
       });
     },
     [boot.version.id, onReload, onSelectionChange, run, selection],
+  );
+
+  const commitEdge = useCallback(
+    async (handle: EdgeHandle, newMs: number) => {
+      await run("调整边界", async () => {
+        const result = await api.adjustEdge(boot.version.id, handle.tokenIndex, handle.edge, newMs);
+        await onReload();
+        if (result.clamped && result.reason) setNotice(`已调整到 ${result.start_ms}–${result.end_ms}（${result.reason}）`);
+      });
+    },
+    [boot.version.id, onReload, run, setNotice],
   );
 
   const applyTextEdit = useCallback(
@@ -215,19 +260,36 @@ function Desk({
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       const target = event.target as HTMLElement | null;
+
+      // Never steal keys while typing.
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
+      // A focused button already handles Space/Enter as "click"; stealing it
+      // would fire both the button action and playback.
+      if (target && target.tagName === "BUTTON" && (event.code === "Space" || event.key === "Enter")) {
+        return;
+      }
+      // IME composition swallows bracket keys in Chinese input.
+      if (event.isComposing) return;
 
       if (event.code === "Space") {
         event.preventDefault();
-        if (playback.playing) playback.pause();
-        else if (activeOrd >= 0) {
-          const sentence = boot.sentences.find((s) => s.ord === activeOrd);
-          if (sentence) playSentence(sentence);
-        } else playback.play();
-      } else if (event.key === "[") {
+        if (playback.playing) {
+          playback.pause();
+          return;
+        }
+        const sentence = boot.sentences[sentenceAtOrBefore(playback.positionMs)];
+        if (sentence && playback.positionMs >= sentence.start_ms && playback.positionMs < sentence.end_ms - 50) {
+          // Resume inside the current sentence rather than restarting it.
+          playback.play();
+        } else if (sentence) {
+          playSentence(sentence);
+        } else {
+          playback.play();
+        }
+      } else if (event.key === "[" || event.code === "BracketLeft") {
         event.preventDefault();
         playPrevious();
-      } else if (event.key === "]") {
+      } else if (event.key === "]" || event.code === "BracketRight") {
         event.preventDefault();
         playNext();
       } else if (event.key === "Escape") {
@@ -236,7 +298,7 @@ function Desk({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [activeOrd, boot.sentences, onSelectionChange, playNext, playPrevious, playSentence, playback]);
+  }, [boot.sentences, onSelectionChange, playNext, playPrevious, playSentence, playback, sentenceAtOrBefore]);
 
   const selectionCount = selection
     ? Math.abs(selection.to - selection.from)
@@ -272,6 +334,8 @@ function Desk({
         durationMs={boot.version.duration_ms}
         positionMs={playback.positionMs}
         markers={markers}
+        handles={handles}
+        onEdgeCommit={(handle, ms) => void commitEdge(handle, ms)}
         onSeek={playback.seek}
       />
 

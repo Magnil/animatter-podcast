@@ -155,6 +155,21 @@ export const api = {
       },
     ),
 
+  /** Move one token edge. Only the addressed token changes timing. */
+  adjustEdge: (versionId: string, tokenIndex: number, edge: "start" | "end", newMs: number) =>
+    request<{
+      token_index: number;
+      edge: string;
+      start_ms: number;
+      end_ms: number;
+      clamped: boolean;
+      reason: string;
+      changed: boolean;
+    }>(`/api/versions/${versionId}/edge`, {
+      method: "POST",
+      body: JSON.stringify({ token_index: tokenIndex, edge, new_ms: newMs }),
+    }),
+
   undo: (versionId: string) =>
     request<{ undone: string; op_type: string }>(`/api/versions/${versionId}/undo`, {
       method: "POST",

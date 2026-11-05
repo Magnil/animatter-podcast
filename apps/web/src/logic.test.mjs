@@ -85,3 +85,44 @@ test("selection range maps to the API's half-open token bounds", () => {
   assert.equal(slice[0].idx, 52);
   assert.equal(slice[1].idx, 53);
 });
+
+// --- bracket navigation (regression: -1 index made both keys land on sentence 0)
+
+function sentenceAtOrBefore(sentences, ms) {
+  const index = sentences.findIndex((s) => ms < s.start_ms);
+  return index === -1 ? sentences.length - 1 : Math.max(0, index - 1);
+}
+
+const three = [
+  { ord: 0, start_ms: 0, end_ms: 3000 },
+  { ord: 1, start_ms: 4000, end_ms: 7000 },
+  { ord: 2, start_ms: 8000, end_ms: 12000 },
+];
+
+test("sentenceAtOrBefore finds the containing sentence", () => {
+  assert.equal(sentenceAtOrBefore(three, 1000), 0);
+  assert.equal(sentenceAtOrBefore(three, 5000), 1);
+});
+
+test("sentenceAtOrBefore during a gap returns the earlier sentence", () => {
+  // 3500 sits in the silence between sentence 0 and 1.
+  assert.equal(sentenceAtOrBefore(three, 3500), 0);
+});
+
+test("sentenceAtOrBefore before the first sentence clamps to 0", () => {
+  assert.equal(sentenceAtOrBefore(three, 0), 0);
+});
+
+test("sentenceAtOrBefore past the end clamps to the last", () => {
+  assert.equal(sentenceAtOrBefore(three, 99999), 2);
+});
+
+test("next from a gap advances to the following sentence", () => {
+  const current = sentenceAtOrBefore(three, 3500);
+  assert.equal(three[Math.min(three.length - 1, current + 1)].ord, 1);
+});
+
+test("previous from a gap goes back one sentence", () => {
+  const current = sentenceAtOrBefore(three, 3500);
+  assert.equal(three[Math.max(0, current - 1)].ord, 0);
+});

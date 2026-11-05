@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -107,10 +108,17 @@ def audio_stream(
     request: Request,
     session: Session = Depends(_session_dependency),
 ) -> Response:
-    """Serve the original audio for playback.
+    """Serve the original audio for playback with real byte-range support.
 
-    Range requests matter: the browser seeks constantly while reviewing, and
-    without ``Accept-Ranges`` every seek re-downloads the whole file.
+    Three things that are easy to get subtly wrong here:
+
+    * The MIME type must match the actual container. Sending ``audio/mpeg`` for a
+      WAV makes the browser refuse to play, and the keyboard shortcuts then look
+      dead even though they fire correctly.
+    * ``Response`` does not implement ranges by itself. Declaring
+      ``Accept-Ranges`` without handling ``Range`` means every seek re-downloads
+      the whole file — untenable for a two-hour episode.
+    * ``read_bytes()`` loads the whole file into memory per request.
     """
     media = session.get(Media, media_id)
     if media is None:
@@ -125,15 +133,52 @@ def audio_stream(
             status=404,
         )
 
-    return Response(
-        content=path.read_bytes(),
-        media_type="audio/mpeg",
-        headers={
-            "Accept-Ranges": "bytes",
-            "Cache-Control": "private, max-age=3600",
-            "Content-Disposition": f'inline; filename="{path.name}"',
-        },
+    return FileResponse(
+        path,
+        media_type=mime_for(media.codec, path.suffix),
+        filename=path.name,
+        content_disposition_type="inline",
+        headers={"Cache-Control": "private, max-age=3600"},
     )
+
+
+_MIME_BY_CODEC: dict[str, str] = {
+    "mp3": "audio/mpeg",
+    "pcm_s16le": "audio/wav",
+    "pcm_s24le": "audio/wav",
+    "pcm_f32le": "audio/wav",
+    "aac": "audio/aac",
+    "flac": "audio/flac",
+    "opus": "audio/ogg",
+    "vorbis": "audio/ogg",
+}
+
+_MIME_BY_SUFFIX: dict[str, str] = {
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".flac": "audio/flac",
+    ".ogg": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".wma": "audio/x-ms-wma",
+    ".mp4": "video/mp4",
+    ".mov": "video/quicktime",
+    ".mkv": "video/x-matroska",
+}
+
+
+def mime_for(codec: str, suffix: str) -> str:
+    """Pick a media type the browser will actually play.
+
+    The codec column holds what ffprobe observed, so it wins over the extension:
+    an episode re-encoded to mp3 but still named ``.wav`` must not be served as
+    WAV.
+    """
+    by_codec = _MIME_BY_CODEC.get(codec.lower())
+    if by_codec is not None:
+        return by_codec
+    return _MIME_BY_SUFFIX.get(suffix.lower(), "application/octet-stream")
 
 
 @router.post("/versions/{version_id}/boundaries", response_model=BoundaryOut)
@@ -201,3 +246,25 @@ def _view(tokens: list, span: object) -> dict[str, object]:  # type: ignore[type
         "end_ms": slice_[-1].end_ms if slice_ else 0,
         "text": "".join(t.text + t.punc_after for t in slice_),
     }
+
+
+class EdgeIn(BaseModel):
+    token_index: int
+    edge: str  # 'start' | 'end'
+    new_ms: int
+
+
+@router.post("/versions/{version_id}/edge")
+def adjust_edge(
+    version_id: str,
+    payload: EdgeIn,
+    session: Session = Depends(_session_dependency),
+) -> dict[str, object]:
+    """Move one token edge. Only the addressed token changes timing."""
+    return edit_service.adjust_boundary_edge(
+        session,
+        version_id,
+        token_index=payload.token_index,
+        edge=payload.edge,
+        new_ms=payload.new_ms,
+    )

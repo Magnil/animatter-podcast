@@ -281,3 +281,9 @@ button.ghost:hover:not(:disabled) {
   color: var(--muted);
   font-size: 0.85rem;
 }
+
+.waveform-hint {
+  margin: 4px 2px 0;
+  font-size: 0.76rem;
+  color: var(--muted);
+}

@@ -16,7 +16,13 @@ import json
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from animatter.core.realign import RealignError, TokenRange, apply_replacement, locate_sentence
+from animatter.core.realign import (
+    RealignError,
+    TokenRange,
+    adjust_token_edge,
+    apply_replacement,
+    locate_sentence,
+)
 from animatter.core.sentence import (
     InvalidBoundaryError,
     SentenceSpan,
@@ -390,3 +396,83 @@ def undo_last(session: Session, version_id: str) -> dict[str, object]:
     session.flush()
     log.info("edit.undo", op_id=op.id, action=payload.get("action"))
     return {"undone": op.id, "op_type": op.op_type}
+
+
+# --- boundary dragging --------------------------------------------------
+
+
+def adjust_boundary_edge(
+    session: Session,
+    version_id: str,
+    *,
+    token_index: int,
+    edge: str,
+    new_ms: int,
+) -> dict[str, object]:
+    """Move one token edge — the waveform drag operation.
+
+    Semantics the UI relies on:
+
+    * Dragging the **first** token's start moves the sentence's start.
+    * Dragging the **last** token's end moves the sentence's end.
+    * Dragging anything in between only changes that one token.
+
+    In all cases every *other* token keeps its exact timing, so correcting a
+    sloppy ASR boundary does not silently shift the words inside the sentence.
+    """
+    version = _version_or_raise(session, version_id)
+    tokens = transcribe_service.load_tokens(session, version_id)
+
+    previous = tokens[token_index] if 0 <= token_index < len(tokens) else None
+    if previous is None:
+        raise EditError("token_not_found", f"token {token_index} 不存在", "刷新转录后重试。")
+
+    try:
+        updated, outcome = adjust_token_edge(tokens, token_index, edge, new_ms)
+    except RealignError as exc:
+        raise EditError("edge_adjust_failed", str(exc)) from exc
+
+    if updated == previous:
+        return {
+            "token_index": token_index,
+            "edge": edge,
+            "start_ms": previous.start_ms,
+            "end_ms": previous.end_ms,
+            "clamped": outcome.clamped,
+            "reason": outcome.reason,
+            "changed": False,
+        }
+
+    row = session.scalars(
+        select(Token).where(Token.version_id == version.id, Token.idx == token_index)
+    ).first()
+    if row is None:
+        raise EditError("token_not_found", f"token {token_index} 不存在")
+
+    row.start_ms = updated.start_ms
+    row.end_ms = updated.end_ms
+    row.derived = False  # a human moved it; it is no longer interpolated
+
+    _record(
+        session,
+        version,
+        op_type="boundary_time",
+        payload={
+            "token_index": token_index,
+            "edge": edge,
+            "before": [previous.start_ms, previous.end_ms],
+            "after": [updated.start_ms, updated.end_ms],
+        },
+    )
+    session.flush()
+    log.info("edit.edge", token=token_index, edge=edge, to=new_ms, clamped=outcome.clamped)
+
+    return {
+        "token_index": token_index,
+        "edge": edge,
+        "start_ms": updated.start_ms,
+        "end_ms": updated.end_ms,
+        "clamped": outcome.clamped,
+        "reason": outcome.reason,
+        "changed": True,
+    }

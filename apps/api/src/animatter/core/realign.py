@@ -227,3 +227,65 @@ def shift_ranges_after(
         else:
             adjusted.append((start + delta, end + delta))
     return adjusted
+
+
+#: A boundary drag must leave the token audible; zero-length tokens break every
+#: downstream consumer (subtitle timing, cut points).
+MIN_TOKEN_MS = 10
+
+
+@dataclass(frozen=True, slots=True)
+class EdgeAdjustment:
+    """Outcome of moving one token edge."""
+
+    applied_ms: int
+    clamped: bool
+    reason: str = ""
+
+
+def clamp_edge(new_ms: int, low: int, high: int) -> EdgeAdjustment:
+    """Clamp a dragged boundary into ``[low, high]``.
+
+    ``low``/``high`` come from the adjacent tokens, so a drag can never cause an
+    overlap or reorder the stream — it can only consume silence between words.
+    """
+    if high < low:
+        low, high = high, low
+    if new_ms < low:
+        return EdgeAdjustment(applied_ms=low, clamped=True, reason=f"不能早于 {low}ms（会与相邻字重叠）")
+    if new_ms > high:
+        return EdgeAdjustment(applied_ms=high, clamped=True, reason=f"不能晚于 {high}ms（会与相邻字重叠）")
+    return EdgeAdjustment(applied_ms=new_ms, clamped=False)
+
+
+def adjust_token_edge(
+    tokens: list[TokenSpan], index: int, edge: str, new_ms: int
+) -> tuple[TokenSpan, EdgeAdjustment]:
+    """Move one token's ``start`` or ``end`` to ``new_ms``, clamped to neighbours.
+
+    Only the addressed token changes. Every other token keeps its exact timing,
+    which is the whole point: a fix to a sentence boundary must not nudge the
+    words inside it.
+    """
+    if edge not in {"start", "end"}:
+        raise RealignError(f"未知的边界方向 {edge!r}")
+    if not 0 <= index < len(tokens):
+        raise RealignError(f"token {index} 超出范围")
+
+    token = tokens[index]
+
+    if edge == "start":
+        # Cannot start before the previous token ends, nor swallow this token.
+        low = tokens[index - 1].end_ms if index > 0 else 0
+        high = token.end_ms - MIN_TOKEN_MS
+        outcome = clamp_edge(new_ms, low, high)
+        if outcome.applied_ms == token.start_ms:
+            return token, outcome
+        return replace(token, start_ms=outcome.applied_ms), outcome
+
+    low = token.start_ms + MIN_TOKEN_MS
+    high = tokens[index + 1].start_ms if index + 1 < len(tokens) else max(low, token.end_ms)
+    outcome = clamp_edge(new_ms, low, high)
+    if outcome.applied_ms == token.end_ms:
+        return token, outcome
+    return replace(token, end_ms=outcome.applied_ms), outcome
