@@ -266,3 +266,41 @@ class Job(Base):
     started_at: Mapped[str | None] = mapped_column(String(32), nullable=True)
     finished_at: Mapped[str | None] = mapped_column(String(32), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class CorrectionCandidate(Base):
+    """Model-proposed text repair awaiting human review (AGENT.md §6.5).
+
+    Nothing is rewritten automatically: a candidate records what the model thinks
+    is wrong, what it proposes, and which hotword justifies the change. Only
+    candidates tied to a known term are surfaced, which is what keeps
+    hallucinated edits out of the review queue.
+    """
+
+    __tablename__ = "correction_candidate"
+    __table_args__ = (Index("ix_correction_version_status", "version_id", "status"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    version_id: Mapped[str] = mapped_column(
+        ForeignKey("transcript_version.id", ondelete="CASCADE"), index=True
+    )
+    sentence_ord: Mapped[int] = mapped_column(Integer, index=True)
+
+    #: Token range this candidate may rewrite: [token_start, token_end)
+    token_start: Mapped[int] = mapped_column(Integer)
+    token_end: Mapped[int] = mapped_column(Integer)
+
+    original_text: Mapped[str] = mapped_column(Text)
+    proposed_text: Mapped[str] = mapped_column(Text)
+    matched_hotword: Mapped[str] = mapped_column(String(64), default="")
+
+    #: 0..1 from the model; used for ordering only, never for auto-accept.
+    confidence: Mapped[float] = mapped_column(default=0.0)
+    reason: Mapped[str] = mapped_column(Text, default="")
+
+    #: pending | accepted | rejected | stale
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    source: Mapped[str] = mapped_column(String(16), default="llm")
+
+    created_at: Mapped[str] = mapped_column(String(32))
+    resolved_at: Mapped[str | None] = mapped_column(String(32), nullable=True)

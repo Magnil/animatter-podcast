@@ -2,7 +2,7 @@
 
 > 本文件是本仓库的**设计基线 + Agent 工作约定**。
 > 任何实现、重构、依赖引入都必须先与本文件一致；需要偏离时，先改本文件再改代码，并在"决策记录"里留痕。
-> 当前状态：**v0.3 — M0、M1 已落地**。转写闭环已用真实 API 跑通（上传→识别→下载→归一化→入库），下一步 M2 热词与大纲抽词。
+> 当前状态：**v0.4 — M0/M1/M2a/M2b 已落地**。转写闭环 + 热词库 + 大纲抽词 + LLM 校对，均用真实 API 验证。下一步 M2c 影子测试，然后 M3 校正台 UI。
 
 ---
 
@@ -781,7 +781,9 @@ POST   /api/projects/{id}/export                       导出（kind 参数）
 |---|---|---|
 | **M0 ✅** | 骨架：repo 结构、配置、SQLite 迁移、ffmpeg 自检、健康检查、项目 CRUD | ✅ 见下方「M0 交付清单」 |
 | **M1 ✅** | 转写闭环：上传→识别→下载→归一化→入库 | ✅ 见下方「M1 交付清单」 |
-| M2 | 热词：全局词库、预编译同步、当期热词、大纲生成 | 加热词前后对比测试通过 |
+| **M2a ✅** | 热词库：全局/当期词库、词条规范化、大纲抽词 | ✅ 真实 LLM 抽出 11 条高质量候选 |
+| **M2b ✅** | LLM 校对：候选生成 + 区间内重排 + 校对台接口 | ✅ 真实 LLM 精确命中植入错写，零误报 |
+| M2c | 影子测试（采样 A/B）+ 权重推荐 | 待做 |
 | M3 | 校正台 UI：波形 + 句列表 + 字级选择 + 重划边界 | 手工校对 2 分钟音频，无卡顿、无数据错乱 |
 | M4 | 剪辑：删除集、EDL、渲染、时间轴重映射 | 成片时长与字幕时长一致，无爆音 |
 | M5 | 字幕导出 + 文稿生成 + 导出 | SRT 播放器验证；DOCX 可读 |
@@ -1013,3 +1015,40 @@ samples/speech.wav  17.6s 中文测试音频（SAPI 合成）
 - 定制热词 HTTP API（创建/更新/删除词表）：<https://help.aliyun.com/zh/model-studio/vocabulary-http-api>
 - 上传本地文件获取临时 URL（getPolicy / 1GB / 48h / header）：<https://help.aliyun.com/zh/model-studio/get-temporary-file-url>
 - 语音识别模型总览（时长、格式、语言）：<https://help.aliyun.com/zh/model-studio/asr-model>
+
+### M2a / M2b 交付清单（2026-11-05）
+
+```
+apps/api/src/animatter/
+  core/hotwords.py     词条规范化：长度/停用词/通用词降权/去重/截断 + 词表合并
+  core/realign.py      区间内重排：改写文本但**不动时间边界** + 单调性断言
+  providers/llm/bailian.py  兼容模式 chat + JSON 解析（容忍 ``` 围栏）
+  services/hotwords.py  全局词库 ↔ 预编译词表（hash + dirty + 冷却）/ 当期词库
+  services/outline.py   大纲 → 热词候选（提示词 + 后处理 + evidence）
+  services/proofread.py 校对候选生成：三重护栏（见下）
+  services/corrections.py 应用/拒绝候选 + 句子区间重建 + edit_op
+  routers/hotwords.py, routers/proofread.py
+alembic/versions/2007637db423_correction_candidates.py
+```
+
+**M2b 的三重护栏**（防止模型幻觉污染字幕）：
+
+1. **必须有热词依据**：`matched_hotword` 不在词表里的候选，直接丢弃。这条把
+   「润色型建议」和「臆造修改」全部挡在队列外。
+2. **原文必须逐字定位**：`original` 在该句 token 流里找不到就拒绝。
+   模糊匹配会改错位置，所以宁可不做。
+3. **不改动时间轴**：`apply_replacement` 只允许区间内重排，区间首尾毫秒不变；
+   跨边界、空替换、时间倒挂一律抛错。
+
+**真实 LLM 验证**：植入一处同音错写「剧集标签」（正确应为「句级标签」），
+模型输出**恰好一条**候选、置信度 0.95、零误报，消耗 454 prompt token。
+
+**M2b 修掉的真实缺陷**：
+
+- `shift_ranges_after` 在「编辑点正好落在句子起点」时会把整句平移，
+  导致编辑点从所有句子区间里漏掉（违反 INV-1）。改为只有句尾移动。
+- 兼容模式端点路径写错（`/api/v1/compatible-mode/...` → 404），
+  正确是域名根下的 `/compatible-mode/v1`。
+- 测试数据 `sizes=[4,4]` 与 7 字文本不匹配，暴露了区间校验缺失。
+
+**验证**：242 个单测通过（新增 60 个），3 个 live 测试（转写/抽词/校对）全过。
