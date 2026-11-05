@@ -29,6 +29,8 @@ Node 22+ 自带全局 `WebSocket`，所以没有额外依赖。
 | `check-waveform-zoom.mjs` | 滚轮 4 格后滑块变窄、读数变小；拖滑块 `aria-valuenow` 变化；点「全部」回到 100%；设置里出现「热词与校对」 |
 | `check-new-project-hotwords.mjs` | 勾选「转写时启用热词」才出现编辑器；输入的词进入本期草稿；全局页能看到共享词库 |
 | `check-hotword-panel.mjs` | 加第二个本期热词后第一个还在（防「追加被当成替换」）；删掉后恢复原状 |
+| `check-cleanup-dialog.mjs` | 清理对话框：三类计数与「本次会删 N 处」一致、逐条列出、全部取消后执行按钮禁用 |
+| `check-cleanup-settings.mjs` | 设置 → 一键清理：61 行词表已载入、改阈值保存后从服务端读回、再复原 |
 
 ## 非浏览器验证
 

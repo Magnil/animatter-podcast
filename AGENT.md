@@ -1726,3 +1726,109 @@ params.vocabulary: {"漫物质": 3, "马小褂": 3}
     删掉临时词 → 恢复原状（这条专门盯住上面那个"追加变成替换"的缺陷）。
 - 数据库里留了一个可复现的项目：「热词验证 · 马小褂/漫物质」，
   75s 真音频、167 词、10 句，热词生效后「漫物质」「马小褂」都正确。
+
+## 一键清理（2026-11-06）
+
+参考 Rescript 的 [One-click cleanup](https://www.getrescript.com/remove-filler-words)，
+按它的四条真实教训落地，但把「一点就走」改成「先给清单再执行」。
+
+### 为什么拆成三类，而不是一个大按钮
+
+Rescript 的清理实际是两条独立管线（填充词 + 静音），他们漏了第三条，而第三条
+对中文播客是最关键的：**识别会把整个「嗯」吃掉**。Whisper 这样，百炼也这样。
+音频里是一段语音，稿子里一个字都没有——纯文本匹配永远找不到它。
+
+所以是本模块的三类：
+
+| 类别 | 依据 | 为什么必须独立 |
+|---|---|---|
+| 口癖词 `filler` | token 文本对词表 | 用户可能只想删这个，不动静音 |
+| 未转写语流 `disfluency` | **语音 − token 覆盖** | 稿子里根本没有这个字，只能从音频摸 |
+| 静音 `silence` | 检测器的静音区间 | 有独立的阈值和 padding，语义不同 |
+
+关键实现：**语音 = 静音清单的补集**。不需要引入 VAD，因为我们已经有
+`ffmpeg silencedetect`；它的补集就是语音。再减去 token 覆盖，剩下的就是
+「有声但没字」的片段。零新依赖。
+
+### 四条从 Rescript 源码学到的规则
+
+1. **不跨词合并切割**（他们 PR #115 "Keep short words between removed silences"
+   修的就是这个）。两个 0.4s 静音之间夹一个 60ms 的「对」，朴素合并会把它一起切掉。
+   我们更危险：`core/edl.py` 的 `_drop_slivers` 会丢掉 <80ms 的保留岛，
+   于是那个「对」从渲染里消失、却还在稿子上显示——用户看不见自己丢了什么。
+   规则写在 `_merge_silence_cuts` 里，`test_short_word_between_two_silences_survives`
+   专门盯住它。
+2. **默认词表刻意保守**。Rescript 明确不收 like / so / right；我们同理不收
+   「就是说」「然后呢」「那个」——它们大多数时候是正常用词。`FORBIDDEN_DEFAULTS`
+   是**测试里**的断言，不是注释里的劝告。
+3. **两侧留 pad**，防止削掉音素；但**媒体首尾切齐**，否则文件开头结尾会留一段空白。
+4. **相邻口癖合并成一次切割**。三个「嗯」是 1 处不是 3 处——用户数的是切割次数。
+
+### 决策：先给清单，再执行
+
+Rescript 是一点就走，我们**计划与执行分离**：
+
+```
+GET  /versions/{id}/cleanup/plan          → 只读，返回三类清单 + 计数 + 时长
+POST /versions/{id}/cleanup {kinds:[...]} → 才真的写 deletion
+POST /versions/{id}/cleanup/restore?source=filler|batch=cln_xxx
+GET  /versions/{id}/cleanup/counts        → 菜单里「还原口癖词（12）」的数字
+```
+
+对话框里每个类别都是可勾选的，显示「3 处 · 840 毫秒」；下面列出**具体切在哪**
+（时间、类别、文本、第几句），并可以调阈值重算。`执行清理` 按钮上就写着会删几处。
+
+### 决策：一次清理 = 一条撤销记录
+
+400 条 deletion 不能变成 400 条历史。`deletion.batch_id`（迁移 `4e18c2a9f7b1`）
++ `edit_op.op_type="cleanup"` 的 payload 里存整批 id：
+
+- `undo_op` 现在认两种：`boundary`（恢复快照）和 `cleanup`（把这一批翻回去）；
+- 历史面板显示一行「一键清理 / 口癖词 3 · 未转写语流 1」，`undoable: true`；
+- 另有按类别的还原入口（`restore?source=`），因为连续清理三次之后，
+  用户想要的是「把口癖都还回来」，不是按时间顺序撤销三次。
+
+### 决策：改设置不追溯已应用的切割
+
+这条写进了测试（`test_changing_the_threshold_does_not_alter_applied_cuts`、
+`test_removing_a_word_from_the_filler_list_does_not_restore_it`）。
+理由很直接：如果阈值联动，用户把 0.3s 改成 0.5s、点保存，就等于**在没有提示的情况下
+又删了一轮音频**。设置只喂下一次计划，已应用的切割是历史事实。
+
+### 静音清单缓存（`media/silences.py`）
+
+清理需要**全片**静音清单，而 `build_edl` 每次编辑都会重算——3 小时节目会卡死。
+所以照抄 `media/peaks.py` 的形状：`{media_sha}.v1-{noise}db-{min}s.json`，
+key 里带**检测器参数**（改阈值必须换 key，否则用户调了滑块却看不到变化）。
+真实数据：75 秒音频首次检测 0.22s，命中缓存后 0.012s。
+
+顺带把**检测器参数**和**切割阈值**分开了：
+`silence_noise_db` / `silence_min_duration_ms` 决定「哪里算静音」，
+`cleanup_min_silence_ms` 决定「多长才值得切」。两者混用会让「吸附切点」
+跟着清理阈值一起变，是个隐蔽的耦合。
+
+### 修掉的两个真 bug
+
+1. **设置对话框每渲染一次就重新拉一次 `/api/settings`**。`refreshHotwords` 是
+   `useCallback`，但它的依赖链走到一个父组件内联构造的 prop，identity 每次都变；
+   把它放进 effect 依赖里，effect 就跟着重跑。后果极其阴险：
+   **用户输入几百毫秒后，输入框被服务端的旧值覆盖**——看起来像「设置保存不上」。
+   修法是把最新回调放进 `useRef`，effect 只依赖 `open`。这个 bug 在加口癖词表
+   （一个长 textarea）之前一直没被发现，因为短输入通常来不及被冲掉。
+2. **迁移不是幂等的**：`4e18c2a9f7b1` 第一次写没有 `PRAGMA table_info` 前置检查，
+   `test_running_the_migration_twice_does_not_duplicate_tokens` 立刻炸在
+   `duplicate column name: batch_id`。加 `_has_column` 守卫后通过——这条测试
+   模拟的正是「部署失败后重放」，是真实场景。
+
+### 验证
+
+- 后端 **528 用例**（新增：`test_fillers.py` 25、`test_cleanup_core.py` 32、
+  `test_cleanup_service.py` 27、`test_cleanup_settings.py` 12、迁移幂等 1），
+  `mypy --strict` 64 文件、`ruff` 干净。
+- 前端 77 用例、`tsc --noEmit`、`vite build` 干净。
+- 真机 CDP：`check-cleanup-dialog.mjs`（三类计数与「本次会删 14 处」一致、
+  全部取消后按钮禁用）、`check-cleanup-settings.mjs`（61 行词表、
+  改阈值 → 保存 → 从服务端读回 450 → 复原）。
+- **真实音频端到端**：75 秒样本，计划 14 处（口癖 3 · 未转写 1 · 静音 10），
+  执行后 `removed_ms=4916`，`render?preview=true` 5.7s 出片 67.95 秒，
+  一次 undo 回到 `removed=0 / segments=1`。

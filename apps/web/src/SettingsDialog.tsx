@@ -19,7 +19,7 @@ import { api, type AppSettings, type HotwordItem } from "./api";
 import { HotwordEditor, type HotwordTab } from "./HotwordEditor";
 
 /** Which section the menu item asked for; scrolled into view on open. */
-export type SettingsSection = "models" | "hotwords" | "editing" | "export";
+export type SettingsSection = "models" | "hotwords" | "cleanup" | "editing" | "export";
 
 interface Props {
   open: boolean;
@@ -91,6 +91,17 @@ export function SettingsDialog({
     onHotwordsChanged?.();
   }, [mediaId, onHotwordsChanged, projectId]);
 
+  // Load once per open, and **only** on open.
+  //
+  // `refreshHotwords` is a useCallback, but its dependency list reaches a prop
+  // the parent builds inline, so its identity changes on every parent render.
+  // Depending on it here made the effect re-run constantly and refetch
+  // /api/settings each time — which silently overwrote whatever the user was
+  // typing, a few hundred milliseconds after they typed it. Keeping the latest
+  // callback in a ref lets the effect call it without being re-triggered by it.
+  const refreshHotwordsRef = useRef(refreshHotwords);
+  refreshHotwordsRef.current = refreshHotwords;
+
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
@@ -105,13 +116,13 @@ export function SettingsDialog({
       .catch((caught: unknown) => {
         if (!cancelled) setError(caught instanceof Error ? caught.message : String(caught));
       });
-    void refreshHotwords().catch((caught: unknown) => {
+    void refreshHotwordsRef.current().catch((caught: unknown) => {
       if (!cancelled) setError(caught instanceof Error ? caught.message : String(caught));
     });
     return () => {
       cancelled = true;
     };
-  }, [open, refreshHotwords]);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -265,6 +276,115 @@ export function SettingsDialog({
                   ? "本期热词只对这一期生效；全局热词每期都会带上。"
                   : "还没有打开项目，只能编辑全局热词。"}
               </p>
+            </section>
+
+            <section
+              className="settings-cleanup"
+              ref={(node) => { sectionRefs.current.cleanup = node; }}
+            >
+              <h3>一键清理</h3>
+              <p className="section-note">
+                清理是把音频真的剪掉，不是只改文字。改这里只影响<strong>下一次</strong>清理，
+                已经剪过的内容不会被追溯改动。
+              </p>
+
+              <label className="field">
+                <span>
+                  口癖词表
+                  <em className="hint">每行一个，也可用逗号分隔；大小写与首尾标点不敏感</em>
+                </span>
+                <textarea
+                  rows={10}
+                  value={settings.cleanup_fillers}
+                  onChange={(event) => patch("cleanup_fillers", event.target.value)}
+                  spellCheck={false}
+                />
+              </label>
+              <p className="section-note">
+                只放「没有词义的音」（嗯、呃、唔、um…）。「就是说」「然后呢」这类
+                大多数时候是正常用词，默认不收——需要时自己加，误删比漏删贵得多。
+              </p>
+
+              <label className="field">
+                <span>
+                  静音判定
+                  <em className="hint">词之间超过这个长度才算死气，进清单</em>
+                </span>
+                <input
+                  type="number"
+                  min={100}
+                  max={3000}
+                  step={50}
+                  value={settings.cleanup_min_silence_ms}
+                  onChange={(event) => patch("cleanup_min_silence_ms", Number(event.target.value))}
+                />
+              </label>
+              <label className="field">
+                <span>
+                  切点保护
+                  <em className="hint">贴着词的两侧各留一点，防止削掉音素</em>
+                </span>
+                <input
+                  type="number"
+                  min={0}
+                  max={300}
+                  step={10}
+                  value={settings.cleanup_silence_pad_ms}
+                  onChange={(event) => patch("cleanup_silence_pad_ms", Number(event.target.value))}
+                />
+              </label>
+              <label className="field">
+                <span>
+                  未转写语流最短长度
+                  <em className="hint">音频里是语音、稿子里没有字；太短的可能是时间戳抖动</em>
+                </span>
+                <input
+                  type="number"
+                  min={100}
+                  max={3000}
+                  step={50}
+                  value={settings.cleanup_min_disfluency_ms}
+                  onChange={(event) =>
+                    patch("cleanup_min_disfluency_ms", Number(event.target.value))
+                  }
+                />
+              </label>
+
+              <h4 className="settings-subhead">静音检测器</h4>
+              <p className="section-note">
+                这两个值同时决定「哪里算静音」和「切点吸附到哪个静音谷」。改完要重新检测，
+                旧缓存按参数分开存放，不会串。
+              </p>
+              <label className="field">
+                <span>
+                  噪声阈值 (dBFS)
+                  <em className="hint">比这个更安静才算静音；房间吵就调高（-35 → -30）</em>
+                </span>
+                <input
+                  type="number"
+                  min={-80}
+                  max={-10}
+                  step={1}
+                  value={settings.silence_noise_db}
+                  onChange={(event) => patch("silence_noise_db", Number(event.target.value))}
+                />
+              </label>
+              <label className="field">
+                <span>
+                  最短静音时长
+                  <em className="hint">检测器本身的门限，通常和上面的「静音判定」一致</em>
+                </span>
+                <input
+                  type="number"
+                  min={100}
+                  max={3000}
+                  step={50}
+                  value={settings.silence_min_duration_ms}
+                  onChange={(event) =>
+                    patch("silence_min_duration_ms", Number(event.target.value))
+                  }
+                />
+              </label>
             </section>
 
             <section ref={(node) => { sectionRefs.current.editing = node; }}>

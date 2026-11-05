@@ -19,6 +19,7 @@ import {
 import { HistoryPanel } from "./HistoryPanel";
 import { NewProjectDialog } from "./NewProjectDialog";
 import { SubtitlePanel } from "./SubtitlePanel";
+import { CleanupDialog } from "./CleanupDialog";
 import { HotwordPanel } from "./HotwordPanel";
 import { MenuBar, type Menu } from "./MenuBar";
 import { SentenceList, findActiveSentence, tokenRangeOfSentences, type TokenSelection } from "./SentenceList";
@@ -203,10 +204,27 @@ function Desk({
   const [loadOpen, setLoadOpen] = useState(false);
   const [loadPath, setLoadPath] = useState("");
   const [showSubtitles, setShowSubtitles] = useState(false);
+  const [cleanupOpen, setCleanupOpen] = useState(false);
   const [episodeHotwords, setEpisodeHotwords] = useState<HotwordItem[]>([]);
   const [globalHotwords, setGlobalHotwords] = useState<HotwordItem[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [speakers, setSpeakers] = useState<SpeakerInfo[]>([]);
+  // How many cleanups of each kind are in effect, for the 清理 menu labels.
+  const [cleanupCounts, setCleanupCounts] = useState<Record<string, number>>({});
+
+  const reloadCleanupCounts = useCallback(async () => {
+    try {
+      const result = await api.cleanupCounts(boot.version.id);
+      setCleanupCounts(result.counts);
+    } catch {
+      // Decorative: a failed count must not block editing.
+      setCleanupCounts({});
+    }
+  }, [boot.version.id]);
+
+  useEffect(() => {
+    void reloadCleanupCounts();
+  }, [reloadCleanupCounts]);
 
   const reloadSpeakers = useCallback(async () => {
     try {
@@ -555,6 +573,55 @@ function Desk({
         ],
       },
       {
+        id: "cleanup",
+        label: "清理",
+        items: [
+          {
+            id: "one-click",
+            label: "一键清理…",
+            hint: "口癖 / 静音 / 漏字",
+            onSelect: () => setCleanupOpen(true),
+          },
+          "separator",
+          {
+            id: "restore-filler",
+            label: `还原口癖词${cleanupCounts.filler ? `（${cleanupCounts.filler}）` : ""}`,
+            disabled: !cleanupCounts.filler,
+            onSelect: () =>
+              void run("还原口癖词", async () => {
+                const result = await api.restoreCleanup(boot.version.id, { source: "filler" });
+                setNotice(`已还原 ${result.restored} 处口癖词`);
+                await onReload();
+                await reloadCleanupCounts();
+              }),
+          },
+          {
+            id: "restore-silence",
+            label: `还原静音${cleanupCounts.silence ? `（${cleanupCounts.silence}）` : ""}`,
+            disabled: !cleanupCounts.silence,
+            onSelect: () =>
+              void run("还原静音", async () => {
+                const result = await api.restoreCleanup(boot.version.id, { source: "silence" });
+                setNotice(`已还原 ${result.restored} 处静音`);
+                await onReload();
+                await reloadCleanupCounts();
+              }),
+          },
+          {
+            id: "restore-disfluency",
+            label: `还原未转写语流${cleanupCounts.disfluency ? `（${cleanupCounts.disfluency}）` : ""}`,
+            disabled: !cleanupCounts.disfluency,
+            onSelect: () =>
+              void run("还原未转写语流", async () => {
+                const result = await api.restoreCleanup(boot.version.id, { source: "disfluency" });
+                setNotice(`已还原 ${result.restored} 处未转写语流`);
+                await onReload();
+                await reloadCleanupCounts();
+              }),
+          },
+        ],
+      },
+      {
         id: "settings",
         label: "设置",
         items: [
@@ -571,6 +638,14 @@ function Desk({
             label: "热词与校对…",
             onSelect: () => {
               setSettingsSection("hotwords");
+              setSettingsOpen(true);
+            },
+          },
+          {
+            id: "cleanup-settings",
+            label: "一键清理设置…",
+            onSelect: () => {
+              setSettingsSection("cleanup");
               setSettingsOpen(true);
             },
           },
@@ -642,7 +717,18 @@ function Desk({
         ],
       },
     ],
-    [boot.version.id, edl, onReload, renderExport, run, setSettingsOpen, setSettingsSection, settings],
+    [
+      boot.version.id,
+      cleanupCounts,
+      edl,
+      onReload,
+      reloadCleanupCounts,
+      renderExport,
+      run,
+      setSettingsOpen,
+      setSettingsSection,
+      settings,
+    ],
   );
 
   /**
@@ -896,6 +982,17 @@ function Desk({
           ) : null}
         </section>
       </div>
+
+      <CleanupDialog
+        open={cleanupOpen}
+        versionId={boot.version.id}
+        onClose={() => setCleanupOpen(false)}
+        onNotice={setNotice}
+        onApplied={async () => {
+          await onReload();
+          await reloadCleanupCounts();
+        }}
+      />
 
       <SettingsDialog
         open={settingsOpen}

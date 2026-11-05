@@ -191,6 +191,9 @@ class Deletion(Base):
     token_ids_json: Mapped[str] = mapped_column(Text, default="[]")
     created_at: Mapped[str] = mapped_column(String(32))
     removed: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: One-click cleanup writes many rows in one transaction; the batch id is
+    #: what makes "undo that cleanup" a single operation instead of 400.
+    batch_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
 
 
 class Render(Base):

@@ -462,6 +462,14 @@ _OP_LABELS: dict[str, str] = {
     "text": "修改文字",
     "boundary_time": "拖动边界时间",
     "retoken_text": "应用校对修正",
+    "cleanup": "一键清理",
+}
+
+#: Human-facing names for the cleanup categories, shared with the dialog.
+_CLEANUP_KINDS: dict[str, str] = {
+    "filler": "口癖词",
+    "disfluency": "未转写语流",
+    "silence": "静音",
 }
 
 _BOUNDARY_ACTIONS: dict[str, str] = {
@@ -490,6 +498,15 @@ def describe_op(op: EditOp) -> dict[str, object]:
         before = payload.get("before") or [0, 0]
         after = payload.get("after") or [0, 0]
         detail = f"第 {payload.get('token_index', '?')} 字 {before} → {after}"
+    elif op.op_type == "cleanup":
+        counts = payload.get("counts")
+        rendered = counts if isinstance(counts, dict) else {}
+        parts = [
+            f"{_CLEANUP_KINDS.get(str(kind), str(kind))} {count}"
+            for kind, count in rendered.items()
+            if count
+        ]
+        detail = " · ".join(parts) if parts else f"{payload.get('deletions', 0)} 处"
 
     return {
         "id": op.id,
@@ -499,8 +516,9 @@ def describe_op(op: EditOp) -> dict[str, object]:
         "detail": detail,
         "created_at": op.created_at,
         "undone": op.undone,
-        # Only boundary restructuring has a stored full snapshot to restore.
-        "undoable": op.op_type == "boundary" and not op.undone,
+        # Boundary ops restore a stored snapshot; cleanup ops flip a known set
+        # of deletion rows back on. Both are exact, so both are undoable.
+        "undoable": op.op_type in {"boundary", "cleanup"} and not op.undone,
     }
 
 
@@ -528,7 +546,7 @@ def undo_op(session: Session, version_id: str, op_id: str | None = None) -> dict
         raise EditError("nothing_to_undo", "没有可撤销的操作")
     if op.undone:
         raise EditError("already_undone", "该操作已经撤销过了")
-    if op.op_type != "boundary":
+    if op.op_type not in {"boundary", "cleanup"}:
         raise EditError(
             "undo_unsupported",
             f"「{_OP_LABELS.get(op.op_type, op.op_type)}」不支持直接撤销",
@@ -548,6 +566,25 @@ def undo_op(session: Session, version_id: str, op_id: str | None = None) -> dict
         )
 
     payload = json.loads(op.payload_json)
+
+    if op.op_type == "cleanup":
+        from animatter.models import Deletion as DeletionRow
+
+        ids = [str(value) for value in payload.get("deletion_ids") or []]
+        rows = session.scalars(
+            select(DeletionRow).where(
+                DeletionRow.version_id == version_id,
+                DeletionRow.id.in_(ids),
+                DeletionRow.removed.is_(False),
+            )
+        ).all()
+        for row in rows:
+            row.removed = True
+        op.undone = True
+        session.flush()
+        log.info("edit.undo_cleanup", op_id=op.id, restored=len(rows))
+        return {"undone": op.id, "op_type": op.op_type}
+
     before = payload.get("before") or []
     spans = [SentenceSpan(ord=i, token_start=int(s), token_end=int(e)) for i, (s, e) in enumerate(before)]
     tokens = transcribe_service.load_tokens(session, version_id)

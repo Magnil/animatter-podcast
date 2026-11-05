@@ -22,6 +22,7 @@ from animatter.log import configure_logging, get_logger
 from animatter.migrate import upgrade_to_head
 from animatter.routers import (
     archive,
+    cleanup,
     clipping,
     editing,
     health,
@@ -109,6 +110,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(proofread.router)
     app.include_router(editing.router)
     app.include_router(clipping.router)
+    app.include_router(cleanup.router)
     app.include_router(settings_router.router)
     app.include_router(archive.router)
     app.include_router(subtitles.router)

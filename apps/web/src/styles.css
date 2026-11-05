@@ -1200,3 +1200,139 @@ button.small,
   color: var(--warn);
   font-weight: 600;
 }
+
+/* --- one-click cleanup (M4c) --- */
+
+.cleanup-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modal-body.modal-single {
+  display: flex;
+  flex-direction: column;
+}
+
+.cleanup-kinds {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cleanup-kind {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: baseline;
+  gap: 4px 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.cleanup-kind .hint {
+  grid-column: 2 / -1;
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-style: normal;
+}
+
+.cleanup-kind.disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.cleanup-kind-count {
+  justify-self: end;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.cleanup-thresholds {
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 0.8rem;
+}
+
+.cleanup-thresholds summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.cleanup-thresholds .field {
+  margin-top: 6px;
+}
+
+.cleanup-list {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.cleanup-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.84rem;
+}
+
+.cleanup-items {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  max-height: 34vh;
+  overflow-y: auto;
+  font-size: 0.78rem;
+}
+
+.cleanup-row {
+  display: grid;
+  grid-template-columns: 52px 84px 1fr auto auto;
+  gap: 8px;
+  align-items: baseline;
+  padding: 3px 6px;
+  border-left: 3px solid transparent;
+  border-bottom: 1px dashed var(--border);
+}
+
+.cleanup-row.kind-filler {
+  border-left-color: var(--danger);
+}
+
+.cleanup-row.kind-disfluency {
+  border-left-color: var(--accent);
+}
+
+.cleanup-row.kind-silence {
+  border-left-color: var(--muted);
+}
+
+.cleanup-row-time,
+.cleanup-row-dur,
+.cleanup-row-sentence {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.cleanup-row-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-cleanup textarea {
+  width: 100%;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 0.8rem;
+}
+
+.settings-subhead {
+  margin: 8px 0 0;
+  font-size: 0.78rem;
+  color: var(--text);
+  font-weight: 600;
+}

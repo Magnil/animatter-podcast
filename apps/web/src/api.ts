@@ -345,6 +345,67 @@ export const api = {
       }),
     }),
 
+  // --- one-click cleanup -------------------------------------------------
+
+  cleanupPlan: (
+    versionId: string,
+    options: { minSilenceMs?: number; silencePadMs?: number; minDisfluencyMs?: number } = {},
+  ) => {
+    const params = new URLSearchParams();
+    if (options.minSilenceMs != null) params.set("min_silence_ms", String(options.minSilenceMs));
+    if (options.silencePadMs != null) params.set("silence_pad_ms", String(options.silencePadMs));
+    if (options.minDisfluencyMs != null)
+      params.set("min_disfluency_ms", String(options.minDisfluencyMs));
+    const query = params.toString();
+    return request<CleanupPlan>(
+      `/api/versions/${versionId}/cleanup/plan${query ? `?${query}` : ""}`,
+    );
+  },
+
+  /**
+   * Commit one cleanup. The response carries the batch id, and that batch is
+   * what a single undo reverts — 400 cuts are one history line, not 400.
+   */
+  applyCleanup: (
+    versionId: string,
+    options: {
+      kinds: string[];
+      minSilenceMs?: number;
+      silencePadMs?: number;
+      minDisfluencyMs?: number;
+    },
+  ) =>
+    request<{
+      batch: string;
+      op_id: string;
+      deletions: number;
+      counts: Record<string, number>;
+      removed_ms: number;
+      kinds: string[];
+    }>(`/api/versions/${versionId}/cleanup`, {
+      method: "POST",
+      body: JSON.stringify({
+        kinds: options.kinds,
+        min_silence_ms: options.minSilenceMs,
+        silence_pad_ms: options.silencePadMs,
+        min_disfluency_ms: options.minDisfluencyMs,
+      }),
+    }),
+
+  /** Bring back a whole category ("还原口癖词") or one batch. */
+  restoreCleanup: (versionId: string, options: { source?: string; batch?: string }) => {
+    const params = new URLSearchParams();
+    if (options.source) params.set("source", options.source);
+    if (options.batch) params.set("batch", options.batch);
+    return request<{ restored: number; source: string | null; batch: string | null }>(
+      `/api/versions/${versionId}/cleanup/restore?${params}`,
+      { method: "POST" },
+    );
+  },
+
+  cleanupCounts: (versionId: string) =>
+    request<{ counts: Record<string, number> }>(`/api/versions/${versionId}/cleanup/counts`),
+
   // --- archive -----------------------------------------------------------
 
   saveArchive: (projectId: string) =>
@@ -462,6 +523,12 @@ export interface AppSettings {
   speaker_count: number;
   use_proofread: boolean;
   proofread_chunk_size: number;
+  cleanup_fillers: string;
+  cleanup_min_silence_ms: number;
+  cleanup_silence_pad_ms: number;
+  cleanup_min_disfluency_ms: number;
+  silence_noise_db: number;
+  silence_min_duration_ms: number;
   snap_to_silence: boolean;
   guard_ms: number;
   min_keep_ms: number;
@@ -472,6 +539,25 @@ export interface AppSettings {
   subtitle_cps: number;
   subtitle_max_line: number;
   subtitle_max_lines: number;
+}
+
+export interface CleanupItem {
+  kind: "filler" | "disfluency" | "silence";
+  start_ms: number;
+  end_ms: number;
+  duration_ms: number;
+  text: string;
+  token_indices: number[];
+  sentence_ord: number;
+}
+
+export interface CleanupPlan {
+  version_id: string;
+  duration_ms: number;
+  items: CleanupItem[];
+  summary: Record<string, { items: number; duration_ms: number }>;
+  fillers: string[];
+  kinds: string[];
 }
 
 export interface HotwordItem {

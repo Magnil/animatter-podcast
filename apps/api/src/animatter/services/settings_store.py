@@ -12,6 +12,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from animatter.core.fillers import DEFAULT_FILLERS, format_word_list
 from animatter.errors import AppError
 from animatter.ids import utcnow_iso
 from animatter.log import get_logger
@@ -20,6 +21,10 @@ from animatter.models import Setting
 log = get_logger(__name__)
 
 SETTINGS_ID = "singleton"
+
+#: Rendered once so the default value in DEFAULTS is a plain string, which the
+#: settings UI edits directly.
+FILLER_DEFAULTS = format_word_list(DEFAULT_FILLERS)
 
 #: The authoritative defaults. The UI mirrors these to render an untouched form,
 #: but this dict is what the server actually uses.
@@ -34,6 +39,17 @@ DEFAULTS: dict[str, Any] = {
     "speaker_count": 2,
     "use_proofread": True,
     "proofread_chunk_size": 25,
+    # -- cleanup (one-click) --
+    #: Filler list as one textarea value; parsed by core/fillers.parse_word_list.
+    "cleanup_fillers": FILLER_DEFAULTS,
+    "cleanup_min_silence_ms": 300,
+    "cleanup_silence_pad_ms": 50,
+    "cleanup_min_disfluency_ms": 300,
+    # Detector settings. Separate from the cut threshold above on purpose:
+    # silencedetect also decides where a *boundary* snaps, and those two
+    # decisions want different values (see AGENTS notes in the cleanup doc).
+    "silence_noise_db": -35,
+    "silence_min_duration_ms": 300,
     # -- editing --
     "snap_to_silence": True,
     "guard_ms": 20,
@@ -113,6 +129,10 @@ _BOOLS = {
     "realtime_skip",
 }
 _RANGES: dict[str, tuple[int, int]] = {
+    "cleanup_min_silence_ms": (100, 3000),
+    "cleanup_silence_pad_ms": (0, 300),
+    "cleanup_min_disfluency_ms": (100, 3000),
+    "silence_min_duration_ms": (100, 3000),
     "hotword_weight": (1, 50),
     "speaker_count": (1, 8),
     "proofread_chunk_size": (5, 50),
@@ -122,6 +142,11 @@ _RANGES: dict[str, tuple[int, int]] = {
     "subtitle_cps": (4, 30),
     "subtitle_max_line": (8, 60),
     "subtitle_max_lines": (1, 4),
+}
+_NEGATIVE_RANGES: dict[str, tuple[int, int]] = {
+    # Detector threshold in dBFS: quieter than this counts as silence. ffmpeg's
+    # own default is -35; a noisy room needs it higher (e.g. -30).
+    "silence_noise_db": (-80, -10),
 }
 _ENUMS: dict[str, set[str]] = {
     "export_format": {"m4a", "wav"},
@@ -145,6 +170,15 @@ def _validate(key: str, value: Any) -> Any:
         low, high = _RANGES[key]
         if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
             raise SettingsError(f"{key} 必须是 {low}–{high} 之间的整数")
+        return value
+    if key in _NEGATIVE_RANGES:
+        low, high = _NEGATIVE_RANGES[key]
+        if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
+            raise SettingsError(f"{key} 必须是 {low}–{high} 之间的整数（dBFS）")
+        return value
+    if key == "cleanup_fillers":
+        if not isinstance(value, str):
+            raise SettingsError("cleanup_fillers 必须是文本（每行一个词）")
         return value
     if key in _ENUMS:
         if not isinstance(value, str) or value not in _ENUMS[key]:
