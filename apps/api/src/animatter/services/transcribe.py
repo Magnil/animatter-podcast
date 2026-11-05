@@ -372,6 +372,7 @@ def _persist_version(
                 src_word_idx=token.src_word_idx,
                 punc_after=token.punc_after,
                 derived=token.derived,
+                revised=token.revised,
             )
             for token in merged.tokens
         ]
@@ -413,6 +414,7 @@ def load_tokens(session: Session, version_id: str) -> list[TokenSpan]:
             src_word_idx=row.src_word_idx,
             punc_after=row.punc_after,
             derived=row.derived,
+            revised=row.revised,
         )
         for row in rows
     ]

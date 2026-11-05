@@ -105,8 +105,10 @@ def test_picks_requested_channel() -> None:
 
 
 def test_normalize_channel_directly() -> None:
+    # One ASR word produces one token: the editing unit is the word.
     normalized = normalize_channel(channel(sentence(0, 200, [("直接", 0, 200)])))
-    assert len(normalized.tokens) == 2
+    assert len(normalized.tokens) == 1
+    assert normalized.tokens[0].text == "直接"
 
 
 # --- merge_segments -----------------------------------------------------
@@ -126,8 +128,9 @@ def test_merge_two_parts_renumbers_correctly() -> None:
     assert [t.idx for t in merged.tokens] == list(range(len(merged.tokens)))
     assert len(merged.sentences) == 2
     assert merged.sentences[1].token_start == len(first.tokens)
-    # "后段" is two chars spanning 0-400ms locally, so the second char starts at 10200.
-    assert merged.tokens[-1].start_ms == 10_200
+    # "后段" is one word spanning 0-400ms locally, so it lands at 10000 after the
+    # offset — a word token takes the word's own start, not an interpolated one.
+    assert merged.tokens[-1].start_ms == 10_000
 
 
 def test_merge_preserves_time_order_across_seam() -> None:

@@ -192,6 +192,14 @@ def _persist_spans(session: Session, version_id: str, spans: list[SentenceSpan])
         if ord_ >= len(spans):
             session.delete(row)
 
+    # The version's counters are a denormalised cache of the sentence rows: the
+    # editor and the archive both read them, and boundary merges/splits change
+    # the count without touching the tokens. Leaving them stale is how a 5-sentence
+    # transcript ends up claiming "3 句" in the header.
+    version = session.get(TranscriptVersion, version_id)
+    if version is not None:
+        version.sentence_count = len(spans)
+
     session.flush()
 
 
@@ -333,11 +341,15 @@ def _replace_token_window(
                 src_word_idx=token.src_word_idx,
                 punc_after=token.punc_after,
                 derived=token.derived,
+                revised=token.revised,
             )
         )
 
     if delta != 0:
         _shift_sentences(session, version.id, at_token=token_range.start, delta=delta)
+        # ``token_count`` is read by the header, the archive and the subtitle
+        # panel; a text edit silently changes it.
+        version.token_count += delta
     session.flush()
 
 

@@ -3,11 +3,21 @@
 This is the module the rest of the editor stands on, and the one place where a
 wrong assumption silently corrupts every downstream timestamp.
 
-The ASR returns **word-level** spans. Chinese "words" are 2-4 characters with
-one shared start/end, so per-character times do not exist and must be
-interpolated. Every token produced here therefore carries ``derived=True``
-unless the whole word is a single character (where the word time *is* the char
-time). AGENT.md §6.3.
+The ASR returns **word-level** spans, and since 2026-11-06 the editor works at
+exactly that granularity: **one token = one ASR word**. AGENT.md §6.3.
+
+Why word-level rather than character-level
+------------------------------------------
+Per-character times do not exist in the ASR output; Chinese "words" are 2-4
+characters sharing one start/end, so character times were *interpolated*. That
+interpolation bought a finer selection grid but cost a real invariant: editing a
+span of different length redistributed the window and moved interior boundaries,
+so a correction could nudge the very cut point the user had been listening for.
+
+At word level a replacement is always 1 token → 1 token: the start and end are
+both pinned by real ASR observations, there are no interior boundaries to move,
+and the replacement text can be any length. The grid is coarser, which is the
+honest price of never lying about timing.
 
 Invariants this module must preserve:
 
@@ -50,6 +60,9 @@ class TokenSpan:
     src_word_idx: int
     punc_after: str
     derived: bool
+    #: ``True`` once a human rewrote this token. Defaulted so every constructor
+    #: that predates the flag keeps working and means "untouched".
+    revised: bool = False
 
 
 def _is_cjk(text: str) -> bool:
@@ -57,43 +70,25 @@ def _is_cjk(text: str) -> bool:
 
 
 def _split_units(text: str) -> list[str]:
-    """Split one ASR word into the units a subtitle editor can select.
+    """Split one ASR word into editable tokens.
 
-    CJK text is split per character; Latin text stays whole (splitting an
-    English word in half would break both timing and wrapping).
+    One word stays one token. This is deliberately **not** a per-character
+    split: see the module docstring. Interior whitespace is trimmed because a
+    token's text is what the editor renders inside a word cell.
     """
     stripped = text.strip()
     if not stripped:
         return []
-    if _is_cjk(stripped):
-        # Keep any interior ASCII run (e.g. "AI" in "AI技术") as one unit so the
-        # editor never offers to cut "AI" into "A" + "I".
-        units: list[str] = []
-        buffer: list[str] = []
-        for ch in stripped:
-            if _CJK_RE.match(ch):
-                if buffer:
-                    units.append("".join(buffer))
-                    buffer = []
-                units.append(ch)
-            elif ch.isspace():
-                if buffer:
-                    units.append("".join(buffer))
-                    buffer = []
-            else:
-                buffer.append(ch)
-        if buffer:
-            units.append("".join(buffer))
-        return units
     return [stripped]
 
 
 def _interpolate(word: WordSpan, units: list[str]) -> list[tuple[int, int]]:
-    """Distribute the word's duration across its units by character count.
+    """Distribute the word's duration across its units.
 
-    Degenerate inputs are clamped rather than rejected: a zero-length word still
-    yields a zero-length token, and an inverted span is normalised so the
-    timeline stays monotonic.
+    With one unit per word this is the identity, but the function stays general:
+    an imported SRT can still hand us a multi-unit "word", and the degenerate
+    cases below (inverted or zero-length spans) must never produce a token whose
+    start is after its end.
     """
     start, end = word.start_ms, word.end_ms
     if end < start:
@@ -139,6 +134,7 @@ def expand_words(words: list[WordSpan], *, start_idx: int = 0) -> list[TokenSpan
                     src_word_idx=previous.src_word_idx,
                     punc_after=previous.punc_after + word.punctuation,
                     derived=previous.derived,
+                    revised=previous.revised,
                 )
             continue
 
@@ -151,9 +147,15 @@ def expand_words(words: list[WordSpan], *, start_idx: int = 0) -> list[TokenSpan
                     start_ms=unit_start,
                     end_ms=unit_end,
                     text=unit,
-                    kind="char" if _is_cjk(unit) or len(unit) == 1 else "word",
+                    # At word level a token is a word even when it happens to be
+                    # one character; "kind" describes the editing unit, not the
+                    # script. Only an imported multi-unit split is still "char".
+                    kind="word" if len(units) == 1 else "char",
                     src_word_idx=word_idx,
                     punc_after=word.punctuation if position == last else "",
+                    # Word-level tokens carry the ASR's own timing, so they are
+                    # observed rather than derived — the flag now only marks
+                    # tokens whose times were interpolated (imported text).
                     derived=len(units) > 1,
                 )
             )

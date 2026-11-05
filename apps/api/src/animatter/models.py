@@ -65,12 +65,21 @@ class Media(Base):
 
 
 class Speaker(Base):
-    """Global speaker identity for a project; diarization emits local ids that map here."""
+    """A named speaker within one project.
+
+    ``local_id`` is the integer that ``sentence.speaker_id`` stores. Diarization
+    emits those integers and the editor lets the user name them, so the integer
+    must stay stable per project — renaming a speaker must not rewrite every
+    sentence, and merging two detected speakers must stay possible.
+    """
 
     __tablename__ = "speaker"
+    __table_args__ = (UniqueConstraint("project_id", "local_id", name="uq_speaker_project_local"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("project.id", ondelete="CASCADE"), index=True)
+    #: Integer carried by ``sentence.speaker_id``; 0-based, dense per project.
+    local_id: Mapped[int] = mapped_column(Integer, default=0)
     name: Mapped[str] = mapped_column(String(120), default="")
     color: Mapped[str] = mapped_column(String(16), default="")
     created_at: Mapped[str] = mapped_column(String(32))
@@ -135,6 +144,11 @@ class Token(Base):
     src_word_idx: Mapped[int] = mapped_column(Integer, default=-1)
     punc_after: Mapped[str] = mapped_column(Text, default="")
     derived: Mapped[bool] = mapped_column(Boolean, default=True)
+    #: True once a human has rewritten this token's text. Stored on the row
+    #: rather than derived from ``edit_op``: history is index-sensitive (later
+    #: edits renumber ``idx``), and the editor colours *what was written* versus
+    #: *what was observed*, which stays true even after an undo.
+    revised: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class Sentence(Base):

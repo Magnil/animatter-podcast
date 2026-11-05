@@ -119,6 +119,8 @@ def _reinterpolate(tokens: list[TokenSpan], span: TokenRange, new_text: str) -> 
                 punc_after=trailing_punct if position == len(units) - 1 else "",
                 # Replacement timing is derived, never observed.
                 derived=True,
+                # This text is now what a person wrote, not what the ASR heard.
+                revised=True,
             )
         )
 

@@ -62,6 +62,15 @@ export interface Token {
   kind: string;
   punc_after: string;
   derived: boolean;
+  /** A human rewrote this word; rendered blue. */
+  revised: boolean;
+}
+
+export interface SpeakerInfo {
+  local_id: number;
+  name: string;
+  color: string;
+  sentence_count: number;
 }
 
 export interface Sentence {
@@ -389,6 +398,36 @@ export const api = {
 
   audioUrl: (projectId: string, mediaId: string) =>
     `/api/projects/${projectId}/media/${mediaId}/audio`,
+
+  // --- speakers ----------------------------------------------------------
+
+  speakers: (projectId: string) =>
+    request<SpeakerInfo[]>(`/api/projects/${projectId}/speakers`),
+
+  createSpeaker: (projectId: string, name: string) =>
+    request<SpeakerInfo>(`/api/projects/${projectId}/speakers`, {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+
+  renameSpeaker: (projectId: string, localId: number, name: string) =>
+    request<SpeakerInfo>(`/api/projects/${projectId}/speakers/${localId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
+
+  deleteSpeaker: (projectId: string, localId: number) =>
+    request<void>(`/api/projects/${projectId}/speakers/${localId}`, { method: "DELETE" }),
+
+  /** Point sentences at a speaker; `null` clears the annotation. */
+  assignSpeaker: (versionId: string, sentenceOrds: number[], localId: number | null) =>
+    request<{ updated: number; local_id: number | null }>(
+      `/api/versions/${versionId}/speakers/assign`,
+      {
+        method: "POST",
+        body: JSON.stringify({ sentence_ords: sentenceOrds, local_id: localId }),
+      },
+    ),
 };
 
 export const mediaIdFromVersion = (versionId: string): string => versionId;

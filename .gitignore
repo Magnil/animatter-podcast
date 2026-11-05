@@ -42,3 +42,6 @@ bailian-*.csv
 # 前端构建产物与依赖
 apps/web/node_modules/
 apps/web/dist/
+
+# 视觉走查截图（可随时重新生成）
+.tmp/

@@ -127,6 +127,7 @@ def apply_candidate(session: Session, candidate_id: str) -> CorrectionCandidate:
                 src_word_idx=token.src_word_idx,
                 punc_after=token.punc_after,
                 derived=token.derived,
+                revised=token.revised,
             )
         )
     session.flush()
@@ -230,6 +231,7 @@ def _to_span(row: Token) -> TokenSpan:
         src_word_idx=row.src_word_idx,
         punc_after=row.punc_after,
         derived=row.derived,
+        revised=row.revised,
     )
 
 

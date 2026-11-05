@@ -28,6 +28,7 @@ from animatter.routers import (
     hotwords,
     projects,
     proofread,
+    speakers,
     subtitles,
     transcribe,
 )
@@ -111,6 +112,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(settings_router.router)
     app.include_router(archive.router)
     app.include_router(subtitles.router)
+    app.include_router(speakers.router)
     return app
 
 

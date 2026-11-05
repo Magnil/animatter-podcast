@@ -223,7 +223,18 @@ def test_text_edit_preserves_timeline(session: Session) -> None:
     editing.apply_text_edit(session, version.id, sentence_ord=0, original="剧集", proposed="句级")
     tokens = transcribe_service.load_tokens(session, version.id)
     assert "".join(t.text for t in tokens) == "句级标签很好用"
-    assert {t.idx: (t.start_ms, t.end_ms) for t in tokens} == raw_before
+
+    # The edited window keeps both of its outer edges: 0ms in, 200ms out. Word
+    # level means two source tokens collapse into one, so comparing whole index
+    # maps would be wrong — what must hold is that no time moved.
+    assert (tokens[0].start_ms, tokens[0].end_ms) == (0, 200)
+    assert raw_before[0][0] == tokens[0].start_ms
+    assert raw_before[1][1] == tokens[0].end_ms
+
+    # Everything after the window keeps its exact timing.
+    after_before = {i: raw_before[i] for i in range(2, len(raw_before))}
+    after_now = {i + 1: (t.start_ms, t.end_ms) for i, t in enumerate(tokens[1:])}
+    assert list(after_now.values()) == list(after_before.values())
 
 
 def test_text_edit_missing_text_has_current_hint(session: Session) -> None:
@@ -242,3 +253,85 @@ def test_text_edit_recorded_separately_from_boundary(session: Session) -> None:
     editing.apply_text_edit(session, version.id, sentence_ord=0, original="剧集", proposed="句级")
     ops = editing.list_ops(session, version.id)
     assert [op.op_type for op in ops] == ["text"]
+
+
+# --- the revised flag (what the editor paints blue) ---------------------
+
+
+def test_text_edit_marks_the_rewritten_word_as_revised(session: Session) -> None:
+    from animatter.services import editing
+    from animatter.services import transcribe as transcribe_service
+
+    version = seed_version(session, text="剧集标签很好用", sizes=[7])
+    editing.apply_text_edit(session, version.id, sentence_ord=0, original="剧集", proposed="句级")
+
+    tokens = transcribe_service.load_tokens(session, version.id)
+    assert tokens[0].text == "句级"
+    assert tokens[0].revised is True
+    # Nothing else was touched, so nothing else turns blue.
+    assert [t.revised for t in tokens[1:]] == [False] * (len(tokens) - 1)
+
+
+def test_freshly_transcribed_words_are_not_revised(session: Session) -> None:
+    from animatter.services import transcribe as transcribe_service
+
+    version = seed_version(session, text="剧集标签", sizes=[4])
+    assert [t.revised for t in transcribe_service.load_tokens(session, version.id)] == [False] * 4
+
+
+def test_the_revised_flag_reaches_the_transcript_endpoint(
+    client: TestClient, session: Session
+) -> None:
+    """The editor colours by this field, so it must survive serialization."""
+    from animatter.services import editing
+    from animatter.services import transcribe as transcribe_service
+
+    version = seed_version(session, text="剧集标签很好用", sizes=[7])
+    session.commit()
+    editing.apply_text_edit(session, version.id, sentence_ord=0, original="剧集", proposed="句级")
+    session.commit()
+
+    payload = client.get(f"/api/versions/{version.id}/transcript").json()
+    assert payload["tokens"][0]["revised"] is True
+    assert payload["tokens"][0]["text"] == "句级"
+    assert payload["tokens"][1]["revised"] is False
+    assert len(transcribe_service.load_tokens(session, version.id)) == len(payload["tokens"])
+
+
+# --- denormalised counters ----------------------------------------------
+
+
+def test_boundary_edit_updates_the_sentence_count(session: Session) -> None:
+    """Regression: the header claimed "3 句" for a 5-sentence transcript.
+
+    ``sentence_count`` is read by the header, the archive and the subtitle panel,
+    and a split/merge changes it without touching a single token.
+    """
+    from animatter.models import TranscriptVersion
+    from animatter.services import editing
+    from animatter.services import transcribe as transcribe_service
+
+    version = seed_version(session, text="一二三四五六", sizes=[6])
+    assert session.get(TranscriptVersion, version.id).sentence_count == 1
+
+    editing.apply_boundary(session, version.id, action="new_sentence", from_token=2, to_token=4)
+    assert session.get(TranscriptVersion, version.id).sentence_count == 3
+    assert len(transcribe_service.load_sentences(session, version.id)) == 3
+
+    editing.apply_boundary(session, version.id, action="merge", from_token=0, to_token=6)
+    assert session.get(TranscriptVersion, version.id).sentence_count == 1
+
+
+def test_text_edit_that_changes_token_count_updates_the_version(session: Session) -> None:
+    from animatter.models import TranscriptVersion
+    from animatter.services import editing
+    from animatter.services import transcribe as transcribe_service
+
+    # Word-level: "剧集"→"句级" is 1 token → 1 token, so use a split replacement
+    # that legitimately changes the count.
+    version = seed_version(session, text="剧集标签", sizes=[4])
+    editing.apply_text_edit(session, version.id, sentence_ord=0, original="剧集标签", proposed="句级 标签")
+    tokens = transcribe_service.load_tokens(session, version.id)
+
+    stored = session.get(TranscriptVersion, version.id)
+    assert stored.token_count == len(tokens)

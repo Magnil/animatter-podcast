@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from animatter.core.edl import Deletion, compile_edl
+from animatter.errors import AppError
 from animatter.services import archive as archive_service
 from animatter.services import subtitles as subtitle_service
 
@@ -73,6 +74,26 @@ def test_roundtrip_preserves_tokens_exactly(client: TestClient, session: Session
         assert (old["text"], old["start_ms"], old["end_ms"]) == (new["text"], new["start_ms"], new["end_ms"])
 
 
+def test_roundtrip_preserves_the_revised_flag(client: TestClient, session: Session, seeded) -> None:  # type: ignore[no-untyped-def]
+    """A corrected word must still be blue in the restored project.
+
+    The flag is what distinguishes "the ASR wrote this" from "a human wrote
+    this"; dropping it on load would make an edited transcript look untouched.
+    """
+    from animatter.services import editing
+
+    editing.apply_text_edit(session, seeded.id, sentence_ord=0, original="今天", proposed="昨天")
+    session.commit()
+
+    saved = client.post(f"/api/projects/{seeded.project_id}/archive").json()
+    loaded = client.post("/api/archive/load", json={"path": saved["path"]}).json()
+    tokens = client.get(f"/api/versions/{loaded['version_id']}/transcript").json()["tokens"]
+
+    assert tokens[0]["text"] == "昨天"
+    assert tokens[0]["revised"] is True
+    assert any(not token["revised"] for token in tokens[1:])
+
+
 def test_roundtrip_preserves_operation_log(client: TestClient, session: Session, seeded) -> None:  # type: ignore[no-untyped-def]
     """Losing the log would silently disable undo in the restored project."""
     from animatter.services import editing
@@ -127,8 +148,11 @@ def test_load_missing_file_is_a_clear_error(client: TestClient) -> None:
 def test_load_rejects_a_non_archive(tmp_path: Path) -> None:
     bogus = tmp_path / "fake.project"
     bogus.write_text("not a zip", encoding="utf-8")
-    with pytest.raises(Exception, match=""):
+    with pytest.raises(AppError) as caught:
         archive_service.read_archive(bogus)
+    # The message has to say what the file *is not*, because "invalid" alone
+    # leaves the user guessing whether they picked the wrong file.
+    assert caught.value.code == "archive_invalid"
 
 
 def test_same_audio_in_two_projects_gets_two_media_rows(client: TestClient, session: Session, seeded) -> None:  # type: ignore[no-untyped-def]

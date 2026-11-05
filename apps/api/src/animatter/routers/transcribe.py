@@ -69,6 +69,8 @@ class TokenOut(BaseModel):
     kind: str
     punc_after: str
     derived: bool
+    #: A human rewrote this word; the editor paints it blue.
+    revised: bool = False
 
 
 class SentenceOut(BaseModel):
@@ -238,6 +240,7 @@ def get_transcript(
             kind=t.kind,
             punc_after=t.punc_after,
             derived=t.derived,
+            revised=t.revised,
         )
         for t in tokens[first:last]
     ]

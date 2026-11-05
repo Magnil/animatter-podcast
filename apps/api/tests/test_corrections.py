@@ -147,7 +147,12 @@ def test_apply_same_length_keeps_timeline(session: Session) -> None:
 
     tokens = transcribe_service.load_tokens(session, version.id)
     assert "".join(t.text for t in tokens) == "句级标签很好用"
-    assert [(t.start_ms, t.end_ms) for t in tokens] == [(i * 100, (i + 1) * 100) for i in range(7)]
+    # Word level: the two-token window collapses into one token covering the same
+    # 0-200ms, and every later token keeps its exact timing.
+    assert (tokens[0].start_ms, tokens[0].end_ms) == (0, 200)
+    assert [(t.start_ms, t.end_ms) for t in tokens[1:]] == [
+        (i * 100, (i + 1) * 100) for i in range(2, 7)
+    ]
 
 
 def test_apply_shrink_adjusts_sentence_ranges(session: Session) -> None:

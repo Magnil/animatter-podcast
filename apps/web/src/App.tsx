@@ -12,6 +12,7 @@ import {
   type AppSettings,
   type HotwordItem,
   type Sentence,
+  type SpeakerInfo,
   type Token,
   type Version,
 } from "./api";
@@ -198,6 +199,20 @@ function Desk({
   const [episodeHotwords, setEpisodeHotwords] = useState<HotwordItem[]>([]);
   const [globalHotwords, setGlobalHotwords] = useState<HotwordItem[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [speakers, setSpeakers] = useState<SpeakerInfo[]>([]);
+
+  const reloadSpeakers = useCallback(async () => {
+    try {
+      setSpeakers(await api.speakers(boot.projectId));
+    } catch {
+      // Speaker metadata is decorative: a failure must never block editing.
+      setSpeakers([]);
+    }
+  }, [boot.projectId]);
+
+  useEffect(() => {
+    void reloadSpeakers();
+  }, [reloadSpeakers]);
 
   const reloadHotwords = useCallback(async () => {
     try {
@@ -362,18 +377,32 @@ function Desk({
     playback.seek(targetStart);
   }, [boot.sentences, currentSentence, deletedSpans, playback]);
 
+  /** Token range covered by the current selection, whichever kind it is. */
+  const selectionRange = useCallback((): { from: number; to: number } | null => {
+    if (sentenceSelection.size > 0) {
+      return tokenRangeOfSentences(boot.sentences, sentenceSelection);
+    }
+    if (!selection) return null;
+    return {
+      from: Math.min(selection.from, selection.to),
+      to: Math.max(selection.from, selection.to),
+    };
+  }, [boot.sentences, sentenceSelection, selection]);
+
   const applyBoundary = useCallback(
     async (action: "new_sentence" | "merge" | "to_prev" | "to_next") => {
-      if (!selection) return;
-      const from = Math.min(selection.from, selection.to);
-      const to = Math.max(selection.from, selection.to);
+      // Both kinds of selection resolve to one token range; the rail buttons are
+      // enabled for either, so this must not require the word selection alone.
+      const range = selectionRange();
+      if (!range) return;
       await run("边界调整", async () => {
-        await api.boundary(boot.version.id, action, from, to);
+        await api.boundary(boot.version.id, action, range.from, range.to);
         await onReload();
         onSelectionChange(null);
+        onSentenceSelectionChange(new Set());
       });
     },
-    [boot.version.id, onReload, onSelectionChange, run, selection],
+    [boot.version.id, onReload, onSelectionChange, onSentenceSelectionChange, run, selectionRange],
   );
 
   const commitEdge = useCallback(
@@ -386,18 +415,6 @@ function Desk({
     },
     [boot.version.id, onReload, run, setNotice],
   );
-
-  /** Token range covered by the current selection, whichever kind it is. */
-  const selectionRange = useCallback((): { from: number; to: number } | null => {
-    if (sentenceSelection.size > 0) {
-      return tokenRangeOfSentences(boot.sentences, sentenceSelection);
-    }
-    if (!selection) return null;
-    return {
-      from: Math.min(selection.from, selection.to),
-      to: Math.max(selection.from, selection.to),
-    };
-  }, [boot.sentences, sentenceSelection, selection]);
 
   const hasSelection = sentenceSelection.size > 0 || selection !== null;
 
@@ -422,6 +439,45 @@ function Desk({
       await onReload();
     });
   }, [boot.version.id, onReload, run]);
+
+  const assignSpeaker = useCallback(
+    async (localId: number | null, ords: number[]) => {
+      if (ords.length === 0) return;
+      await run(localId === null ? "清除标注" : "指派说话人", async () => {
+        await api.assignSpeaker(boot.version.id, ords, localId);
+        await onReload();
+        await reloadSpeakers();
+      });
+    },
+    [boot.version.id, onReload, reloadSpeakers, run],
+  );
+
+  const createSpeaker = useCallback(
+    async (ords: number[]) => {
+      await run("新建说话人", async () => {
+        const created = await api.createSpeaker(boot.projectId, "");
+        await reloadSpeakers();
+        // Create-then-assign in one click: a speaker nobody is attached to is
+        // useless, and the user opened the menu from a sentence they meant.
+        if (ords.length > 0) {
+          await api.assignSpeaker(boot.version.id, ords, created.local_id);
+          await onReload();
+          await reloadSpeakers();
+        }
+      });
+    },
+    [boot.projectId, boot.version.id, onReload, reloadSpeakers, run],
+  );
+
+  const renameSpeaker = useCallback(
+    async (localId: number, name: string) => {
+      await run("重命名说话人", async () => {
+        await api.renameSpeaker(boot.projectId, localId, name);
+        await reloadSpeakers();
+      });
+    },
+    [boot.projectId, reloadSpeakers, run],
+  );
 
   const saveArchive = useCallback(async () => {
     await run("保存项目", async () => {
@@ -567,18 +623,35 @@ function Desk({
     [boot.version.id, edl, onReload, renderExport, run, setSettingsOpen, settings],
   );
 
+  /**
+   * Rewrite one word.
+   *
+   * The backend accepts any length, because at word level the replacement is
+   * 1 token → 1 token and both edges are real observations. The only guard left
+   * is readability: a four-character word stretched over 90 ms is fine, but a
+   * twenty-character sentence crammed into 90 ms is not, and the user cannot
+   * hear that from the transcript, so say it.
+   */
   const applyTextEdit = useCallback(
     async (proposed: string) => {
       if (!selection) return;
       const from = Math.min(selection.from, selection.to);
       const to = Math.max(selection.from, selection.to);
+      const token = boot.tokens[from];
+      const spokenMs = token ? token.end_ms - token.start_ms : 0;
+      if (token && spokenMs > 0) {
+        const cps = proposed.replace(/\s/g, "").length / (spokenMs / 1000);
+        if (cps > 14) {
+          setNotice(`注意：「${proposed}」要塞进 ${spokenMs}ms，语速会明显快于原音。`);
+        }
+      }
       await run("文字修改", async () => {
         await api.editText(boot.version.id, from, to, proposed);
         await onReload();
         onSelectionChange(null);
       });
     },
-    [boot.version.id, onReload, onSelectionChange, run, selection],
+    [boot.tokens, boot.version.id, onReload, onSelectionChange, run, selection, setNotice],
   );
 
   // Keyboard: space plays the active sentence, brackets move by sentence.
@@ -643,13 +716,6 @@ function Desk({
   // getting this wrong is how a button ends up silently doing nothing.
   const tokenCount = selection ? Math.abs(selection.to - selection.from) : 0;
 
-  // Redrawing a boundary only makes sense for a partial sentence selection.
-  const canRedraw = selection !== null && sentenceSelection.size === 0;
-  // Joining works for whole sentences (merges) and for character runs (moves).
-  const canJoin =
-    sentenceSelection.size > 0 || (selection !== null && withinSentence !== null);
-  const canMerge = sentenceSelection.size >= 1 || selection !== null;
-
   const selectionSummary = (() => {
     if (sentenceSelection.size > 0) {
       const ords = [...sentenceSelection].sort((a, b) => a - b);
@@ -660,9 +726,9 @@ function Desk({
       return `已选 ${sentenceSelection.size} 句（${label}）`;
     }
     if (tokenCount > 0) {
-      return `已选 ${tokenCount} 字${withinSentence ? `（第 ${withinSentence.ord + 1} 句）` : "（跨句）"}`;
+      return `已选 ${tokenCount} 个词${withinSentence ? `（第 ${withinSentence.ord + 1} 句）` : "（跨句）"}`;
     }
-    return "点击句首方框选整句，或拖选文字重划边界";
+    return "点词选中，拖选连续词；选中后弹出「删除 / 修正」";
   })();
 
   return (
@@ -686,12 +752,19 @@ function Desk({
               positionMs={playback.positionMs}
               selection={selection}
               sentenceSelection={sentenceSelection}
+              speakers={speakers}
               onSelectionChange={onSelectionChange}
               onSentenceSelectionChange={onSentenceSelectionChange}
               onPlaySentence={playSentence}
               onSeek={playback.seek}
-              onEditSelection={applyTextEdit}
+              onDeleteWords={() => void deleteRange()}
+              onCorrectWord={(proposed) => void applyTextEdit(proposed)}
+              onBoundary={(action) => void applyBoundary(action)}
+              onAssignSpeaker={(localId, ords) => void assignSpeaker(localId, ords)}
+              onCreateSpeaker={(ords) => void createSpeaker(ords)}
+              onRenameSpeaker={(localId, name) => void renameSpeaker(localId, name)}
               deletedRanges={edl?.deletions ?? []}
+              busy={busy}
             />
           </div>
           <HistoryPanel
@@ -706,7 +779,7 @@ function Desk({
           <div className="stage-top">
             <span className="clock">{formatTime(playback.positionMs)}</span>
             <span className="muted small">
-              {boot.version.sentence_count} 句 · {boot.version.token_count} 字 ·{" "}
+              {boot.version.sentence_count} 句 · {boot.version.token_count} 词 ·{" "}
               {formatDuration(boot.version.duration_ms)}
             </span>
             {edl ? (
@@ -787,40 +860,6 @@ function Desk({
 
           <div className="actionbar">
             <span className="muted small">{selectionSummary}</span>
-            <div className="actions">
-              <button
-                type="button"
-                disabled={!canRedraw || busy}
-                onClick={() => void applyBoundary("new_sentence")}
-                title="把当前选区变成独立的一句（整句选区时不可用）"
-              >
-                另起一句
-              </button>
-              <button
-                type="button"
-                disabled={!canJoin || busy}
-                onClick={() => void applyBoundary("to_prev")}
-                title="把选区并入上一句；选中整句时等于合并到上句"
-              >
-                并入上句
-              </button>
-              <button
-                type="button"
-                disabled={!canJoin || busy}
-                onClick={() => void applyBoundary("to_next")}
-                title="把选区并入下一句；选中整句时等于合并到下句"
-              >
-                并入下句
-              </button>
-              <button
-                type="button"
-                disabled={!canMerge || busy}
-                onClick={() => void applyBoundary("merge")}
-                title="把选区涉及的所有句子合并成一句"
-              >
-                合并选区
-              </button>
-            </div>
           </div>
 
           {notice ? <div className="notice">{notice}</div> : null}

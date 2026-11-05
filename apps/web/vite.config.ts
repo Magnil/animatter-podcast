@@ -18,5 +18,12 @@ export default defineConfig({
   build: {
     outDir: "dist",
     sourcemap: true,
+    rollupOptions: {
+      // `harness.html` is a development-only entry: it mounts the transcript pane
+      // with hand-authored data so every visual state (open bubble, speaker menu,
+      // multi-sentence selection) can be screenshotted. Shipping it would put a
+      // dead page in `dist`, so only the real entry is built.
+      input: { index: "index.html" },
+    },
   },
 });

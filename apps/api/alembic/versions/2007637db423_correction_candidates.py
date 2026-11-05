@@ -9,9 +9,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision: str = '2007637db423'
 down_revision: str | None = '6ad709e0e74a'
@@ -40,7 +39,9 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id')
     )
     with op.batch_alter_table('correction_candidate', schema=None) as batch_op:
-        batch_op.create_index(batch_op.f('ix_correction_candidate_sentence_ord'), ['sentence_ord'], unique=False)
+        batch_op.create_index(
+            batch_op.f('ix_correction_candidate_sentence_ord'), ['sentence_ord'], unique=False
+        )
         batch_op.create_index(batch_op.f('ix_correction_candidate_status'), ['status'], unique=False)
         batch_op.create_index(batch_op.f('ix_correction_candidate_version_id'), ['version_id'], unique=False)
         batch_op.create_index('ix_correction_version_status', ['version_id', 'status'], unique=False)
