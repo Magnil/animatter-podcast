@@ -241,3 +241,32 @@ def test_realistic_asr_expansion_then_repair() -> None:
     assert result.tokens[0].start_ms == 0
     assert result.tokens[-1].end_ms == 2000
     assert_monotonic(result.tokens)
+
+
+def test_same_length_replacement_keeps_interior_boundaries() -> None:
+    """Replacing text with the same character count must not move any boundary.
+
+    Regression: re-deriving interior timings shifted 14960→15000 for a 2-char
+    swap, so the editor's cut point drifted even though the audio was unchanged.
+    """
+    tokens = toks(("句", 14800, 14960), ("级", 14960, 15200), ("标", 15200, 15460))
+    result = apply_replacement(tokens, TokenRange(0, 2), "句集")
+
+    assert [(t.start_ms, t.end_ms) for t in result.tokens] == [
+        (14800, 14960),
+        (14960, 15200),
+        (15200, 15460),
+    ]
+    assert "".join(t.text for t in result.tokens) == "句集标"
+
+
+def test_uneven_word_boundaries_preserved_exactly() -> None:
+    # Real ASR words have uneven per-character durations; a same-length edit
+    # must reproduce them rather than redistributing evenly.
+    tokens = toks(("一", 0, 180), ("二", 180, 400), ("三", 400, 1000))
+    result = apply_replacement(tokens, TokenRange(0, 3), "甲乙丙")
+    assert [(t.start_ms, t.end_ms) for t in result.tokens] == [
+        (0, 180),
+        (180, 400),
+        (400, 1000),
+    ]

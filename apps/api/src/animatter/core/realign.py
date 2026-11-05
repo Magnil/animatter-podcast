@@ -122,6 +122,16 @@ def _reinterpolate(tokens: list[TokenSpan], span: TokenRange, new_text: str) -> 
             )
         )
 
+    # Same number of units: keep each unit's *original* boundary. Re-deriving the
+    # interior boundaries would move them even when nothing about the audio
+    # changed — "句级"→"句集" must not shift 14960 to 15000, because the pause
+    # the editor heard is still where it was. Only the text differs.
+    if len(units) == span.length:
+        rebuilt = [
+            replace(token, start_ms=source.start_ms, end_ms=source.end_ms)
+            for token, source in zip(rebuilt, tokens[span.start : span.end], strict=True)
+        ]
+
     # The last token must land exactly on the window end so the following
     # tokens keep their absolute positions.
     last = rebuilt[-1]
@@ -151,10 +161,24 @@ def apply_replacement(tokens: list[TokenSpan], span: TokenRange, new_text: str) 
     if before_start != after_start:
         raise RealignError("改写改变了区间起点时间")
 
+    new_count = len(_split_units(new_text))
     before_end = tokens[span.end - 1].end_ms
-    after_end = outcome[span.start + len(_split_units(new_text)) - 1].end_ms
+    after_end = outcome[span.start + new_count - 1].end_ms
     if before_end != after_end:
         raise RealignError("改写改变了区间终点时间")
+
+    # Invariant: a same-length replacement must not move *any* boundary inside the
+    # window either. Checking only the outer edges let "句级"→"句集" silently
+    # shift the midpoint from 14960 to 15000, which the user hears as their cut
+    # point drifting.
+    if new_count == span.length:
+        for offset, source in enumerate(tokens[span.start : span.end]):
+            written = outcome[span.start + offset]
+            if (written.start_ms, written.end_ms) != (source.start_ms, source.end_ms):
+                raise RealignError(
+                    f"改写字数相同却移动了第 {offset} 个 token 的时间"
+                    f"（{source.start_ms}–{source.end_ms} → {written.start_ms}–{written.end_ms}）"
+                )
 
     renumbered = [replace(token, idx=position) for position, token in enumerate(outcome)]
     assert_monotonic(renumbered)

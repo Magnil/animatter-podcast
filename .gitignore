@@ -38,3 +38,7 @@ samples/*.wav
 # 百炼控制台导出的凭据文件（明文 apiKey），永远不进版本库
 bailian-*.csv
 *apiKey*.csv
+
+# 前端构建产物与依赖
+apps/web/node_modules/
+apps/web/dist/

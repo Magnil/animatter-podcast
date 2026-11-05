@@ -1,0 +1,283 @@
+/* Correction desk styles. Kept small and dependency-free: the layout is a
+   three-band column (topbar / waveform / transcript) and nothing else. */
+
+:root {
+  --bg: #f8fafc;
+  --panel: #ffffff;
+  --border: #e2e8f0;
+  --text: #0f172a;
+  --muted: #64748b;
+  --accent: #2563eb;
+  --accent-soft: rgba(59, 130, 246, 0.16);
+  --danger: #dc2626;
+  --warn: #b45309;
+  --tok-hover: #f1f5f9;
+
+  color-scheme: light;
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--text);
+  background: var(--bg);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b1120;
+    --panel: #111827;
+    --border: #1f2937;
+    --text: #e5e7eb;
+    --muted: #94a3b8;
+    --accent: #60a5fa;
+    --accent-soft: rgba(96, 165, 250, 0.18);
+    --tok-hover: #1e293b;
+    color-scheme: dark;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+}
+
+button {
+  font: inherit;
+  padding: 0.32rem 0.7rem;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+button.ghost {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--border);
+}
+
+button.ghost:hover:not(:disabled) {
+  background: var(--tok-hover);
+}
+
+.desk {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 16px 48px;
+}
+
+.boot {
+  padding: 48px;
+  color: var(--muted);
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 0 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.transport {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.clock {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+  font-size: 1.05rem;
+  min-width: 9ch;
+  text-align: right;
+  color: var(--muted);
+}
+
+.waveform {
+  margin: 12px 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px;
+}
+
+.actionbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 0 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.notice {
+  margin: 10px 0;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  font-size: 0.88rem;
+  white-space: pre-wrap;
+}
+
+.error-text {
+  color: var(--danger);
+}
+
+.warn {
+  color: var(--warn);
+  font-size: 0.78rem;
+}
+
+.sentence-list {
+  padding-top: 8px;
+}
+
+.sentence {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+}
+
+.sentence.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.sentence-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.sentence-time {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  padding: 0.1rem 0.4rem;
+}
+
+.sentence-head .ghost {
+  font-size: 0.78rem;
+  padding: 0.1rem 0.45rem;
+}
+
+.tokens {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  font-size: 1.05rem;
+  line-height: 2;
+}
+
+.token {
+  padding: 0 1px;
+  border-radius: 3px;
+  cursor: text;
+  user-select: none;
+  transition: background 60ms linear;
+}
+
+.token:hover {
+  background: var(--tok-hover);
+}
+
+.token.selected {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* Derived timings are interpolated, not observed — mark them so nobody trusts
+   the millisecond value as ground truth. */
+.token.derived {
+  border-bottom: 1px dotted var(--border);
+}
+
+.token .punct {
+  color: var(--muted);
+}
+
+.selection-bar {
+  position: sticky;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0 0;
+  padding: 10px 14px;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.12);
+}
+
+.selection-info {
+  font-size: 0.88rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.text-edit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.text-edit input {
+  font: inherit;
+  padding: 0.3rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  min-width: 260px;
+}
+
+.edit-original {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
