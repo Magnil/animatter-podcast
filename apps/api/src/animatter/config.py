@@ -60,6 +60,12 @@ class Settings(BaseSettings):
         default="dashscope.aliyuncs.com", validation_alias="DASHSCOPE_REGION_HOST"
     )
     asr_model: str = "qwen-audio-3.1-asr-flash-filetrans"
+    #: Proof-reading and outline extraction. qwen-plus is enough for
+    #: "find what looks wrong" work and much cheaper than the big models.
+    llm_model: str = "qwen-plus"
+    #: Default instant-hotword weight. 5 was measured to corrupt correct
+    #: words (AGENT.md §6.1), so 3 is the deliberate default.
+    hotword_default_weight: int = 3
 
     # --- media limits (see AGENT.md §2) -------------------------------
     max_upload_bytes: int = 1_000_000_000  # Bailian temporary storage hard limit
@@ -96,6 +102,16 @@ class Settings(BaseSettings):
         recommends it for isolation and stability; both accept the same calls.
         """
         return f"https://{self.dashscope_region_host}/api/v1"
+
+    @property
+    def dashscope_compatible_base(self) -> str:
+        """OpenAI-compatible endpoint root.
+
+        This sits at the **domain root** as ``/compatible-mode/v1``, not under
+        ``/api/v1`` — the two APIs use different prefixes on the same host, and
+        reusing :attr:`dashscope_api_base` here returns 404.
+        """
+        return f"https://{self.dashscope_region_host}/compatible-mode/v1"
 
     @property
     def db_path(self) -> Path:
