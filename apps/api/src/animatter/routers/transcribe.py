@@ -15,6 +15,7 @@ from animatter.db import Database
 from animatter.errors import AppError
 from animatter.log import get_logger
 from animatter.models import Media, TranscriptVersion
+from animatter.services import hotwords as hotword_service
 from animatter.services import transcribe as transcribe_service
 
 router = APIRouter(prefix="/api", tags=["transcribe"])
@@ -47,6 +48,13 @@ class TranscribeIn(BaseModel):
     channel_id: int = 0
     diarization: bool = True
     speaker_count: int | None = 2
+    #: ``True`` → merge the project's global and episode hotwords into
+    #: ``parameters.vocabulary``. The client used to send this flag only for the
+    #: field to be silently dropped by pydantic, so *every* transcription ran
+    #: with an empty vocabulary no matter what the UI said (AGENT.md §2.1).
+    use_hotwords: bool = False
+    #: Explicit override; when omitted and ``use_hotwords`` is set, the stored
+    #: glossary is used. Kept for the CLI and for replaying a historical run.
     vocabulary: dict[str, int] | None = None
     vocabulary_id: str | None = None
     context_text: str | None = None
@@ -59,6 +67,10 @@ class VersionOut(BaseModel):
     token_count: int
     sentence_count: int
     created_at: str
+    #: How many glossary terms actually went into ``parameters.vocabulary``.
+    #: Zero is a real, reportable answer — it is what the UI needs to tell
+    #: "hotwords were off" apart from "hotwords were on but the list was empty".
+    hotword_count: int = 0
 
 
 class TokenOut(BaseModel):
@@ -153,13 +165,30 @@ def transcribe(
             status=404,
         )
 
+    vocabulary = payload.vocabulary
+    trimmed = 0
+    if vocabulary is None and payload.use_hotwords:
+        # Merge the glossary here rather than in the service: the transcript job
+        # snapshot has to record what was *actually* sent, and this is the only
+        # place that knows the project + media pair the glossary is keyed by.
+        vocabulary, trimmed = hotword_service.effective_vocabulary(
+            session, project_id=project_id, media_id=payload.media_id
+        )
+        log.info(
+            "transcribe.hotwords",
+            project_id=project_id,
+            media_id=payload.media_id,
+            terms=len(vocabulary),
+            trimmed=trimmed,
+        )
+
     options = transcribe_service.TranscribeOptions(
         model=payload.model or settings.asr_model,
         language_hints=tuple(payload.language_hints),
         channel_id=payload.channel_id,
         diarization=payload.diarization,
         speaker_count=payload.speaker_count,
-        vocabulary=payload.vocabulary,
+        vocabulary=vocabulary,
         vocabulary_id=payload.vocabulary_id,
         context_text=payload.context_text,
     )
@@ -173,6 +202,7 @@ def transcribe(
         token_count=version.token_count,
         sentence_count=version.sentence_count,
         created_at=version.created_at,
+        hotword_count=len(vocabulary or {}),
     )
 
 

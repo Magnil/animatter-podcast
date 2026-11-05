@@ -22,7 +22,7 @@ import { SubtitlePanel } from "./SubtitlePanel";
 import { HotwordPanel } from "./HotwordPanel";
 import { MenuBar, type Menu } from "./MenuBar";
 import { SentenceList, findActiveSentence, tokenRangeOfSentences, type TokenSelection } from "./SentenceList";
-import { SettingsDialog } from "./SettingsDialog";
+import { SettingsDialog, type SettingsSection } from "./SettingsDialog";
 import { Waveform, type EdgeHandle, type Marker } from "./Waveform";
 import {
   audibleStart,
@@ -66,6 +66,7 @@ export function App(): React.JSX.Element {
   const [sentenceSelection, setSentenceSelection] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("models");
   // Bumped after every successful edit so the history panel refetches.
   const [historyRevision, setHistoryRevision] = useState(0);
 
@@ -138,6 +139,8 @@ export function App(): React.JSX.Element {
       sentenceSelection={sentenceSelection}
       settingsOpen={settingsOpen}
       setSettingsOpen={setSettingsOpen}
+      settingsSection={settingsSection}
+      setSettingsSection={setSettingsSection}
       onSettingsSaved={() => setHistoryRevision((v) => v + 1)}
       historyRevision={historyRevision}
       setNotice={setNotice}
@@ -161,6 +164,8 @@ interface DeskProps {
   onSentenceSelectionChange: (selection: Set<number>) => void;
   settingsOpen: boolean;
   setSettingsOpen: (value: boolean) => void;
+  settingsSection: SettingsSection;
+  setSettingsSection: (section: SettingsSection) => void;
   onSettingsSaved: (settings: AppSettings) => void;
   historyRevision: number;
   setBusy: (value: boolean) => void;
@@ -176,6 +181,8 @@ function Desk({
   sentenceSelection,
   settingsOpen,
   setSettingsOpen,
+  settingsSection,
+  setSettingsSection,
   onSettingsSaved,
   historyRevision,
   setNotice,
@@ -551,7 +558,22 @@ function Desk({
         id: "settings",
         label: "设置",
         items: [
-          { id: "open", label: "模型与参数…", onSelect: () => setSettingsOpen(true) },
+          {
+            id: "open",
+            label: "模型与参数…",
+            onSelect: () => {
+              setSettingsSection("models");
+              setSettingsOpen(true);
+            },
+          },
+          {
+            id: "hotword-settings",
+            label: "热词与校对…",
+            onSelect: () => {
+              setSettingsSection("hotwords");
+              setSettingsOpen(true);
+            },
+          },
           "separator",
           {
             id: "hotwords",
@@ -620,7 +642,7 @@ function Desk({
         ],
       },
     ],
-    [boot.version.id, edl, onReload, renderExport, run, setSettingsOpen, settings],
+    [boot.version.id, edl, onReload, renderExport, run, setSettingsOpen, setSettingsSection, settings],
   );
 
   /**
@@ -879,6 +901,10 @@ function Desk({
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         onSaved={onSettingsSaved}
+        projectId={boot.projectId}
+        mediaId={boot.mediaId}
+        section={settingsSection}
+        onHotwordsChanged={() => void reloadHotwords()}
       />
 
       <NewProjectDialog

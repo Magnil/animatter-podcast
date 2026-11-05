@@ -18,6 +18,7 @@ from animatter.providers.llm.bailian import BailianLlm
 from animatter.services import corrections as correction_service
 from animatter.services import hotwords as hotword_service
 from animatter.services import proofread as proofread_service
+from animatter.services import settings_store
 from animatter.services import transcribe as transcribe_service
 
 router = APIRouter(prefix="/api", tags=["proofread"])
@@ -46,7 +47,9 @@ class CandidateOut(BaseModel):
 class ProofreadIn(BaseModel):
     project_id: str
     media_id: str
-    chunk_size: int = 25
+    #: ``None`` → use the saved 设置 → 热词与校对 value, so the dialog and the
+    #: request cannot drift apart.
+    chunk_size: int | None = None
     dry_run: bool = False
 
 
@@ -113,6 +116,13 @@ def proofread(
     if version.project_id != payload.project_id:
         raise AppError("version_project_mismatch", "该版本不属于这个项目")
 
+    if not settings_store.get_setting(session, "use_proofread"):
+        raise AppError(
+            "proofread_disabled",
+            "LLM 校对已在设置里关闭",
+            hint="打开「设置 → 热词与校对 → 启用 LLM 校对」后再试。",
+        )
+
     vocabulary, _trimmed = hotword_service.effective_vocabulary(
         session, project_id=payload.project_id, media_id=payload.media_id
     )
@@ -126,6 +136,7 @@ def proofread(
     tokens = transcribe_service.load_tokens(session, version_id)
     sentences = transcribe_service.load_sentences(session, version_id)
 
+    chunk_size = payload.chunk_size or int(settings_store.get_setting(session, "proofread_chunk_size"))
     llm = _llm(request)
     with build_client() as client:
         outcome = proofread_service.review(
@@ -134,7 +145,7 @@ def proofread(
             hotwords=vocabulary,
             llm=llm,
             client=client,
-            chunk_size=max(5, min(payload.chunk_size, 50)),
+            chunk_size=max(5, min(chunk_size, 50)),
         )
 
     stored = (

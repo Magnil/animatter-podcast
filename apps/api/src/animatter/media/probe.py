@@ -55,7 +55,9 @@ def _run_version(binary: str, name: str) -> ToolStatus:
         completed = subprocess.run(
             [resolved, "-version"],
             capture_output=True,
-            text=True,
+            # Same reason as media/ffmpeg.py: `text=True` means "locale codec".
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
             check=False,
         )

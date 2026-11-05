@@ -525,6 +525,58 @@ button.ghost:hover:not(:disabled) {
   color: var(--muted);
 }
 
+/* --- waveform scroll + zoom (M4b) --- */
+
+.waveform-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.waveform-zoom {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-top: 4px;
+}
+
+.waveform-zoom button {
+  min-width: 22px;
+  padding: 1px 6px;
+  line-height: 1.3;
+}
+
+.waveform-scroll {
+  position: relative;
+  height: 10px;
+  margin-top: 6px;
+  border-radius: 5px;
+  background: rgba(148, 163, 184, 0.22);
+  cursor: pointer;
+  touch-action: none;
+}
+
+/* Nothing to scroll at full zoom-out; keep the space so the layout never jumps. */
+.waveform-scroll.idle {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.waveform-thumb {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  border-radius: 5px;
+  background: var(--accent);
+  opacity: 0.75;
+}
+
+.waveform-scroll:hover .waveform-thumb {
+  opacity: 1;
+}
+
 /* --- EDL panel (M4) --- */
 
 button.danger {
@@ -807,6 +859,38 @@ button.danger {
 .tabs {
   display: flex;
   gap: 2px;
+}
+
+/* --- reusable hotword editor (sidebar, new-project dialog, settings) --- */
+
+.hotword-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hotword-editor.compact .chips {
+  max-height: 74px;
+}
+
+.new-project-hotwords {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent-soft);
+}
+
+/* Settings grew a hotword editor; two columns would make it unusably narrow. */
+.modal-wide {
+  width: min(940px, 94vw);
+}
+
+.settings-hotwords {
+  grid-column: 1 / -1;
 }
 
 .tab {

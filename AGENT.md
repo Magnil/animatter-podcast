@@ -1589,3 +1589,140 @@ project_id VARCHAR(64) NOT NULL      -- 但按项目归属
 - 视觉走查用 `apps/web/harness.html?scene=bubble|correct|speaker|rename|drag|multi`，
   它用固定数据挂载 `SentenceList`，因此每个状态都能单独截图——真实工作台里
   截不到"气泡打开着"这种瞬间。
+
+## 热词真正生效、波形缩放与中文路径（2026-11-06）
+
+这一轮修的是五条用户报的缺陷。前两条看起来是"界面没做"，其实是**数据没到**；
+第三条是根因性的；只有第五条纹波是纯交互工作。
+
+### 缺陷 1：中文文件名识别不了
+
+现象是"用中文路径上传失败，改成英文就好了"。听上去像编码校验或文件选择器的问题，
+实际是 `subprocess.run(..., text=True)`。
+
+`text=True` 等价于用 **locale 编码**解码子进程输出。这台机器是中文 Windows，
+`locale.getpreferredencoding(False)` 是 **cp936**，而 `sys.getfilesystemencoding()`
+是 utf-8——两个编码不一致，问题就藏在这个缝里：
+
+1. ffprobe 的 JSON 里会把它读到的**文件名原样回显**；
+2. 文件名含中文 → UTF-8 字节 → 用 cp936 解码 → 解码线程抛 `UnicodeDecodeError`；
+3. `subprocess.run` 把这个异常**吞掉**，`returncode` 仍是 0，但 `stdout` 变成 `None`；
+4. `probe()` 拿到 `None` 去 `json.loads("{}")` → `streams == []` →
+   报"文件里没有音轨"。
+
+也就是说：文件是好的，ffprobe 也是成功的，报错信息完全指向错误的方向。
+真机脚本 `probe_text_mode.py` 的对照结果：`text=True -> rc 0, stdout is None: True`，
+`encoding="utf-8" -> rc 0, streams: 1`。
+
+修法：`media/ffmpeg.py`、`media/render.py`、`media/probe.py` 一律
+`capture_output=True, encoding="utf-8", errors="replace", check=False`。
+`errors="replace"` 是刻意的：文件名被替换成 `?` 不该成为拒绝这段音频的理由。
+`media/peaks.py` 本来就停留在字节模式（`s16le` PCM），不受影响。
+
+回归测试 `tests/test_media_paths.py` 覆盖中文文件名、中文目录名、中文目标路径，
+外加一条 **AST 级**的"谁都不许再用 `text=True`"检查——不是字符串匹配，因为那三个
+模块的注释里正好写着 `text=True` 这个反面教材，纯 grep 会误伤自己的文档。
+
+### 缺陷 2 & 3：热词从来没被发出去
+
+用户的原话："加了全局热词「漫物质」「马小褂」，依然识别成「漫无日」「马小挂」，
+需要排除一下，增加的热词是否在生效？"——**没有生效，一次都没有。**
+
+链路追下来是这样断的：
+
+```
+NewProjectDialog  → POST /transcribe { use_hotwords: true }
+TranscribeIn      → 没有 use_hotwords 字段 → pydantic 静默丢弃
+TranscribeOptions → vocabulary = None
+AsrRequest        → vocabulary = {}
+_build_body       → parameters 里没有 vocabulary
+```
+
+`existing_vocabulary()` 早就在 `services/hotwords.py` 里写好，`routers/hotwords.py`
+和 `routers/proofread.py` 都在用，只有**转写这条路没调**。
+数据库里 `transcribe_job.params_json` 记的是 `"vocabulary": {}`，是自证。
+
+两处根因，都得修：
+
+1. `TranscribeIn` 加 `use_hotwords: bool = False`；路由里在
+   `vocabulary is None and use_hotwords` 时调用
+   `hotword_service.effective_vocabulary(...)`，并且**在路由层合并**而不是在
+   service 层，因为 job 快照要记录"这次实际发了什么"。
+2. 加了 `VersionOut.hotword_count`，把实际条数返回给前端。0 是一个有意义的答案：
+   它把"热词关了"和"热词开了但表是空的"区分开，UI 才能说清楚。
+
+验证用 `scripts/verify_hotwords.py`（真后端 + 真百炼 + 真 SQLite）：
+
+```
+episode hotwords: 马小褂
+vocabulary preview: {"漫物质": 3, "马小褂": 3}
+version: hotword_count = 2
+params.vocabulary: {"漫物质": 3, "马小褂": 3}
+转写文本：「各位听众大家好，欢迎收听本期的漫物质，我是今天的主持马小褂。」
+```
+
+同一段音频、同一句话，在热词生效前是"漫无日 / 马小挂"。
+
+### 缺陷 4：热词编辑搬到该在的地方
+
+原来的流程是"先转写完，进了工作台，才有热词面板"——热词是识别的**输入**，
+等识别完了再提供编辑入口，等于把唯一有用的时机错过了。勾选框指向一个用户
+还没法填的列表，是这个缺陷最直白的表现。
+
+- 抽出 `HotwordEditor`（`apps/web/src/HotwordEditor.tsx`），
+  一处实现、三处复用：工作台侧栏、新建项目对话框、设置里。
+  三份拷贝迟早会漂移，何况其中一份还要处理"还没有 media_id"的中间态。
+- 新建项目对话框：勾上"转写时启用热词"就在下方展开编辑器。
+  **本期热词先存本地草稿**——它只能挂到 media_id 上，而 media 要等项目创建后才有；
+  提前建项目会在用户取消时留下孤儿项目。所以在 `create()` 里、
+  **转写之前**才 `setEpisodeHotwords(...)` 落库，然后才发识别请求。
+- 设置菜单拆成两项：「模型与参数…」和「热词与校对…」，打开同一个对话框、
+  滚到不同 section（`SettingsSection`）。"热词与校对"里放全局热词、本期热词、
+  `use_hotwords`、`use_proofread`、`hotword_weight`、`proofread_chunk_size`。
+- 顺带发现一个 API 设计缺陷：`POST /media/{id}/hotwords` 是**整体替换**语义
+  （大纲提取需要重建整张表），前端"添加一个词"也复用它，就会把已有的词全删掉。
+  界面上表现为"加了第二个嘉宾名，第一个没了"。修法是加两个**窄操作**端点：
+  `POST .../hotwords/append` 和 `DELETE .../hotwords/{text}`，
+  `addEpisodeHotword` 改打 append。`tests/test_hotwords_episode.py` 用 9 条用例
+  把"追加"和"替换"两种语义钉开，其中一条专门测"替换端点仍然是替换"，
+  免得后人把它也"修"成追加。
+
+### 缺陷 5：波形滚动与滚轮缩放
+
+波形一直是"整段压到容器宽度"，一小时节目等于一个像素 4 秒，什么都看不出来。
+
+关键决策：**缩放是窗口，不是更宽的画布**。3 小时、64 buckets/s 是 69 万个桶，
+8 倍缩放就是 550 万个，浏览器会先被 JSON 噎死，一个像素都画不出来。所以画布宽度
+保持容器宽，只画 `[from_ms, to_ms)`——这正是后端 `GET /waveform?from_ms=&to_ms=
+&buckets_per_second=` 早就支持的形状，**后端一行没改**。
+
+- 滚轮缩放锚定**指针位置**（`zoomAt`），不是窗口中心。锚在中心的话，
+  每滚一格光标下的词就往边上滑，用户得用滚动条追它。
+- 滚动条是**自绘滑块**而不是原生 overflow：没有更宽的元素可以滚。
+  滑块可拖、轨道可点击翻页、双击回到全览。
+- 请求按窗口宽度重算 `buckets_per_second`（`bucketsForWindow`），并做 90ms 防抖；
+  不重算的话，放大后波形会变成台阶。滚到底时放行 `deltaY`，页面还能正常滚动。
+- 缩放算术抽成 `apps/web/src/waveView.ts` 纯函数，19 条 `node --test` 用例覆盖：
+  边界钳制、锚点不动、放大再缩小回到原窗口、"零倍缩放"不除零、
+  文件比最小窗口还短、滑块不会跑出轨道。
+- 播放头跟着窗口走（只缩小到 1 倍时不跟随），否则放大后红线会走出屏幕。
+
+### 验证
+
+- 后端 **432 用例**（新增 `test_transcribe_hotwords.py` 5 条、
+  `test_media_paths.py` 7 条、`test_hotwords_episode.py` 9 条），
+  `mypy --strict` 59 文件干净，`ruff` 干净。
+- 前端 `node --test` **77 条**（新增 `waveView.test.mjs` 19 条），`tsc --noEmit` 干净，
+  `vite build` 通过。
+- 真机 CDP 三个新脚本：
+  - `check-waveform-zoom.mjs`：滚轮 4 格 → 滑块 `40.97%`、读数 `17.6s → 7.2s`
+    （75s 音频时 `1.3 分钟 → 30.8 秒`）→ 拖滑块 → `aria-valuenow` 4402
+    → 点「全部」→ 滑块回到 100% 且 `idle`；再开设置并断言出现
+    `["模型","热词与校对","剪辑参数","导出"]` 且编辑器里有 `漫物质/马小褂`。
+  - `check-new-project-hotwords.mjs`：取消勾选 → 编辑器消失；重新勾选 → 出现；
+    输入「马小褂」→ 本期 1 个、提示从"2 个热词"变"3 个热词"；
+    切到全局页 → 看到全局的两个词。
+  - `check-hotword-panel.mjs`：加一个临时词 → 原有的「马小褂」还在 →
+    删掉临时词 → 恢复原状（这条专门盯住上面那个"追加变成替换"的缺陷）。
+- 数据库里留了一个可复现的项目：「热词验证 · 马小褂/漫物质」，
+  75s 真音频、167 词、10 句，热词生效后「漫物质」「马小褂」都正确。

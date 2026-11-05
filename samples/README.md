@@ -17,3 +17,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/make_sample.ps1
 生成脚本必须用 **UTF-8 with BOM** 保存，否则中文输入不可信。
 
 `tests/test_live_transcribe.py` 内部用同样的方式现场合成音频，不依赖本目录的文件。
+
+## 本地临时素材
+
+`test.mp3`（75 秒真实播客片段）和它的中文名副本 `测试中文.mp3` 是本地验证用的，
+同样**不入库**（`.gitignore` 里忽略了 `samples/*.mp3`）。中文名副本的用途很具体：
+验证文件名含中文时 `ffprobe` 那条路径不会坏（见 AGENT.md「热词真正生效」一节）。

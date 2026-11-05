@@ -276,11 +276,32 @@ export const api = {
   episodeHotwords: (projectId: string, mediaId: string) =>
     request<HotwordItem[]>(`/api/projects/${projectId}/media/${mediaId}/hotwords`),
 
+  /**
+   * Replace the whole per-episode list.
+   *
+   * Note the *replace*, not *append*: the endpoint exists so outline extraction
+   * can regenerate the list wholesale. A call that only names the new term
+   * therefore silently deletes every existing one — ``addEpisodeHotword`` below
+   * posts to /append instead, and that is the one the UI uses for a single word.
+   */
+  setEpisodeHotwords: (projectId: string, mediaId: string, texts: string[], weight = 3) =>
+    request<{ accepted: HotwordItem[]; rejected: { text: string; reason: string }[] }>(
+      `/api/projects/${projectId}/media/${mediaId}/hotwords`,
+      {
+        method: "POST",
+        body: JSON.stringify(texts.map((text) => ({ text, weight }))),
+      },
+    ),
+
+  /** Append one term, leaving the rest of the episode's list untouched. */
   addEpisodeHotword: (projectId: string, mediaId: string, text: string, weight = 3) =>
-    request<{ accepted: HotwordItem[] }>(`/api/projects/${projectId}/media/${mediaId}/hotwords`, {
-      method: "POST",
-      body: JSON.stringify([{ text, weight }]),
-    }),
+    request<{ accepted: HotwordItem[]; rejected: { text: string; reason: string }[] }>(
+      `/api/projects/${projectId}/media/${mediaId}/hotwords/append`,
+      {
+        method: "POST",
+        body: JSON.stringify([{ text, weight }]),
+      },
+    ),
 
   removeEpisodeHotword: (projectId: string, mediaId: string, text: string) =>
     request<void>(
@@ -315,7 +336,7 @@ export const api = {
     }),
 
   transcribe: (projectId: string, mediaId: string, options: { model?: string; hotwords?: boolean }) =>
-    request<{ id: string }>(`/api/projects/${projectId}/transcribe`, {
+    request<{ id: string; hotword_count: number }>(`/api/projects/${projectId}/transcribe`, {
       method: "POST",
       body: JSON.stringify({
         media_id: mediaId,
@@ -439,6 +460,7 @@ export interface AppSettings {
   use_hotwords: boolean;
   diarization: boolean;
   speaker_count: number;
+  use_proofread: boolean;
   proofread_chunk_size: number;
   snap_to_silence: boolean;
   guard_ms: number;

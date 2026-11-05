@@ -186,6 +186,60 @@ def replace_episode_hotwords(
     )
 
 
+@router.post(
+    "/projects/{project_id}/media/{media_id}/hotwords/append",
+    response_model=HotwordWriteOut,
+    status_code=201,
+)
+def append_episode_hotwords(
+    project_id: str,
+    media_id: str,
+    terms: list[TermIn],
+    session: Session = Depends(_session_dependency),
+) -> HotwordWriteOut:
+    """Add terms to an episode's list without disturbing the ones already there.
+
+    Distinct from the replace endpoint above, which exists so outline extraction
+    can regenerate the list wholesale. "Add one word" posted to *that* endpoint
+    silently deletes every other term, which is exactly the sort of thing that
+    looks like a UI bug and is really an API design bug.
+    """
+    candidates = [
+        HotwordCandidate(
+            text=t.text,
+            weight=t.weight,
+            lang=t.lang,
+            kind=t.kind,
+            evidence=t.evidence,
+            origin="manual",
+        )
+        for t in terms
+    ]
+    report = hotword_service.append_episode(
+        session, project_id=project_id, media_id=media_id, candidates=candidates
+    )
+    return HotwordWriteOut(
+        accepted=[TermOut(text=c.text, weight=c.weight, lang=c.lang, enabled=True) for c in report.accepted],
+        rejected=[RejectedOut(text=text, reason=reason) for text, reason in report.rejected],
+        downweighted=[{"text": text, "from": old, "to": new} for text, old, new in report.downweighted],
+    )
+
+
+@router.delete("/projects/{project_id}/media/{media_id}/hotwords/{text}", status_code=204)
+def delete_episode_hotword(
+    project_id: str,
+    media_id: str,
+    text: str,
+    session: Session = Depends(_session_dependency),
+) -> None:
+    """Remove one term from this episode's list.
+
+    The client used to delete by re-POSTing the whole list, which is fine until
+    two removals race; a real DELETE keeps the operation as narrow as the click.
+    """
+    hotword_service.remove_episode(session, project_id=project_id, media_id=media_id, text=text)
+
+
 @router.get("/projects/{project_id}/media/{media_id}/vocabulary")
 def episode_vocabulary(
     project_id: str, media_id: str, session: Session = Depends(_session_dependency)

@@ -253,8 +253,71 @@ def replace_episode(
     return report
 
 
-def effective_vocabulary(
-    session: Session, *, project_id: str, media_id: str, limit: int = 450
+def append_episode(
+    session: Session,
+    *,
+    project_id: str,
+    media_id: str,
+    candidates: list[HotwordCandidate],
+    limit: int = 450,
+) -> SanitizeReport:
+    """Add terms to an episode's list, keeping the ones already stored.
+
+    ``replace_episode`` is for outline regeneration; using it to add a single
+    word deletes the rest of the list, so the add path needs its own verb.
+    """
+    report = sanitize(candidates, limit=limit)
+    existing = {row.text: row for row in list_episode(session, project_id, media_id)}
+    now_texts: set[str] = set()
+    for candidate in report.accepted:
+        row = existing.get(candidate.text)
+        if row is None:
+            session.add(
+                EpisodeHotword(
+                    id=new_id("ehw"),
+                    project_id=project_id,
+                    media_id=media_id,
+                    text=candidate.text,
+                    weight=candidate.weight,
+                    lang=candidate.lang,
+                    origin=candidate.origin,
+                    evidence=candidate.evidence,
+                    enabled=True,
+                )
+            )
+        else:
+            row.weight = candidate.weight
+            row.lang = candidate.lang
+            row.enabled = True
+        now_texts.add(candidate.text)
+    session.flush()
+    log.info("hotwords.episode_appended", project_id=project_id, count=len(now_texts))
+    return report
+
+
+def remove_episode(session: Session, *, project_id: str, media_id: str, text: str) -> None:
+    """Delete one term from an episode's list.
+
+    Separate from ``replace_episode`` because the UI's "×" removes a single
+    term: making the client read-modify-write the whole list means two clients
+    removing different terms would each resurrect the other's. Idempotent, so a
+    double click is not an error.
+    """
+    row = session.scalars(
+        select(EpisodeHotword).where(
+            EpisodeHotword.project_id == project_id,
+            EpisodeHotword.media_id == media_id,
+            EpisodeHotword.text == text,
+        )
+    ).first()
+    if row is None:
+        return
+    session.delete(row)
+    session.flush()
+    log.info("hotwords.episode_removed", project_id=project_id, text=text)
+
+
+def effective_vocabulary(    session: Session, *, project_id: str, media_id: str, limit: int = 450
 ) -> tuple[dict[str, int], int]:
     """Global + episode terms merged for one recognition call.
 

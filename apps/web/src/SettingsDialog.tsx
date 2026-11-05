@@ -2,23 +2,37 @@
  * Settings dialog opened from the menu bar.
  *
  * Grouped by *when* a setting takes effect, because that is what the user needs
- * to know: model settings need re-transcription, editing settings apply to the
- * next render, export settings apply at export time. Mixing them in one flat
- * list invites the assumption that changing the ASR model fixes an existing
- * transcript.
+ * to know: model settings need re-transcription, hotwords need a re-run before
+ * they can influence recognition, editing settings apply to the next render,
+ * export settings apply at export time. Mixing them in one flat list invites the
+ * assumption that changing the ASR model fixes an existing transcript.
+ *
+ * 热词与校对 exists as a section because the glossary stopped being a
+ * write-only list nobody could find: the terms an episode needs are decided
+ * right before you transcribe it, and the LLM pass that fixes what ASR still got
+ * wrong re-reads the same list. Both belong together, and both belonged in this
+ * menu rather than only in the sidebar.
  */
 
-import { useEffect, useState } from "react";
-import { api, type AppSettings } from "./api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api, type AppSettings, type HotwordItem } from "./api";
+import { HotwordEditor, type HotwordTab } from "./HotwordEditor";
+
+/** Which section the menu item asked for; scrolled into view on open. */
+export type SettingsSection = "models" | "hotwords" | "editing" | "export";
 
 interface Props {
   open: boolean;
   onClose: () => void;
   onSaved: (settings: AppSettings) => void;
+  /** Absent when no project is loaded; the episode tab is then disabled. */
+  projectId?: string;
+  mediaId?: string;
+  onHotwordsChanged?: () => void;
+  section?: SettingsSection;
 }
 
-type NumericKey =
-  | "hotword_weight"
+type NumericKey =  | "hotword_weight"
   | "speaker_count"
   | "proofread_chunk_size"
   | "guard_ms"
@@ -38,12 +52,44 @@ const NUMERIC: { key: NumericKey; label: string; min: number; max: number; hint:
   { key: "subtitle_max_lines", label: "最多行数", min: 1, max: 4, hint: "两行是常见上限" },
 ];
 
-export function SettingsDialog({ open, onClose, onSaved }: Props): React.JSX.Element | null {
+export function SettingsDialog({
+  open,
+  onClose,
+  onSaved,
+  projectId,
+  mediaId,
+  onHotwordsChanged,
+  section = "models",
+}: Props): React.JSX.Element | null {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [models, setModels] = useState<{ id: string; instant_vocabulary: boolean; diarization: boolean }[]>([]);
   const [llmModels, setLlmModels] = useState<string[]>([]);
+  const [globalHotwords, setGlobalHotwords] = useState<HotwordItem[]>([]);
+  const [episodeHotwords, setEpisodeHotwords] = useState<HotwordItem[]>([]);
+  const [hotwordTab, setHotwordTab] = useState<HotwordTab>("global");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const sectionRefs = useRef<Record<string, HTMLElement | null>>({});
+
+  // Two menu items open this dialog ("模型与参数…" and "热词与校对…"); land on
+  // the section that was asked for instead of making the user scroll.
+  useEffect(() => {
+    if (!open || !settings) return;
+    const element = sectionRefs.current[section];
+    if (element) element.scrollIntoView({ block: "start" });
+  }, [open, section, settings]);
+
+  const refreshHotwords = useCallback(async () => {
+    const global = await api.globalHotwords();
+    setGlobalHotwords(global);
+    if (projectId && mediaId) {
+      const episode = await api.episodeHotwords(projectId, mediaId);
+      setEpisodeHotwords(episode);
+    } else {
+      setEpisodeHotwords([]);
+    }
+    onHotwordsChanged?.();
+  }, [mediaId, onHotwordsChanged, projectId]);
 
   useEffect(() => {
     if (!open) return;
@@ -59,10 +105,13 @@ export function SettingsDialog({ open, onClose, onSaved }: Props): React.JSX.Ele
       .catch((caught: unknown) => {
         if (!cancelled) setError(caught instanceof Error ? caught.message : String(caught));
       });
+    void refreshHotwords().catch((caught: unknown) => {
+      if (!cancelled) setError(caught instanceof Error ? caught.message : String(caught));
+    });
     return () => {
       cancelled = true;
     };
-  }, [open]);
+  }, [open, refreshHotwords]);
 
   useEffect(() => {
     if (!open) return;
@@ -93,10 +142,26 @@ export function SettingsDialog({ open, onClose, onSaved }: Props): React.JSX.Ele
     }
   };
 
+  const numeric = (item: (typeof NUMERIC)[number]): React.JSX.Element => (
+    <label className="field" key={item.key}>
+      <span>
+        {item.label}
+        <em className="hint">{item.hint}</em>
+      </span>
+      <input
+        type="number"
+        min={item.min}
+        max={item.max}
+        value={settings ? settings[item.key] : item.min}
+        onChange={(event) => patch(item.key, Number(event.target.value))}
+      />
+    </label>
+  );
+
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
       <div
-        className="modal"
+        className="modal modal-wide"
         role="dialog"
         aria-modal="true"
         aria-label="设置"
@@ -114,7 +179,7 @@ export function SettingsDialog({ open, onClose, onSaved }: Props): React.JSX.Ele
           <p className="muted">载入中…</p>
         ) : (
           <div className="modal-body">
-            <section>
+            <section ref={(node) => { sectionRefs.current.models = node; }}>
               <h3>模型</h3>
               <p className="section-note">改动后需要重新转写才会生效。</p>
               <label className="field">
@@ -147,6 +212,26 @@ export function SettingsDialog({ open, onClose, onSaved }: Props): React.JSX.Ele
               <label className="field checkbox">
                 <input
                   type="checkbox"
+                  checked={settings.diarization}
+                  onChange={(event) => patch("diarization", event.target.checked)}
+                />
+                <span>区分说话人</span>
+              </label>
+              {NUMERIC.slice(1, 2).map(numeric)}
+            </section>
+
+            <section
+              className="settings-hotwords"
+              ref={(node) => { sectionRefs.current.hotwords = node; }}
+            >
+              <h3>热词与校对</h3>
+              <p className="section-note">
+                热词是识别的输入：改完要重新转写才会生效。校对用同一份热词让 LLM 再核一遍。
+              </p>
+
+              <label className="field checkbox">
+                <input
+                  type="checkbox"
                   checked={settings.use_hotwords}
                   onChange={(event) => patch("use_hotwords", event.target.checked)}
                 />
@@ -155,14 +240,34 @@ export function SettingsDialog({ open, onClose, onSaved }: Props): React.JSX.Ele
               <label className="field checkbox">
                 <input
                   type="checkbox"
-                  checked={settings.diarization}
-                  onChange={(event) => patch("diarization", event.target.checked)}
+                  checked={settings.use_proofread}
+                  onChange={(event) => patch("use_proofread", event.target.checked)}
                 />
-                <span>区分说话人</span>
+                <span>启用 LLM 校对（以热词为依据）</span>
               </label>
+
+              {NUMERIC.slice(0, 1).map(numeric)}
+              {NUMERIC.slice(2, 3).map(numeric)}
+
+              <HotwordEditor
+                projectId={projectId}
+                mediaId={mediaId}
+                episodeHotwords={episodeHotwords}
+                globalHotwords={globalHotwords}
+                tab={hotwordTab}
+                onTabChange={setHotwordTab}
+                onChanged={refreshHotwords}
+                onNotice={(message) => setError(message)}
+              />
+
+              <p className="section-note">
+                {projectId && mediaId
+                  ? "本期热词只对这一期生效；全局热词每期都会带上。"
+                  : "还没有打开项目，只能编辑全局热词。"}
+              </p>
             </section>
 
-            <section>
+            <section ref={(node) => { sectionRefs.current.editing = node; }}>
               <h3>剪辑参数</h3>
               <p className="section-note">影响下一次渲染与边界吸附。</p>
               <label className="field checkbox">
@@ -181,24 +286,10 @@ export function SettingsDialog({ open, onClose, onSaved }: Props): React.JSX.Ele
                 />
                 <span>试听时跳过已删除片段</span>
               </label>
-              {NUMERIC.slice(0, 5).map((item) => (
-                <label className="field" key={item.key}>
-                  <span>
-                    {item.label}
-                    <em className="hint">{item.hint}</em>
-                  </span>
-                  <input
-                    type="number"
-                    min={item.min}
-                    max={item.max}
-                    value={settings[item.key]}
-                    onChange={(event) => patch(item.key, Number(event.target.value))}
-                  />
-                </label>
-              ))}
+              {NUMERIC.slice(3, 5).map(numeric)}
             </section>
 
-            <section>
+            <section ref={(node) => { sectionRefs.current.export = node; }}>
               <h3>导出</h3>
               <p className="section-note">仅在导出时生效，不改动工程。</p>
               <label className="field">
@@ -228,21 +319,7 @@ export function SettingsDialog({ open, onClose, onSaved }: Props): React.JSX.Ele
                   ))}
                 </select>
               </label>
-              {NUMERIC.slice(5).map((item) => (
-                <label className="field" key={item.key}>
-                  <span>
-                    {item.label}
-                    <em className="hint">{item.hint}</em>
-                  </span>
-                  <input
-                    type="number"
-                    min={item.min}
-                    max={item.max}
-                    value={settings[item.key]}
-                    onChange={(event) => patch(item.key, Number(event.target.value))}
-                  />
-                </label>
-              ))}
+              {NUMERIC.slice(5).map(numeric)}
             </section>
           </div>
         )}

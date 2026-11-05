@@ -32,6 +32,7 @@ DEFAULTS: dict[str, Any] = {
     # -- correction --
     "diarization": True,
     "speaker_count": 2,
+    "use_proofread": True,
     "proofread_chunk_size": 25,
     # -- editing --
     "snap_to_silence": True,
@@ -106,6 +107,7 @@ def reset(session: Session) -> dict[str, Any]:
 
 _BOOLS = {
     "use_hotwords",
+    "use_proofread",
     "diarization",
     "snap_to_silence",
     "realtime_skip",

@@ -34,6 +34,9 @@ Thumbs.db
 
 # 可再生的二进制样例不进版本库
 samples/*.wav
+samples/*.mp3
+samples/*.m4a
+samples/*.flac
 
 # 百炼控制台导出的凭据文件（明文 apiKey），永远不进版本库
 bailian-*.csv

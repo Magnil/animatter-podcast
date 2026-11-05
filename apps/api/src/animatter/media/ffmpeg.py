@@ -46,8 +46,27 @@ class MediaInfo:
 
 
 def _run(cmd: list[str], *, timeout: int = 3600) -> subprocess.CompletedProcess[str]:
+    """Run ffmpeg/ffprobe and decode its output as UTF-8.
+
+    **Never `text=True`.** That decodes with the *locale* codec, which on a
+    Chinese Windows is cp936. ffprobe echoes the input filename back inside its
+    JSON; for a path containing 中文 that raises ``UnicodeDecodeError`` in the
+    reader thread, and ``subprocess.run`` swallows it — leaving ``stdout`` as
+    ``None`` while still reporting ``returncode == 0``. The caller then parses
+    ``"{}"`` and concludes "文件里没有音轨" for a perfectly good file.
+
+    ``errors="replace"`` keeps the same failure from turning into an exception:
+    a mangled filename is not a reason to refuse the audio.
+    """
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            check=False,
+        )
     except FileNotFoundError as exc:
         raise AppError(
             "ffmpeg_missing",

@@ -64,7 +64,18 @@ def build_filtergraph(edl: Edl, *, sample_rate: int, channels: int, out_label: s
 
 def _run_ffmpeg(command: list[str], *, timeout: int = 7200) -> None:
     try:
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            # UTF-8 consciously, not `text=True`: the latter means "the locale
+            # codec", and on a Chinese Windows that is cp936 — decoding ffmpeg's
+            # UTF-8 diagnostics with it can raise and strand `stderr` as None,
+            # turning a real ffmpeg error into an unreadable one.
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            check=False,
+        )
     except FileNotFoundError as exc:
         raise AppError(
             "ffmpeg_missing",
