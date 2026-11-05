@@ -1,22 +1,30 @@
 /**
- * Sentence list with character-level selection.
+ * Sentence list with two kinds of selection.
  *
- * Tokens render as individual clickable cells rather than a contenteditable
- * block (AGENT.md §7.3): every edit reduces to a token-range operation, and DOM
- * selection ranges do not map onto that model reliably.
+ * The editor needs both granularities, and they mean different things:
  *
- * Text repair is **selection-driven**, not sentence-driven. The backend locates
- * the `original` string verbatim in the token stream, and punctuation lives in
- * `punc_after` rather than in the token text — so a whole-sentence string with
- * punctuation can never be located. Requiring an explicit character selection
- * keeps every request locatable by construction.
+ * * **Character selection** (`{from, to}` over tokens) — re-draw a boundary or
+ *   fix a word. Token cells render as individual clickable spans rather than a
+ *   contenteditable block (AGENT.md §7.3): every edit reduces to a token-range
+ *   operation, and DOM selection ranges do not map onto that model reliably.
+ * * **Sentence selection** (`Set<ord>`) — act on whole sentences: merge into a
+ *   neighbour, or delete several at once.
+ *
+ * They are separate state rather than one derived from the other, because that
+ * is what makes "select 5 sentences and delete" two clicks instead of a
+ * 300-character drag. Starting one clears the other, so the action bar always
+ * has exactly one unambiguous target.
+ *
+ * Text repair stays selection-driven: the backend locates `original` verbatim in
+ * the token stream, and punctuation lives in `punc_after`, so a whole-sentence
+ * string with punctuation could never be located.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Sentence, Token } from "./api";
 import { charsPerSecond, formatTime } from "./format";
 
-export interface Selection {
+export interface TokenSelection {
   from: number;
   to: number;
 }
@@ -25,12 +33,15 @@ interface Props {
   sentences: Sentence[];
   tokens: Token[];
   positionMs: number;
-  selection: Selection | null;
-  onSelectionChange: (selection: Selection | null) => void;
+  selection: TokenSelection | null;
+  sentenceSelection: Set<number>;
+  onSelectionChange: (selection: TokenSelection | null) => void;
+  onSentenceSelectionChange: (selection: Set<number>) => void;
   onPlaySentence: (sentence: Sentence) => void;
   onSeek: (ms: number) => void;
-  /** Replace the current selection with `proposed` (the range comes from `selection`). */
   onEditSelection: (proposed: string) => void;
+  /** Time ranges already deleted, so those sentences render struck through. */
+  deletedRanges: { start_ms: number; end_ms: number }[];
 }
 
 const CPS_WARN_ZH = 9;
@@ -40,12 +51,16 @@ export function SentenceList({
   tokens,
   positionMs,
   selection,
+  sentenceSelection,
   onSelectionChange,
+  onSentenceSelectionChange,
   onPlaySentence,
   onSeek,
   onEditSelection,
+  deletedRanges,
 }: Props): React.JSX.Element {
   const dragAnchor = useRef<number | null>(null);
+  const sentenceAnchor = useRef<number | null>(null);
   const [editing, setEditing] = useState<{ original: string; value: string } | null>(null);
 
   const activeOrd = findActiveSentence(sentences, positionMs);
@@ -59,13 +74,20 @@ export function SentenceList({
   );
 
   const selectedText = selection
-    ? tokens
-        .slice(low, high)
-        .map((token) => token.text)
-        .join("")
+    ? tokens.slice(low, high).map((token) => token.text).join("")
     : "";
 
+  const isDeleted = useCallback(
+    (sentence: Sentence): boolean =>
+      deletedRanges.some(
+        (range) => sentence.start_ms >= range.start_ms && sentence.end_ms <= range.end_ms + 1,
+      ),
+    [deletedRanges],
+  );
+
   const handleTokenDown = (idx: number, shift: boolean): void => {
+    // Character work and sentence work are exclusive.
+    if (sentenceSelection.size > 0) onSentenceSelectionChange(new Set());
     if (shift && selection) {
       onSelectionChange({ from: selection.from, to: idx + 1 });
       return;
@@ -77,6 +99,35 @@ export function SentenceList({
   const handleTokenEnter = (idx: number): void => {
     if (dragAnchor.current === null) return;
     onSelectionChange({ from: dragAnchor.current, to: idx + 1 });
+  };
+
+  /** Sentence gutter: click = one, Shift = range, Ctrl/Cmd = toggle. */
+  const handleSentenceClick = (
+    ord: number,
+    event: React.MouseEvent<HTMLButtonElement>,
+  ): void => {
+    onSelectionChange(null);
+
+    if (event.shiftKey && sentenceAnchor.current !== null) {
+      const start = Math.min(sentenceAnchor.current, ord);
+      const end = Math.max(sentenceAnchor.current, ord);
+      const next = new Set<number>();
+      for (let i = start; i <= end; i += 1) next.add(i);
+      onSentenceSelectionChange(next);
+      return;
+    }
+
+    if (event.ctrlKey || event.metaKey) {
+      const next = new Set(sentenceSelection);
+      if (next.has(ord)) next.delete(ord);
+      else next.add(ord);
+      sentenceAnchor.current = ord;
+      onSentenceSelectionChange(next);
+      return;
+    }
+
+    sentenceAnchor.current = ord;
+    onSentenceSelectionChange(new Set([ord]));
   };
 
   useEffect(() => {
@@ -98,15 +149,29 @@ export function SentenceList({
         const cps = charsPerSecond(sentence.text, sentence.start_ms, sentence.end_ms);
         const tooFast = cps > CPS_WARN_ZH;
         const isActive = sentence.ord === activeOrd;
+        const picked = sentenceSelection.has(sentence.ord);
+        const removed = isDeleted(sentence);
 
         return (
           <div
             key={sentence.id}
             role="listitem"
-            className={`sentence${isActive ? " active" : ""}`}
+            className={`sentence${isActive ? " active" : ""}${picked ? " picked" : ""}${
+              removed ? " removed" : ""
+            }`}
             data-ord={sentence.ord}
           >
             <div className="sentence-head">
+              <button
+                type="button"
+                className="sentence-pick"
+                aria-pressed={picked}
+                aria-label={`选中第 ${sentence.ord + 1} 句`}
+                title="选中整句（Shift 连选，Ctrl 加选）"
+                onClick={(event) => handleSentenceClick(sentence.ord, event)}
+              >
+                {picked ? "☑" : "☐"}
+              </button>
               <button
                 type="button"
                 className="sentence-time"
@@ -117,6 +182,7 @@ export function SentenceList({
               </button>
               <span className="sentence-meta">
                 {sentence.speaker_id !== null ? `说话人${sentence.speaker_id + 1} · ` : ""}
+                {removed ? <span className="removed-tag">已删除</span> : null}
                 {tooFast ? (
                   <span className="warn" title={`每秒 ${cps.toFixed(1)} 字，超出阅读速度`}>
                     语速过快
@@ -165,9 +231,7 @@ export function SentenceList({
                   event.preventDefault();
                   const { original, value } = editing;
                   setEditing(null);
-                  if (value.trim() && value !== original) {
-                    onEditSelection(value);
-                  }
+                  if (value.trim() && value !== original) onEditSelection(value);
                 }}
               >
                 <span className="edit-original">「{editing.original}」→</span>
@@ -214,16 +278,15 @@ export function findActiveSentence(sentences: Sentence[], positionMs: number): n
   return -1;
 }
 
-/** The sentence fully containing the selection, or null when it crosses a boundary. */
-export function sentenceForSelection(
+/** Token range covered by a set of selected sentences. */
+export function tokenRangeOfSentences(
   sentences: Sentence[],
-  selection: Selection | null,
-): Sentence | null {
-  if (!selection) return null;
-  const from = Math.min(selection.from, selection.to);
-  const to = Math.max(selection.from, selection.to);
-  for (const sentence of sentences) {
-    if (from >= sentence.token_start && to <= sentence.token_end) return sentence;
-  }
-  return null;
+  selected: Set<number>,
+): { from: number; to: number } | null {
+  const picked = sentences.filter((s) => selected.has(s.ord));
+  if (picked.length === 0) return null;
+  return {
+    from: Math.min(...picked.map((s) => s.token_start)),
+    to: Math.max(...picked.map((s) => s.token_end)),
+  };
 }

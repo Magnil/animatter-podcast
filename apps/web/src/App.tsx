@@ -14,7 +14,12 @@ import {
   type Token,
   type Version,
 } from "./api";
-import { SentenceList, findActiveSentence, sentenceForSelection, type Selection } from "./SentenceList";
+import {
+  SentenceList,
+  findActiveSentence,
+  tokenRangeOfSentences,
+  type TokenSelection,
+} from "./SentenceList";
 import { Waveform, type EdgeHandle, type Marker } from "./Waveform";
 import { usePlayback } from "./usePlayback";
 import { formatDuration, formatTime } from "./format";
@@ -44,7 +49,8 @@ export function App(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [selection, setSelection] = useState<Selection | null>(null);
+  const [selection, setSelection] = useState<TokenSelection | null>(null);
+  const [sentenceSelection, setSentenceSelection] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -110,8 +116,10 @@ export function App(): React.JSX.Element {
       notice={notice}
       busy={busy}
       selection={selection}
+      sentenceSelection={sentenceSelection}
       setNotice={setNotice}
       onSelectionChange={setSelection}
+      onSentenceSelectionChange={setSentenceSelection}
       setBusy={setBusy}
       onReload={load}
       setBoot={setBoot}
@@ -123,9 +131,11 @@ interface DeskProps {
   boot: Boot;
   notice: string | null;
   busy: boolean;
-  selection: Selection | null;
+  selection: TokenSelection | null;
+  sentenceSelection: Set<number>;
   setNotice: (value: string | null) => void;
-  onSelectionChange: (selection: Selection | null) => void;
+  onSelectionChange: (selection: TokenSelection | null) => void;
+  onSentenceSelectionChange: (selection: Set<number>) => void;
   setBusy: (value: boolean) => void;
   onReload: () => Promise<void>;
   setBoot: (boot: Boot) => void;
@@ -136,8 +146,10 @@ function Desk({
   notice,
   busy,
   selection,
+  sentenceSelection,
   setNotice,
   onSelectionChange,
+  onSentenceSelectionChange,
   setBusy,
   onReload,
 }: DeskProps): React.JSX.Element {
@@ -145,10 +157,16 @@ function Desk({
     () => api.audioUrl(boot.projectId, boot.mediaId),
     [boot.projectId, boot.mediaId],
   );
-  const playback = usePlayback(audioUrl, boot.version.duration_ms);
   const [edl, setEdl] = useState<EdlState | null>(null);
   const [rendered, setRendered] = useState<{ url: string; durationMs: number } | null>(null);
   const [showOutput, setShowOutput] = useState(false);
+
+  // Playback skips deleted spans, so a cut is audible immediately — no render.
+  const deletedSpans = useMemo(
+    () => (edl?.deletions ?? []).map((d) => ({ start_ms: d.start_ms, end_ms: d.end_ms })),
+    [edl],
+  );
+  const playback = usePlayback(audioUrl, boot.version.duration_ms, deletedSpans);
 
   // The EDL is derived on the server from the deletion set; refetch whenever the
   // transcript reloads, because a text edit can change token timings.
@@ -167,7 +185,14 @@ function Desk({
     };
   }, [boot.version.id, boot.tokens]);
   const activeOrd = findActiveSentence(boot.sentences, playback.positionMs);
-  const withinSentence = sentenceForSelection(boot.sentences, selection);
+  const withinSentence = useMemo(() => {
+    if (!selection) return null;
+    const from = Math.min(selection.from, selection.to);
+    const to = Math.max(selection.from, selection.to);
+    return (
+      boot.sentences.find((s) => from >= s.token_start && to <= s.token_end) ?? null
+    );
+  }, [boot.sentences, selection]);
 
   const markers: Marker[] = useMemo(
     () =>
@@ -273,17 +298,31 @@ function Desk({
     [boot.version.id, onReload, run, setNotice],
   );
 
-  const deleteSelection = useCallback(async () => {
-    if (!selection) return;
-    const from = Math.min(selection.from, selection.to);
-    const to = Math.max(selection.from, selection.to);
-    const ids = Array.from({ length: to - from }, (_, i) => from + i);
+  /** Token range covered by the current selection, whichever kind it is. */
+  const selectionRange = useCallback((): { from: number; to: number } | null => {
+    if (sentenceSelection.size > 0) {
+      return tokenRangeOfSentences(boot.sentences, sentenceSelection);
+    }
+    if (!selection) return null;
+    return {
+      from: Math.min(selection.from, selection.to),
+      to: Math.max(selection.from, selection.to),
+    };
+  }, [boot.sentences, sentenceSelection, selection]);
+
+  const hasSelection = sentenceSelection.size > 0 || selection !== null;
+
+  const deleteRange = useCallback(async () => {
+    const range = selectionRange();
+    if (!range) return;
+    const ids = Array.from({ length: range.to - range.from }, (_, i) => range.from + i);
     await run("删除", async () => {
       await api.addDeletion(boot.version.id, { token_ids: ids });
       await onReload();
       onSelectionChange(null);
+      onSentenceSelectionChange(new Set());
     });
-  }, [boot.version.id, onReload, onSelectionChange, run, selection]);
+  }, [boot.version.id, onReload, onSelectionChange, onSentenceSelectionChange, run, selectionRange]);
 
   const undoDeletion = useCallback(async () => {
     const rows = await api.deletions(boot.version.id);
@@ -363,9 +402,31 @@ function Desk({
     return () => window.removeEventListener("keydown", onKey);
   }, [boot.sentences, onSelectionChange, playNext, playPrevious, playSentence, playback, sentenceAtOrBefore]);
 
-  const selectionCount = selection
-    ? Math.abs(selection.to - selection.from)
-    : 0;
+  // Derived enablement. Each action needs a different kind of target, and
+  // getting this wrong is how a button ends up silently doing nothing.
+  const tokenCount = selection ? Math.abs(selection.to - selection.from) : 0;
+
+  // Redrawing a boundary only makes sense for a partial sentence selection.
+  const canRedraw = selection !== null && sentenceSelection.size === 0;
+  // Joining works for whole sentences (merges) and for character runs (moves).
+  const canJoin =
+    sentenceSelection.size > 0 || (selection !== null && withinSentence !== null);
+  const canMerge = sentenceSelection.size >= 1 || selection !== null;
+
+  const selectionSummary = (() => {
+    if (sentenceSelection.size > 0) {
+      const ords = [...sentenceSelection].sort((a, b) => a - b);
+      const contiguous = ords.every((ord, i) => i === 0 || ord === ords[i - 1]! + 1);
+      const label = contiguous
+        ? `第 ${ords[0]! + 1}–${ords[ords.length - 1]! + 1} 句`
+        : `第 ${ords.map((o) => o + 1).join("、")} 句`;
+      return `已选 ${sentenceSelection.size} 句（${label}）`;
+    }
+    if (tokenCount > 0) {
+      return `已选 ${tokenCount} 字${withinSentence ? `（第 ${withinSentence.ord + 1} 句）` : "（跨句）"}`;
+    }
+    return "点击句首方框选整句，或拖选文字重划边界";
+  })();
 
   return (
     <main className="desk">
@@ -404,45 +465,46 @@ function Desk({
       />
 
       <div className="actionbar">
-        <span className="muted">
-          {selectionCount > 0
-            ? `已选 ${selectionCount} 字${withinSentence ? `（第 ${withinSentence.ord + 1} 句）` : "（跨句）"}`
-            : "选中文字后可以重划句边界"}
-        </span>
+        <span className="muted">{selectionSummary}</span>
         <div className="actions">
           <button
             type="button"
-            disabled={!selection || busy}
+            disabled={!canRedraw || busy}
             onClick={() => void applyBoundary("new_sentence")}
+            title="把当前选区变成独立的一句（整句选区时不可用）"
           >
             另起一句
           </button>
           <button
             type="button"
-            disabled={!selection || busy}
+            disabled={!canJoin || busy}
             onClick={() => void applyBoundary("to_prev")}
+            title="把选区并入上一句；选中整句时等于合并到上句"
           >
             并入上句
           </button>
           <button
             type="button"
-            disabled={!selection || busy}
+            disabled={!canJoin || busy}
             onClick={() => void applyBoundary("to_next")}
+            title="把选区并入下一句；选中整句时等于合并到下句"
           >
             并入下句
           </button>
           <button
             type="button"
-            disabled={!selection || busy}
+            disabled={!canMerge || busy}
             onClick={() => void applyBoundary("merge")}
+            title="把选区涉及的所有句子合并成一句"
           >
             合并选区
           </button>
           <button
             type="button"
             className="danger"
-            disabled={!selection || busy}
-            onClick={() => void deleteSelection()}
+            disabled={!hasSelection || busy}
+            onClick={() => void deleteRange()}
+            title="删除选区（可多句整句删除）"
           >
             删除选中
           </button>
@@ -465,7 +527,7 @@ function Desk({
               })
             }
           >
-            撤销
+            撤销边界
           </button>
         </div>
       </div>
@@ -514,10 +576,13 @@ function Desk({
         tokens={boot.tokens}
         positionMs={playback.positionMs}
         selection={selection}
+        sentenceSelection={sentenceSelection}
         onSelectionChange={onSelectionChange}
+        onSentenceSelectionChange={onSentenceSelectionChange}
         onPlaySentence={playSentence}
         onSeek={playback.seek}
         onEditSelection={applyTextEdit}
+        deletedRanges={edl?.deletions ?? []}
       />
     </main>
   );

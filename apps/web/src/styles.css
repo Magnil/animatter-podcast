@@ -328,3 +328,44 @@ button.danger {
   border-radius: 8px;
   background: var(--panel);
 }
+
+/* --- sentence picking and deleted state (M4 follow-up) --- */
+
+.sentence-pick {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 0.05rem 0.35rem;
+  font-size: 0.85rem;
+  line-height: 1.2;
+}
+
+.sentence-pick[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.sentence.picked {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+/* Deleted sentences stay visible but clearly struck: the user must be able to
+   see what they removed and undo it, not watch it vanish. */
+.sentence.removed .tokens {
+  opacity: 0.45;
+}
+
+.sentence.removed .token {
+  text-decoration: line-through;
+  text-decoration-color: var(--danger);
+}
+
+.removed-tag {
+  color: var(--danger);
+  font-size: 0.76rem;
+  border: 1px solid var(--danger);
+  border-radius: 3px;
+  padding: 0 0.25rem;
+}

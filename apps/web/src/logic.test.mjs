@@ -166,3 +166,105 @@ test("removed duration equals original minus output", () => {
   const output = keepsWithCuts.reduce((sum, k) => sum + (k.orig_end - k.orig_start), 0);
   assert.equal(original - output, 2000);
 });
+
+// --- skip-playback (real-time preview of deletions)
+
+function mergeSpans(spans) {
+  if (spans.length === 0) return [];
+  const sorted = [...spans].sort((a, b) => a.start_ms - b.start_ms);
+  const merged = [sorted[0]];
+  for (const span of sorted.slice(1)) {
+    const last = merged[merged.length - 1];
+    if (span.start_ms <= last.end_ms) {
+      merged[merged.length - 1] = {
+        start_ms: last.start_ms,
+        end_ms: Math.max(last.end_ms, span.end_ms),
+      };
+    } else {
+      merged.push(span);
+    }
+  }
+  return merged;
+}
+
+function spanAt(spans, ms) {
+  for (const span of spans) {
+    if (ms >= span.start_ms && ms < span.end_ms) return span;
+  }
+  return null;
+}
+
+function nextAudible(spans, ms) {
+  let position = ms;
+  for (let guard = 0; guard < spans.length + 1; guard += 1) {
+    const hit = spanAt(spans, position);
+    if (!hit) return position;
+    position = hit.end_ms;
+  }
+  return position;
+}
+
+const cut = [{ start_ms: 3709, end_ms: 6080 }];
+
+test("merged spans collapse touching deletions", () => {
+  assert.deepEqual(mergeSpans([
+    { start_ms: 1000, end_ms: 2000 },
+    { start_ms: 2000, end_ms: 3000 },
+  ]), [{ start_ms: 1000, end_ms: 3000 }]);
+});
+
+test("merged spans keep separated cuts apart", () => {
+  assert.equal(mergeSpans([
+    { start_ms: 1000, end_ms: 2000 },
+    { start_ms: 2001, end_ms: 3000 },
+  ]).length, 2);
+});
+
+test("merge handles overlapping and unsorted input", () => {
+  assert.deepEqual(mergeSpans([
+    { start_ms: 5000, end_ms: 6000 },
+    { start_ms: 1000, end_ms: 4000 },
+    { start_ms: 3000, end_ms: 4500 },
+  ]), [
+    { start_ms: 1000, end_ms: 4500 },
+    { start_ms: 5000, end_ms: 6000 },
+  ]);
+});
+
+test("spanAt finds an instant inside a cut", () => {
+  assert.ok(spanAt(cut, 4000));
+});
+
+test("spanAt treats the end boundary as audible", () => {
+  assert.equal(spanAt(cut, 6080), null);
+});
+
+test("spanAt ignores instants outside the cut", () => {
+  assert.equal(spanAt(cut, 3708), null);
+  assert.equal(spanAt(cut, 6081), null);
+});
+
+test("nextAudible escapes a cut", () => {
+  assert.equal(nextAudible(cut, 4000), 6080);
+});
+
+test("nextAudible leaves audible positions alone", () => {
+  assert.equal(nextAudible(cut, 1000), 1000);
+});
+
+test("nextAudible chains through two adjacent cuts", () => {
+  const chain = mergeSpans([
+    { start_ms: 0, end_ms: 1000 },
+    { start_ms: 1000, end_ms: 2000 },
+  ]);
+  assert.equal(nextAudible(chain, 500), 2000);
+});
+
+test("seeking into a cut snaps forward to surviving audio", () => {
+  assert.equal(nextAudible(cut, 4500), 6080);
+});
+
+test("no deletions means nothing is skipped", () => {
+  assert.equal(nextAudible([], 5000), 5000);
+  assert.equal(spanAt([], 5000), null);
+});
