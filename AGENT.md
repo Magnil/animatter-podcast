@@ -1422,3 +1422,35 @@ correction_candidate / transcript_version）。
 - 存档往返实测：5 句 / 61 token / 17 条操作 / 音频重连，**逐字段一致**。
 - 字幕映射实测：删除后时间轴压缩 2302ms，字幕同步前移。
 - `mypy --strict` 零错误，ruff 干净，前端 tsc + vite build 通过。
+
+### 修掉 `media.sha256` 全局唯一导致项目「没有音频」（2026-11-06）
+
+用户报「这个项目没有登记音频文件」。排查发现是**约束与归属模型自相矛盾**：
+
+```sql
+sha256 VARCHAR(64) NOT NULL UNIQUE   -- 全局唯一
+project_id VARCHAR(64) NOT NULL      -- 但按项目归属
+```
+
+执行链：
+
+1. `register_media` 把音频**复制**到 `data/projects/<project_id>/media/`，
+   说明媒体行是项目私有的。
+2. 但查找复用时按 `sha256` 全局匹配 → 载入存档时命中了**另一个项目**的行，
+   直接 `return`。
+3. 结果：新项目的 `version.media_id` 指向别人的 media 行，自己一条都没有。
+4. `/api/projects/{id}/media` 按 `project_id` 过滤 → 返回 `[]`。
+5. 前端看到空列表 → 「这个项目没有登记音频文件」。
+
+**修复**：
+- 约束改为 `UNIQUE (project_id, sha256)`，`sha256` 单独建索引。
+- `register_media` 与存档恢复的复用查询都加上 `project_id` 过滤。
+- 迁移用原始 SQL 重建表（SQLite 不支持 `DROP CONSTRAINT`，且原约束是
+  **未命名内联**的，Alembic 无法按名删除）。
+
+**为什么这不只是数据脏**：只要用户把同一段音频用在两期节目（试听样本、
+片头音乐、同一期重剪），旧约束就必然让第二个项目失去自己的媒体行。
+这是设计层面的矛盾，不是偶发。
+
+**验证**：存档往返后新项目 `media=1`、`duration=17608ms`、5 句一致；
+前端启动序列经 Vite 代理全部 200，音频 Range 返回 `206 audio/wav`。

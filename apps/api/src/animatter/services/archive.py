@@ -482,7 +482,12 @@ def _restore_media(
         return media, matches
 
     if recorded:
-        existing = session.scalars(select(Media).where(Media.sha256 == recorded)).first()
+        # Only this project's own rows may be reused. Matching globally would hand
+        # back another project's media, leaving this project with none — the bug
+        # that produced "这个项目没有登记音频文件".
+        existing = session.scalars(
+            select(Media).where(Media.project_id == project.id, Media.sha256 == recorded)
+        ).first()
         if existing is not None:
             return existing, False
 

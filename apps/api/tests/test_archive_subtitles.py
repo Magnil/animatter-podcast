@@ -131,6 +131,38 @@ def test_load_rejects_a_non_archive(tmp_path: Path) -> None:
         archive_service.read_archive(bogus)
 
 
+def test_same_audio_in_two_projects_gets_two_media_rows(client: TestClient, session: Session, seeded) -> None:  # type: ignore[no-untyped-def]
+    """Regression: a global UNIQUE(sha256) made the second project media-less.
+
+    Media rows are project-owned, so reusing another project's row leaves the
+    second project with nothing. The audio route filters by project, returned
+    empty, and the UI said "这个项目没有登记音频文件".
+    """
+    from animatter.services import projects as project_service
+    from animatter.services import transcribe as transcribe_service
+
+    settings = client.app.state.settings  # type: ignore[attr-defined]
+    second = project_service.create_project(session, settings, "第二期")
+    session.flush()
+
+    source = Path(seeded.media_path) if hasattr(seeded, "media_path") else None
+    if source is None or not source.exists():
+        pytest.skip("seed has no audio file on disk")
+
+    media = transcribe_service.register_media(session, settings, second.id, source)
+    session.commit()
+
+    # The new row must belong to the second project, not be borrowed.
+    assert media.project_id == second.id
+    listed = client.get(f"/api/projects/{second.id}/media").json()
+    assert len(listed) == 1
+
+
+def test_project_scoped_media_query_returns_own_row(client: TestClient, session: Session, seeded) -> None:  # type: ignore[no-untyped-def]
+    media = client.get(f"/api/projects/{seeded.project_id}/media").json()
+    assert len(media) == 1
+
+
 # --- subtitles ----------------------------------------------------------
 
 
@@ -215,17 +247,13 @@ def test_time_map_is_none_without_deletions(client: TestClient, session: Session
 
 def test_long_sentence_is_split(client: TestClient, session: Session, seeded) -> None:  # type: ignore[no-untyped-def]
     """A 30-second single cue is unusable; splitting keeps captions readable."""
-    cues, _ = subtitle_service.build_cues(
-        session, seeded.id, time_map=None, max_chars=5, max_lines=1
-    )
+    cues, _ = subtitle_service.build_cues(session, seeded.id, time_map=None, max_chars=5, max_lines=1)
     assert len(cues) > 1
     assert all(len(cue.text) <= 5 for cue in cues)
 
 
 def test_issues_flag_implausible_timing(client: TestClient, session: Session, seeded) -> None:  # type: ignore[no-untyped-def]
-    cues, issues = subtitle_service.build_cues(
-        session, seeded.id, time_map=None, max_cps=0.01
-    )
+    cues, issues = subtitle_service.build_cues(session, seeded.id, time_map=None, max_cps=0.01)
     assert cues
     assert any(issue.kind == "too_fast" for issue in issues)
 

@@ -79,7 +79,11 @@ def register_media(session: Session, settings: Settings, project_id: str, source
         raise AppError("media_missing", f"找不到文件 {source}", hint="确认路径正确，且文件没有被移动。")
 
     digest = sha256_of(source)
-    existing = session.scalars(select(Media).where(Media.sha256 == digest)).first()
+    # Reuse only within the same project. Matching globally would hand back
+    # another project's row, leaving this project with no media of its own.
+    existing = session.scalars(
+        select(Media).where(Media.project_id == project_id, Media.sha256 == digest)
+    ).first()
     if existing is not None:
         return existing
 

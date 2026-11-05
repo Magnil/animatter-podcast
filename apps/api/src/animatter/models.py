@@ -40,12 +40,22 @@ class Project(Base):
 
 
 class Media(Base):
+    """One audio file, owned by one project.
+
+    ``sha256`` is unique **per project**, not globally. Media rows are
+    project-owned, so a global unique constraint is self-contradictory: the same
+    audio used by two projects forces them to share a row, which breaks
+    ownership — the second project ends up with no media of its own and the
+    audio route (which filters by project) returns nothing.
+    """
+
     __tablename__ = "media"
+    __table_args__ = (UniqueConstraint("project_id", "sha256", name="uq_media_project_sha256"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("project.id", ondelete="CASCADE"), index=True)
     path: Mapped[str] = mapped_column(Text)
-    sha256: Mapped[str] = mapped_column(String(64), unique=True)
+    sha256: Mapped[str] = mapped_column(String(64), index=True)
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
     sample_rate: Mapped[int] = mapped_column(Integer, default=0)
     channels: Mapped[int] = mapped_column(Integer, default=0)
