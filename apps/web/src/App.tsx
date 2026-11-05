@@ -16,6 +16,8 @@ import {
   type Version,
 } from "./api";
 import { HistoryPanel } from "./HistoryPanel";
+import { NewProjectDialog } from "./NewProjectDialog";
+import { SubtitlePanel } from "./SubtitlePanel";
 import { HotwordPanel } from "./HotwordPanel";
 import { MenuBar, type Menu } from "./MenuBar";
 import { SentenceList, findActiveSentence, tokenRangeOfSentences, type TokenSelection } from "./SentenceList";
@@ -66,12 +68,15 @@ export function App(): React.JSX.Element {
   // Bumped after every successful edit so the history panel refetches.
   const [historyRevision, setHistoryRevision] = useState(0);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (projectId?: string) => {
     setLoading(true);
     setError(null);
     try {
       const projects = await api.listProjects();
-      const first = projects.items[0];
+      // A requested project wins; otherwise fall back to the most recent one.
+      const first = projectId
+        ? projects.items.find((item) => item.id === projectId) ?? projects.items[0]
+        : projects.items[0];
       if (!first) {
         setError("还没有项目。先用命令行创建并转写一期播客：\n\n" +
           "  animatter transcribe samples/speech.wav --project \"第 1 期\"");
@@ -158,7 +163,7 @@ interface DeskProps {
   onSettingsSaved: (settings: AppSettings) => void;
   historyRevision: number;
   setBusy: (value: boolean) => void;
-  onReload: () => Promise<void>;
+  onReload: (projectId?: string) => Promise<void>;
   setBoot: (boot: Boot) => void;
 }
 
@@ -186,6 +191,10 @@ function Desk({
   const [rendered, setRendered] = useState<{ url: string; durationMs: number } | null>(null);
   const [showOutput, setShowOutput] = useState(false);
 
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [loadOpen, setLoadOpen] = useState(false);
+  const [loadPath, setLoadPath] = useState("");
+  const [showSubtitles, setShowSubtitles] = useState(false);
   const [episodeHotwords, setEpisodeHotwords] = useState<HotwordItem[]>([]);
   const [globalHotwords, setGlobalHotwords] = useState<HotwordItem[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -414,6 +423,29 @@ function Desk({
     });
   }, [boot.version.id, onReload, run]);
 
+  const saveArchive = useCallback(async () => {
+    await run("保存项目", async () => {
+      const result = await api.saveArchive(boot.projectId);
+      setNotice(
+        `已保存 ${result.filename}（${result.sentence_count} 句 · ${result.op_count} 条操作 · ${Math.round(result.size_bytes / 1024)} KB）`,
+      );
+    });
+  }, [boot.projectId, run, setNotice]);
+
+  const loadArchive = useCallback(async () => {
+    if (!loadPath.trim()) return;
+    await run("载入项目", async () => {
+      const result = await api.loadArchive(loadPath.trim());
+      setLoadOpen(false);
+      setNotice(
+        result.media_relinked
+          ? `已载入「${result.project_name}」（${result.sentence_count} 句）`
+          : `已载入「${result.project_name}」，但音频未找到：${result.warning}`,
+      );
+      await onReload(result.project_id);
+    });
+  }, [loadPath, onReload, run, setNotice]);
+
   const renderExport = useCallback(async () => {
     const lossless = settings?.export_format === "wav";
     await run("导出成片", async () => {
@@ -429,11 +461,34 @@ function Desk({
         id: "project",
         label: "项目",
         items: [
+          { id: "new", label: "新建项目…", onSelect: () => setNewProjectOpen(true) },
+          {
+            id: "save",
+            label: "保存项目…",
+            hint: ".project",
+            disabled: busy,
+            onSelect: () => void saveArchive(),
+          },
+          {
+            id: "load",
+            label: "载入项目…",
+            onSelect: () => {
+              setLoadPath("");
+              setLoadOpen(true);
+            },
+          },
+          "separator",
           { id: "reload", label: "重新载入", hint: "Ctrl+R", onSelect: () => void onReload() },
-          { id: "undo", label: "撤销最近一次编辑", hint: "Ctrl+Z", onSelect: () => void run("撤销", async () => {
-              await api.undo(boot.version.id);
-              await onReload();
-            }) },
+          {
+            id: "undo",
+            label: "撤销最近一次编辑",
+            hint: "Ctrl+Z",
+            onSelect: () =>
+              void run("撤销", async () => {
+                await api.undo(boot.version.id);
+                await onReload();
+              }),
+          },
         ],
       },
       {
@@ -471,6 +526,13 @@ function Desk({
         id: "export",
         label: "导出",
         items: [
+          {
+            id: "subtitles",
+            label: "字幕…",
+            hint: "SRT / VTT / TXT",
+            onSelect: () => setShowSubtitles(true),
+          },
+          "separator",
           {
             id: "render",
             label: "导出成片音频…",
@@ -774,7 +836,91 @@ function Desk({
         </section>
       </div>
 
-      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} onSaved={onSettingsSaved} />
+      <SettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        onSaved={onSettingsSaved}
+      />
+
+      <NewProjectDialog
+        open={newProjectOpen}
+        onClose={() => setNewProjectOpen(false)}
+        onCreated={(projectId) => void onReload(projectId)}
+        onNotice={setNotice}
+      />
+
+      {loadOpen ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setLoadOpen(false)}>
+          <div
+            className="modal modal-narrow"
+            role="dialog"
+            aria-modal="true"
+            aria-label="载入项目"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header className="modal-head">
+              <h2>载入项目</h2>
+              <button type="button" className="ghost" onClick={() => setLoadOpen(false)} aria-label="关闭">
+                ↗
+              </button>
+            </header>
+            <div className="modal-body modal-single">
+              <label className="field">
+                <span>
+                  .project 文件路径
+                  <em className="hint">载入会新建一个项目，不会覆盖当前项目</em>
+                </span>
+                <input
+                  autoFocus
+                  value={loadPath}
+                  placeholder="D:/podcast/S02E07.project"
+                  onChange={(event) => setLoadPath(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") void loadArchive();
+                  }}
+                />
+              </label>
+              <p className="section-note">
+                存档包含文稿、全部编辑、操作记录与热词；音频按哈希引用，移动过也能恢复文稿。
+              </p>
+            </div>
+            <footer className="modal-foot">
+              <button type="button" className="ghost" onClick={() => setLoadOpen(false)}>
+                取消
+              </button>
+              <button type="button" disabled={!loadPath.trim() || busy} onClick={() => void loadArchive()}>
+                载入
+              </button>
+            </footer>
+          </div>
+        </div>
+      ) : null}
+
+      {showSubtitles ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setShowSubtitles(false)}>
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="字幕导出"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header className="modal-head">
+              <h2>字幕导出</h2>
+              <button type="button" className="ghost" onClick={() => setShowSubtitles(false)} aria-label="关闭">
+                ✕
+              </button>
+            </header>
+            <div className="modal-body modal-single">
+              <SubtitlePanel
+                versionId={boot.version.id}
+                hasDeletions={(edl?.deletions.length ?? 0) > 0}
+                onNotice={setNotice}
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

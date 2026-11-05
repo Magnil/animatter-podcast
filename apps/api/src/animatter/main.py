@@ -21,12 +21,14 @@ from animatter.errors import install_error_handlers
 from animatter.log import configure_logging, get_logger
 from animatter.migrate import upgrade_to_head
 from animatter.routers import (
+    archive,
     clipping,
     editing,
     health,
     hotwords,
     projects,
     proofread,
+    subtitles,
     transcribe,
 )
 from animatter.routers import settings as settings_router
@@ -107,6 +109,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(editing.router)
     app.include_router(clipping.router)
     app.include_router(settings_router.router)
+    app.include_router(archive.router)
+    app.include_router(subtitles.router)
     return app
 
 

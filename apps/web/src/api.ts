@@ -291,6 +291,97 @@ export const api = {
       body: JSON.stringify({ content }),
     }),
 
+  // --- project lifecycle -------------------------------------------------
+
+  createProject: (name: string) =>
+    request<{ id: string; name: string }>("/api/projects", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+
+  registerMedia: (projectId: string, path: string) =>
+    request<{ id: string; duration_ms: number }>(`/api/projects/${projectId}/media`, {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    }),
+
+  transcribe: (projectId: string, mediaId: string, options: { model?: string; hotwords?: boolean }) =>
+    request<{ id: string }>(`/api/projects/${projectId}/transcribe`, {
+      method: "POST",
+      body: JSON.stringify({
+        media_id: mediaId,
+        model: options.model,
+        use_hotwords: options.hotwords ?? false,
+      }),
+    }),
+
+  // --- archive -----------------------------------------------------------
+
+  saveArchive: (projectId: string) =>
+    request<{
+      path: string;
+      filename: string;
+      sentence_count: number;
+      op_count: number;
+      deletion_count: number;
+      size_bytes: number;
+    }>(`/api/projects/${projectId}/archive`, { method: "POST" }),
+
+  archiveUrl: (projectId: string) => `/api/projects/${projectId}/archive/file`,
+
+  inspectArchive: (path: string) =>
+    request<{
+      path: string;
+      filename: string;
+      project_name: string;
+      sentence_count: number;
+      op_count: number;
+      deletion_count: number;
+      saved_at: string;
+      size_bytes: number;
+    }>("/api/archive/inspect", { method: "POST", body: JSON.stringify({ path }) }),
+
+  loadArchive: (path: string, options: { name?: string; mediaPath?: string } = {}) =>
+    request<{
+      project_id: string;
+      project_name: string;
+      version_id: string;
+      sentence_count: number;
+      media_relinked: boolean;
+      warning: string;
+    }>("/api/archive/load", {
+      method: "POST",
+      body: JSON.stringify({ path, name: options.name, media_path: options.mediaPath }),
+    }),
+
+  // --- subtitles ---------------------------------------------------------
+
+  subtitlePreview: (versionId: string, options: { fmt?: string; limit?: number; mapped?: boolean } = {}) => {
+    const p = new URLSearchParams();
+    p.set("fmt", options.fmt ?? "srt");
+    if (options.limit) p.set("limit", String(options.limit));
+    if (options.mapped === false) p.set("mapped", "false");
+    return request<string>(`/api/versions/${versionId}/subtitles/preview?${p}`);
+  },
+
+  subtitleIssues: (versionId: string) =>
+    request<{ sentence_ord: number; kind: string; detail: string }[]>(
+      `/api/versions/${versionId}/subtitles/issues`,
+    ),
+
+  exportSubtitles: (versionId: string, fmt: string) =>
+    request<{
+      id: string;
+      filename: string;
+      fmt: string;
+      url: string;
+      cue_count: number;
+      mapped: boolean;
+      issues: { sentence_ord: number; kind: string; detail: string }[];
+    }>(`/api/versions/${versionId}/subtitles/export?fmt=${fmt}`, { method: "POST" }),
+
+  exportFileUrl: (url: string) => url,
+
   undo: (versionId: string) =>
     request<{ undone: string; op_type: string }>(`/api/versions/${versionId}/undo`, {
       method: "POST",

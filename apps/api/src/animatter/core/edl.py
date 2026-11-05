@@ -240,11 +240,20 @@ def snap_to_silence(
     *,
     max_distance_ms: int = 150,
 ) -> tuple[list[Deletion], list[Clamp]]:
-    """Expand each deletion edge to the nearby silence, up to ``max_distance_ms``.
+    """Expand each deletion edge into the nearby silence, up to ``max_distance_ms``.
 
-    A cut inside a vowel is audible as a click or a clipped syllable. Sliding it
-    into the adjacent quiet is the cheapest fix and keeps the timeline honest
-    because the amount moved is reported back to the user.
+    A cut inside a vowel is audible as a click or a clipped syllable, so sliding
+    it into the adjacent quiet is the cheapest fix.
+
+    **Snapping may only ever grow the deletion.** Picking the nearest silence edge
+    without regard to direction can move an edge *inward* — for example a cut at
+    6010 with silence at 5991–6100 would snap back to 5991, handing the user 19ms
+    of audio they explicitly deleted and putting the very half-phoneme back that
+    snapping exists to remove. So each edge snaps to the silence boundary on its
+    own side of the cut only:
+
+    * ``start`` may only move **left** (or stay), to ``silence.start_ms``.
+    * ``end`` may only move **right** (or stay), to ``silence.end_ms``.
     """
     snapped: list[Deletion] = []
     clamps: list[Clamp] = []
@@ -255,9 +264,10 @@ def snap_to_silence(
 
         start_silence = find_silence_for(start, silences, max_distance_ms=max_distance_ms)
         if start_silence is not None:
-            # Move the cut to the silence edge nearest the requested point.
-            candidate = start_silence.start_ms if start <= start_silence.midpoint else start_silence.end_ms
-            if candidate != start:
+            # Only leftward: the audio just before the cut survives, so retreating
+            # into silence removes more, never less.
+            candidate = start_silence.start_ms
+            if candidate < start:
                 clamps.append(
                     Clamp(
                         requested=start,
@@ -270,8 +280,9 @@ def snap_to_silence(
 
         end_silence = find_silence_for(end, silences, max_distance_ms=max_distance_ms)
         if end_silence is not None:
-            candidate = end_silence.start_ms if end <= end_silence.midpoint else end_silence.end_ms
-            if candidate != end:
+            # Only rightward, for the same reason mirrored.
+            candidate = end_silence.end_ms
+            if candidate > end:
                 clamps.append(
                     Clamp(
                         requested=end,

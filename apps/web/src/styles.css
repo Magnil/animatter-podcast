@@ -4,10 +4,14 @@
 :root {
   --bg: #f8fafc;
   --panel: #ffffff;
+  /* Opaque surface for anything that floats above the workbench (menus, modals,
+     panels). Must never be a translucent colour: these sit on top of text. */
+  --surface: #ffffff;
   --border: #e2e8f0;
   --text: #0f172a;
   --muted: #64748b;
   --accent: #2563eb;
+  --accent-dark: #1d4ed8;
   --accent-soft: rgba(59, 130, 246, 0.16);
   --danger: #dc2626;
   --warn: #b45309;
@@ -25,10 +29,12 @@
   :root {
     --bg: #0b1120;
     --panel: #111827;
+    --surface: #1a2334;
     --border: #1f2937;
     --text: #e5e7eb;
     --muted: #94a3b8;
     --accent: #60a5fa;
+    --accent-dark: #93c5fd;
     --accent-soft: rgba(96, 165, 250, 0.18);
     --tok-hover: #1e293b;
     color-scheme: dark;
@@ -429,7 +435,7 @@ button.danger {
 .panel {
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--surface);
+  background: var(--surface, var(--panel));
   padding: 8px 10px;
   display: flex;
   flex-direction: column;
@@ -668,7 +674,7 @@ button.small,
   padding: 4px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--surface);
+  background: var(--surface, var(--panel));
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
 }
 
@@ -742,7 +748,7 @@ button.small,
   display: flex;
   flex-direction: column;
   border-radius: 10px;
-  background: var(--surface);
+  background: var(--surface, var(--panel));
   border: 1px solid var(--border);
   box-shadow: 0 20px 50px rgba(15, 23, 42, 0.3);
 }
@@ -819,4 +825,59 @@ button.small,
   gap: 8px;
   padding: 10px 16px;
   border-top: 1px solid var(--border);
+}
+
+/* --- dialogs added with archive + subtitle export --- */
+
+.modal-narrow {
+  width: min(520px, 92vw);
+}
+
+/* Long-form dialogs put every field in one column; the settings grid would
+   squeeze a text input to unreadable width. */
+.modal-body.modal-single {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.subtitle-panel {
+  border: none;
+  padding: 0;
+  background: transparent;
+}
+
+.subtitle-preview {
+  max-height: 260px;
+  overflow: auto;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 0.76rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.issue-list {
+  font-size: 0.78rem;
+}
+
+.issue-list summary {
+  cursor: pointer;
+  color: var(--warn);
+}
+
+.issue-list ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.issue-kind {
+  color: var(--warn);
+  font-weight: 600;
 }

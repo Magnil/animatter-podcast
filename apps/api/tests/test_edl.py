@@ -153,6 +153,36 @@ def test_snapping_moves_cut_into_silence() -> None:
     assert edl.clamps  # the move must be reported, not silent
 
 
+def test_snapping_never_shrinks_the_deletion() -> None:
+    """Snapping may only grow a deletion, never hand deleted audio back.
+
+    Picking the nearest silence edge regardless of direction used to move an
+    edge inward: a cut at 6010 with silence at 5991-6100 snapped back to 5991,
+    returning 19ms the user explicitly deleted and restoring the half-phoneme
+    that snapping exists to remove.
+    """
+    edl = compile_edl(
+        original_duration_ms=20_000,
+        deletions=[Deletion(3709, 6010)],
+        silences=[SilenceSpan(5991, 6100)],
+        guard_ms=0,
+    )
+    assert edl.deletions[0].end_ms >= 6010
+    assert edl.deletions[0].end_ms == 6100
+
+
+def test_snapping_start_never_moves_right() -> None:
+    """The start edge may only retreat into silence, never advance into speech."""
+    edl = compile_edl(
+        original_duration_ms=20_000,
+        deletions=[Deletion(4050, 8000)],
+        silences=[SilenceSpan(3900, 4010)],
+        guard_ms=0,
+    )
+    assert edl.deletions[0].start_ms <= 4050
+    assert edl.deletions[0].start_ms == 3900
+
+
 def test_snapping_ignores_distant_silence() -> None:
     edl = compile_edl(
         original_duration_ms=10_000,
