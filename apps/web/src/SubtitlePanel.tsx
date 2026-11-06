@@ -44,15 +44,21 @@ export function SubtitlePanel({ versionId, hasDeletions, onNotice }: Props): Rea
   const load = useCallback(async () => {
     setError(null);
     try {
-      const [text, found] = await Promise.all([
-        api.subtitlePreview(versionId, { fmt: format, limit: 20, mapped }),
-        api.subtitleIssues(versionId),
-      ]);
+      // Deliberately not `Promise.all`: the cue text is the thing the user came
+      // for, and a failing issues request must not blank it out. They failed
+      // together once (both hit the JSON-parsing bug) and the panel showed
+      // 「没有可导出的字幕」 for 1205 perfectly good cues.
+      const text = await api.subtitlePreview(versionId, { fmt: format, limit: 20, mapped });
       setPreview(text);
-      setIssues(found);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
       setPreview("");
+    }
+    try {
+      setIssues(await api.subtitleIssues(versionId));
+    } catch {
+      // Quality warnings are advisory; losing them is not worth an error banner
+      // on top of a preview that worked.
       setIssues([]);
     }
   }, [format, mapped, versionId]);
@@ -130,7 +136,12 @@ export function SubtitlePanel({ versionId, hasDeletions, onNotice }: Props): Rea
         </details>
       ) : null}
 
-      <pre className="subtitle-preview">{preview || "（没有可导出的字幕）"}</pre>
+      <pre className="subtitle-preview">
+        {preview ||
+          (error
+            ? `（预览加载失败：${error}）`
+            : "（还没有转写内容，所以没有可导出的字幕）")}
+      </pre>
 
       <div className="edl-actions">
         <button type="button" onClick={() => void doExport()} disabled={busy || !preview}>

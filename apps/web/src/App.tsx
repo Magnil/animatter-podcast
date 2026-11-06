@@ -11,11 +11,14 @@ import {
   api,
   type AppSettings,
   type HotwordItem,
+  type RenderState,
   type Sentence,
   type SpeakerInfo,
   type Token,
   type Version,
 } from "./api";
+import { loadAllSentences } from "./transcriptLoad";
+import { isTerminal, percentOf, pollDelayMs, renderEta } from "./renderProgress";
 import { HistoryPanel } from "./HistoryPanel";
 import { NewProjectDialog } from "./NewProjectDialog";
 import { SubtitlePanel } from "./SubtitlePanel";
@@ -108,7 +111,14 @@ export function App(): React.JSX.Element {
         return;
       }
 
-      const transcript = await api.transcript(version.id);
+      // The server pages by design; the client must page too. Asking for one
+      // page and calling it the transcript is why a fully transcribed 105-minute
+      // episode displayed 40 minutes of it while the status bar — which reads
+      // the database's own count — said 1074 sentences.
+      const transcript = await loadAllSentences(
+        (from, limit) => api.transcript(version.id, from, limit),
+        version.sentence_count,
+      );
       // The media id is not on the version payload; the audio route needs it,
       // so resolve it from the media list.
       const media = await fetch(`/api/projects/${first.id}/media`).then(
@@ -218,6 +228,8 @@ function Desk({
   const [edl, setEdl] = useState<EdlState | null>(null);
   const [rendered, setRendered] = useState<{ url: string; durationMs: number } | null>(null);
   const [showOutput, setShowOutput] = useState(false);
+  /** Set while an export is encoding in the background; the button shows it. */
+  const [exporting, setExporting] = useState<{ id: string; percent: number } | null>(null);
 
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [loadOpen, setLoadOpen] = useState(false);
@@ -581,14 +593,71 @@ function Desk({
     });
   }, [loadPath, onReload, run, say]);
 
+  /**
+   * Poll a render to completion.
+   *
+   * The first response is "queued": the endpoint now hands the encode to a
+   * worker thread and returns, because a 105-minute export takes about twelve
+   * minutes and no HTTP request should sit there for it. Polling is what turns
+   * that silence into a percentage — the old synchronous endpoint just froze the
+   * button, which is why it was reported as 「点击后无反应」.
+   */
+  const pollRender = useCallback(
+    async (first: RenderState): Promise<RenderState> => {
+      let state = first;
+      const started = Date.now();
+      let lastShown = -1;
+      while (!isTerminal(state.status)) {
+        const percent = percentOf(state.progress);
+        if (percent !== lastShown) {
+          lastShown = percent;
+          setExporting({ id: state.id, percent });
+          // Wording is deliberate: 「正在」 with a live percentage is the signal
+          // that the click landed. Before this, twelve minutes of encoding
+          // produced no feedback whatsoever.
+          say(
+            `正在导出成片… ${percent}%（${renderEta(Date.now() - started, state.progress)}）`,
+          );
+        }
+        await new Promise((resolve) => setTimeout(resolve, pollDelayMs(Date.now() - started)));
+        state = await api.renderStatus(state.id);
+      }
+      if (state.status === "failed") throw new Error(state.error ?? "渲染失败");
+      return state;
+    },
+    [say],
+  );
+
   const renderExport = useCallback(async () => {
     const lossless = settings?.export_format === "wav";
+    let queued: RenderState | null = null;
+    // Only enqueueing counts as "busy". The encode runs for minutes on a long
+    // episode; holding the busy flag through it would freeze the whole editor,
+    // which is the same complaint wearing a different coat.
     await run("导出成片", async () => {
-      const result = await api.render(boot.version.id, { lossless });
+      queued = await api.render(boot.version.id, { lossless });
+    });
+    if (queued === null) return; // queueing failed; `run` already reported it
+
+    const start: RenderState = queued;
+    if (isTerminal(start.status)) {
+      if (start.status === "done") {
+        setRendered({ url: start.url, durationMs: start.duration_ms });
+        setShowOutput(true);
+      }
+      return;
+    }
+    try {
+      const result = await pollRender(start);
       setRendered({ url: result.url, durationMs: result.duration_ms });
       setShowOutput(true);
-    });
-  }, [boot.version.id, run, settings?.export_format]);
+      say(`成片已导出 ${formatClock(result.duration_ms)}，可在下方试听`);
+    } catch (caught) {
+      setNotice(describe(caught));
+    } finally {
+      setExporting(null);
+    }
+  }, [boot.version.id, pollRender, run, say, settings?.export_format]);
 
   const menus: Menu[] = useMemo(
     () => [
@@ -1009,10 +1078,21 @@ function Desk({
             </button>
             <button
               type="button"
-              disabled={busy || !edl || edl.deletions.length === 0}
+              disabled={busy || exporting !== null || !edl || edl.deletions.length === 0}
               onClick={() => void renderExport()}
+              // A disabled button with no reason is indistinguishable from a
+              // broken one — that is how "导出成片 点击后无反应" was reported.
+              title={
+                exporting
+                  ? `正在导出 ${exporting.percent}%`
+                  : !edl
+                    ? "正在计算剪辑方案…"
+                    : edl.deletions.length === 0
+                      ? "还没有删除任何内容：先删掉要剪掉的段落，再导出成片"
+                      : "把当前的删除方案渲染成一个音频文件"
+              }
             >
-              导出成片
+              {exporting ? `导出中 ${exporting.percent}%` : "导出成片"}
             </button>
             {rendered ? (
               <button type="button" className="ghost" onClick={() => setShowOutput((v) => !v)}>

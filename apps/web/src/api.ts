@@ -41,6 +41,26 @@ async function failure(response: Response, fallback: string): Promise<RequestFai
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await rawRequest(path, init);
+  if (response.status === 204) return undefined as T;
+  return (await response.json()) as T;
+}
+
+/**
+ * Same error handling as `request`, but returns the body as text.
+ *
+ * `request` unconditionally calls `response.json()`. The subtitle preview is
+ * `text/plain` (SRT/VTT/TXT — a subtitle file is text by definition), so that
+ * call threw, the panel's `catch` swallowed it, and the UI showed
+ * 「没有可导出的字幕」 for a version that had 1074 perfectly good sentences.
+ * Parsing must follow `Content-Type`, not the caller's hope.
+ */
+async function requestText(path: string, init?: RequestInit): Promise<string> {
+  const response = await rawRequest(path, init);
+  return response.text();
+}
+
+async function rawRequest(path: string, init?: RequestInit): Promise<Response> {
   const response = await fetch(path, {
     ...init,
     headers: {
@@ -50,9 +70,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) throw await failure(response, "请求失败");
-
-  if (response.status === 204) return undefined as T;
-  return (await response.json()) as T;
+  return response;
 }
 
 // --- types --------------------------------------------------------------
@@ -85,6 +103,16 @@ export interface Sentence {
   text: string;
   start_ms: number;
   end_ms: number;
+}
+
+export interface RenderState {
+  id: string;
+  duration_ms: number;
+  status: "queued" | "running" | "done" | "failed";
+  url: string;
+  /** 0..1 of the encoded output timeline. */
+  progress: number;
+  error: string | null;
 }
 
 export interface Version {
@@ -216,11 +244,13 @@ export const api = {
     if (options.preview) params.set("preview", "true");
     if (options.lossless) params.set("lossless", "true");
     const query = params.toString();
-    return request<{ id: string; duration_ms: number; status: string; url: string }>(
+    return request<RenderState>(
       `/api/versions/${versionId}/render${query ? `?${query}` : ""}`,
       { method: "POST" },
     );
   },
+
+  renderStatus: (renderId: string) => request<RenderState>(`/api/renders/${renderId}`),
 
   renderUrl: (path: string) => path,
 
@@ -547,7 +577,7 @@ export const api = {
     p.set("fmt", options.fmt ?? "srt");
     if (options.limit) p.set("limit", String(options.limit));
     if (options.mapped === false) p.set("mapped", "false");
-    return request<string>(`/api/versions/${versionId}/subtitles/preview?${p}`);
+    return requestText(`/api/versions/${versionId}/subtitles/preview?${p}`);
   },
 
   subtitleIssues: (versionId: string) =>
