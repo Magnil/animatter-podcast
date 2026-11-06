@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -26,10 +25,9 @@ from animatter.core.edl import (
 from animatter.errors import AppError
 from animatter.ids import new_id, utcnow_iso
 from animatter.log import get_logger
-from animatter.media import ffmpeg, render
 from animatter.models import Deletion as DeletionRow
 from animatter.models import Media, Render, TranscriptVersion
-from animatter.services import projects as project_service
+from animatter.services import silence_map
 
 log = get_logger(__name__)
 
@@ -145,13 +143,18 @@ def remove_deletion(session: Session, deletion_id: str) -> None:
     session.flush()
 
 
-def load_silences(settings: Settings, project_id: str, media: Media) -> list[SilenceSpan]:
-    root = project_service.project_root(settings, project_id)
-    spans = ffmpeg.detect_silence(settings.ffmpeg_path, Path(media.path))
-    log.info("clipping.silences", project=project_id, count=len(spans), root=str(root))
-    return [
-        SilenceSpan(start_ms=span.start_ms, end_ms=span.end_ms) for span in spans if span.duration_ms >= 120
-    ]
+def load_silences(
+    session: Session, settings: Settings, version: TranscriptVersion, media: Media
+) -> list[SilenceSpan]:
+    """Silence spans for this media, from the shared cache.
+
+    This used to call ``ffmpeg silencedetect`` on the whole file every time, and
+    ``build_edl`` runs on every edit — 9.1 s per call on a 105-minute episode,
+    on the thread that has to answer the keystroke. The cache is keyed by
+    content hash plus detector parameters, so it also stops "moving the cleanup
+    slider" from changing which edges a drag snaps to.
+    """
+    return silence_map.for_media(session, settings, version, media)
 
 
 def build_edl(
@@ -179,9 +182,10 @@ def build_edl(
 
     silences: list[SilenceSpan] = []
     if snap and deletions:
-        silences = load_silences(settings, version.project_id, media)
-        # Only silences near a cut point matter; passing the whole list is fine
-        # because snapping searches by distance, but a 3h file can have thousands.
+        silences = load_silences(session, settings, version, media)
+        # Only silences near a cut point matter; snapping searches by distance,
+        # but a 3h file has thousands of spans and 400 deletions × 1814 spans is
+        # the kind of loop that shows up as a stutter on every edit.
         silences = [
             span
             for span in silences
@@ -223,91 +227,6 @@ def view(edl: Edl) -> EdlView:
         ],
         signature=edl_signature(edl),
     )
-
-
-def render_version(
-    session: Session,
-    settings: Settings,
-    version_id: str,
-    *,
-    preview: bool = False,
-    window: tuple[int, int] | None = None,
-    lossless: bool = False,
-    progress: object = None,
-) -> Render:
-    """Render the current EDL and record it.
-
-    A render is identified by its EDL signature so an unchanged plan reuses the
-    previous file instead of re-encoding a two-hour episode.
-    """
-    version = get_version(session, version_id)
-    media = session.get(Media, version.media_id)
-    if media is None:
-        raise AppError("media_not_found", "找不到对应的音频", status=404)
-
-    edl = build_edl(session, settings, version)
-    signature = edl_signature(edl)
-
-    existing = session.scalars(
-        select(Render)
-        .where(Render.version_id == version_id, Render.edl_hash == signature, Render.status == "done")
-        .order_by(Render.created_at.desc())
-    ).first()
-    if existing is not None and Path(existing.out_path).exists() and not preview:
-        log.info("render.cached", render_id=existing.id, signature=signature)
-        return existing
-
-    root = project_service.project_root(settings, version.project_id)
-    out_dir = root / "exports"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    suffix = ".wav" if lossless else ".m4a"
-    out_path = out_dir / f"{version_id}-{signature[:12]}{'-preview' if preview else ''}{suffix}"
-
-    record = Render(
-        id=new_id("rnd"),
-        project_id=version.project_id,
-        version_id=version_id,
-        edl_hash=signature,
-        out_path=str(out_path),
-        duration_ms=0,
-        status="running",
-        created_at=utcnow_iso(),
-    )
-    session.add(record)
-    session.flush()
-
-    try:
-        if preview:
-            span = window or (0, min(60_000, media.duration_ms))
-            result = render.render_preview(
-                settings.ffmpeg_path,
-                source=Path(media.path),
-                edl=edl,
-                target=out_path,
-                sample_rate=media.sample_rate or 44_100,
-                channels=media.channels or 2,
-                window_orig=span,
-            )
-        else:
-            result = render.render(
-                settings.ffmpeg_path,
-                source=Path(media.path),
-                edl=edl,
-                target=out_path,
-                sample_rate=media.sample_rate or 44_100,
-                channels=media.channels or 2,
-                lossless=lossless,
-            )
-    except AppError:
-        record.status = "failed"
-        session.flush()
-        raise
-
-    record.status = "done"
-    record.duration_ms = result.duration_ms
-    session.flush()
-    log.info("render.recorded", render_id=record.id, duration_ms=result.duration_ms)
-    return record
 
 
 def list_renders(session: Session, version_id: str) -> list[Render]:

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from sqlalchemy import (
     Boolean,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -206,6 +207,12 @@ class Render(Base):
     out_path: Mapped[str] = mapped_column(Text)
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(32), default="queued")
+    #: 0..1 of the encoded *output* timeline. A 105-minute export runs for about
+    #: twelve minutes; without this the UI can only say "still going", which is
+    #: what made a working export look like a dead button.
+    progress: Mapped[float] = mapped_column(Float, default=0.0)
+    #: Failure text for ``status == 'failed'``; NULL in every other state.
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(String(32))
 
 

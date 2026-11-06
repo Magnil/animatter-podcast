@@ -34,6 +34,7 @@ from animatter.routers import (
     transcribe,
 )
 from animatter.routers import settings as settings_router
+from animatter.services import renders as renders_service
 
 VERSION = "0.1.0"
 
@@ -62,6 +63,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     upgrade_to_head(settings)
 
     app.state.db = Database(settings)
+    # A render queued by the previous process cannot finish: its thread died with
+    # it. Mark those rows failed now, or the UI polls a job that never completes.
+    renders_service.fail_orphaned(app.state.db)
     log.info("app.ready", version=VERSION, data_dir=str(settings.data_dir), db=str(settings.db_path))
     try:
         yield

@@ -516,6 +516,10 @@ sentence = { ord, token_start, token_end }   // 半开区间
    - 左右各扩展至最近的静音谷（-40dBFS 以下、≥120ms 的平台中心），
      上限 ±150ms；找不到静音就保持原边界
    - 目的：避免切在元音中间产生"半截字"
+   - **静音检测结果必须走缓存**（`services/silence_map.py` → `media/silences.py`），
+     键为「内容 sha256 + noise_db + min_duration」。否则每次 `build_edl`（每次编辑）
+     都要重跑全片 `silencedetect`：实测 105 分钟素材 9.1s，首屏 `GET /edl`
+     因此长时间拿不到 `deletions`，删除与导出按钮一直显示为灰色不可用。
 3. 微调：start -= 20ms, end += 20ms（防吞字），但不越过相邻保留段
 4. 剔除：保留段 < 80ms 的并入删除（避免"咔哒"碎片）
 5. keep_ranges = [0, duration) \ delete_ranges
@@ -727,7 +731,8 @@ POST   /api/versions/{vid}/undo  |  /redo
 POST   /api/versions/{vid}/deletions                   删除（token 或 range）
 DELETE /api/versions/{vid}/deletions/{id}
 GET    /api/versions/{vid}/edl                         预算 EDL + 新时长
-POST   /api/versions/{vid}/render                      渲染成片
+POST   /api/versions/{vid}/render                      排队渲染，立刻返回 {id,status,progress}
+GET    /api/renders/{id}                               轮询进度 0..1 / status / error
 GET    /api/renders/{id}/file                          下载
 
 POST   /api/projects/{id}/script/generate              生成文稿
@@ -1224,6 +1229,14 @@ min/max 桶，写入 `PKC1` 二进制缓存（键是媒体 sha256，不是文件
 - 段数多时命令行会超长，filtergraph 写文件传给 `-filter_complex_script`。
 - 输出沿用源采样率与声道——这是交付物，不是 ASR 输入，降采样等于丢用户已有的质量。
 - 渲染结果按 `edl_signature` 缓存，同一份 EDL 不重复编码两小时的音频。
+- **渲染必须异步**（`services/renders.py`）。实测：105 分钟素材、400 段，
+  编码耗时约 12 分钟。同步实现有两个必然后果，而且都真实发生过：
+  按钮十二分钟没有任何反馈（用户报的就是「点击后无反应」）；
+  整个编码期间持有一个 SQLite 写事务，其他任何写操作都 `database is locked`。
+  现在是「短事务记录任务 → 工作线程跑 ffmpeg → 短事务写进度」，
+  `POST /render` 0.35s 返回，`GET /api/renders/{id}` 轮询 `progress`。
+  进度取自 ffmpeg 的 `-progress` 流（`out_time_ms` 实际是微秒）。它是**编码吞吐**，
+  不能按成片时长反推剩余时间：本机编码约为实时的 8 倍。
 
 ### 实测结果（真实音频，17.6s）
 

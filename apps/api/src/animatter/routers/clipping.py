@@ -14,7 +14,9 @@ from animatter.config import Settings
 from animatter.db import Database
 from animatter.errors import AppError
 from animatter.log import get_logger
+from animatter.models import Render
 from animatter.services import clipping as clipping_service
+from animatter.services import renders as renders_service
 
 router = APIRouter(prefix="/api", tags=["clipping"])
 log = get_logger(__name__)
@@ -57,6 +59,8 @@ class RenderOut(BaseModel):
     duration_ms: int
     status: str
     url: str
+    progress: float
+    error: str | None = None
 
 
 @router.get("/versions/{version_id}/deletions", response_model=list[DeletionOut])
@@ -119,28 +123,43 @@ def get_edl(
 def render_version(
     version_id: str,
     request: Request,
-    session: Session = Depends(_session_dependency),
     preview: bool = Query(default=False),
     lossless: bool = Query(default=False),
     from_ms: int | None = Query(default=None),
     to_ms: int | None = Query(default=None),
 ) -> RenderOut:
-    """Render the current EDL.
+    """Queue a render and return immediately.
 
-    Synchronous on purpose for now: a two-hour render takes minutes, and the UI
-    milestone that needs a job queue is M5's export. Preview renders are short by
-    construction.
+    This used to encode inside the request. On a 105-minute episode that is about
+    twelve minutes of blocking, during which the button looks dead and every other
+    write in the app fails with ``database is locked`` — one open write
+    transaction, one SQLite writer. The encode now runs on a worker thread and the
+    client polls ``GET /api/renders/{id}`` for progress.
     """
     settings: Settings = request.app.state.settings
+    db: Database = request.app.state.db
     window = (from_ms, to_ms) if from_ms is not None and to_ms is not None else None
-    record = clipping_service.render_version(
-        session, settings, version_id, preview=preview, window=window, lossless=lossless
+    started = renders_service.start(
+        db, settings, version_id, preview=preview, lossless=lossless, window=window
     )
+    return _to_out(started.render)
+
+
+@router.get("/renders/{render_id}", response_model=RenderOut)
+def render_status(
+    render_id: str, session: Session = Depends(_session_dependency)
+) -> RenderOut:
+    return _to_out(renders_service.get(session, render_id))
+
+
+def _to_out(record: Render) -> RenderOut:
     return RenderOut(
         id=record.id,
         duration_ms=record.duration_ms,
         status=record.status,
         url=f"/api/renders/{record.id}/file",
+        progress=record.progress,
+        error=record.error,
     )
 
 
@@ -148,8 +167,6 @@ def render_version(
 def render_file(
     render_id: str, request: Request, session: Session = Depends(_session_dependency)
 ) -> FileResponse:
-    from animatter.models import Render
-
     record = session.get(Render, render_id)
     if record is None:
         raise AppError("render_not_found", "渲染结果不存在", status=404)

@@ -12,7 +12,10 @@ Two details that decide whether the output is usable (AGENT.md §6.5):
 
 from __future__ import annotations
 
+import re
 import subprocess
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,6 +29,10 @@ log = get_logger(__name__)
 FADE_SECONDS = 0.005
 #: Above this many segments, render in batches and concatenate.
 BATCH_THRESHOLD = 200
+
+#: ``float(fraction)`` where fraction is 0..1 of the *output* timeline.
+ProgressFn = Callable[[float], None]
+
 
 
 @dataclass(frozen=True)
@@ -100,6 +107,103 @@ def _run_ffmpeg(command: list[str], *, timeout: int = 7200) -> None:
         )
 
 
+#: ``out_time_ms=`` is in **microseconds** in ffmpeg's progress stream despite
+#: the name. Treating it as milliseconds makes a 10-minute render report 0.6 %.
+_PROGRESS_RE = re.compile(r"out_time_(?:ms|us)=(\d+)")
+
+
+def _run_ffmpeg_reporting(
+    command: list[str],
+    *,
+    total_ms: int,
+    progress: ProgressFn | None,
+    timeout: int = 7200,
+) -> None:
+    """Run ffmpeg, reporting encoded-output fraction as it goes.
+
+    A 105-minute episode with 400 segments takes ~12 minutes of wall clock. The
+    UI cannot show a spinner for that long and still look alive, and a spinner
+    that never advances is indistinguishable from a hang — which is precisely
+    how "导出成片 点击后无反应" was reported. ffmpeg already emits this on its
+    ``-progress`` stream; we only have to read it.
+    """
+    if progress is None:
+        _run_ffmpeg(command, timeout=timeout)
+        return
+
+    expanded = [command[0], "-progress", "pipe:1", *command[1:]]
+    try:
+        process = subprocess.Popen(
+            expanded,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except FileNotFoundError as exc:
+        raise AppError(
+            "ffmpeg_missing",
+            f"找不到 {command[0]}",
+            hint="安装 ffmpeg 并确保在 PATH 上，或设置 AM_FFMPEG_PATH。",
+            status=503,
+        ) from exc
+
+    assert process.stdout is not None
+
+    # ffmpeg's stderr must keep draining while we parse stdout, or a chatty
+    # level fills the pipe buffer and the encode blocks forever. A kill timer
+    # takes the place of `subprocess.run(timeout=)`, which we can no longer use.
+    stderr_chunks: list[str] = []
+
+    def _drain_stderr() -> None:
+        if process.stderr is not None:
+            stderr_chunks.append(process.stderr.read())
+
+    drain = threading.Thread(target=_drain_stderr, daemon=True)
+    drain.start()
+
+    timed_out = threading.Event()
+
+    def _kill() -> None:
+        timed_out.set()
+        process.kill()
+
+    watchdog = threading.Timer(timeout, _kill)
+    watchdog.daemon = True
+    watchdog.start()
+
+    last = -1.0
+    try:
+        for line in process.stdout:
+            match = _PROGRESS_RE.search(line)
+            if match is None:
+                continue
+            encoded_ms = int(match.group(1)) / 1000.0
+            fraction = min(1.0, encoded_ms / total_ms) if total_ms > 0 else 0.0
+            # 1 % granularity at most: each step is a database write, and the
+            # reader polling for it does not need better than that.
+            if fraction - last >= 0.01:
+                last = fraction
+                progress(fraction)
+    finally:
+        process.stdout.close()
+        watchdog.cancel()
+        returncode = process.wait()
+        drain.join(timeout=5)
+
+    if timed_out.is_set():
+        raise AppError(
+            "render_timeout",
+            "渲染超时",
+            hint="素材可能很长或磁盘过慢；可先渲染较短片段验证。",
+            status=504,
+        )
+    if returncode != 0:
+        raise AppError(
+            "render_failed", "渲染失败", hint="".join(stderr_chunks)[-500:], status=500
+        )
+
+
 def render(
     ffmpeg: str,
     *,
@@ -110,6 +214,7 @@ def render(
     channels: int,
     bitrate: str = "192k",
     lossless: bool = False,
+    progress: ProgressFn | None = None,
 ) -> RenderResult:
     """Render ``edl`` into ``target``.
 
@@ -154,7 +259,9 @@ def render(
     # stdout and the command "succeeds" while producing nothing on disk.
     command.append(str(target))
 
-    _run_ffmpeg(command)
+    _run_ffmpeg_reporting(
+        command, total_ms=edl.output_duration_ms, progress=progress
+    )
 
     if not target.exists() or target.stat().st_size == 0:
         raise AppError("render_empty", "渲染产出为空文件", hint="检查 ffmpeg 日志与磁盘空间。")
