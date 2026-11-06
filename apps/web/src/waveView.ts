@@ -14,13 +14,17 @@ export interface View {
   to: number;
 }
 
-/** Never zoom in past one second of audio. */
-export const MIN_VISIBLE_MS = 1000;
+/** Never zoom in past three seconds of audio.
+ *
+ * Not one second, which is what a waveform editor would allow: the finest thing
+ * this app cuts on is a word, and the shortest word is a few hundred ms. At a
+ * 3-second window a 1000 px canvas is 3 ms per pixel, so a word edge lands
+ * within a pixel of where it is drawn — deeper zoom buys precision the user
+ * cannot act on, and only makes the waveform look smoother and emptier.
+ */
+export const MIN_VISIBLE_MS = 3000;
 /** One wheel notch. 1.25^4 ≈ 2.4× — brisk but still controllable. */
 export const ZOOM_STEP = 1.25;
-/** Two buckets per pixel is plenty; more just costs payload. */
-export const BUCKETS_PER_PIXEL = 2;
-export const MAX_BUCKETS_PER_SECOND = 4096;
 
 /** Clamp a window into ``[0, total]``, keeping the requested length if possible. */
 export function clampView(view: View, total: number): View {
@@ -83,21 +87,6 @@ export function initialView(stored: View | null, total: number): View {
   const full = { from: 0, to: Math.max(1, total) };
   if (stored === null) return full;
   return clampView(stored, total);
-}
-
-/**
- * Bucket resolution for one window.
- *
- * ``buckets_per_second`` has to follow the zoom: asking 64/s for a 3h file
- * yields 691k buckets, but asking 64/s for a 10-second window yields 640 and
- * the waveform becomes a staircase. Conversely a fixed 4096/s for a 3h file
- * would be 44M buckets — the request would time out before anything was drawn.
- */
-export function bucketsForWindow(viewportPx: number, spanMs: number): number {
-  const seconds = Math.max(0.001, spanMs / 1000);
-  const pixels = Math.max(1, viewportPx);
-  const wanted = Math.round((pixels / seconds) * BUCKETS_PER_PIXEL);
-  return Math.min(MAX_BUCKETS_PER_SECOND, Math.max(1, wanted));
 }
 
 /** Map a time to an x offset inside the window, in viewport pixels. */

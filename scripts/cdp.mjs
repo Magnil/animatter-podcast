@@ -136,10 +136,29 @@ await send("Emulation.setDeviceMetricsOverride", {
 await send("Page.navigate", { url });
 await sleep(2500);
 
+/**
+ * Real mouse input, not a synthetic event.
+ *
+ * Worth having: React's `setPointerCapture` throws for a pointer id the browser
+ * never saw, so a hand-built `PointerEvent` can make a drag look broken when it
+ * is only the harness. Anything about drag *timing* must use this.
+ */
+async function mouse(type, x, y) {
+  await send("Input.dispatchMouseEvent", {
+    type,
+    x,
+    y,
+    button: "left",
+    buttons: type === "mouseReleased" ? 0 : 1,
+    clickCount: 1,
+    pointerType: "mouse",
+  });
+}
+
 try {
   if (script) {
     const module = await import(new URL(script, `file://${process.cwd()}/`).href);
-    await module.default({ evaluate, click, shot, wait: sleep, out });
+    await module.default({ evaluate, click, shot, wait: sleep, mouse, send, out });
   } else {
     await shot(out);
   }

@@ -66,6 +66,48 @@ def _media_for_version(session: Session, version: object) -> Media:
     return media
 
 
+@router.get("/projects/{project_id}/media/{media_id}/waveform/envelope")
+def waveform_envelope(
+    project_id: str,
+    media_id: str,
+    request: Request,
+    session: Session = Depends(_session_dependency),
+) -> Response:
+    """The whole file's envelope, as one ``PKE1`` blob.
+
+    This is what the editor uses. The windowed endpoint below costs a round trip
+    *per zoom notch* — measured at 121–152 ms each on a real 105-minute episode.
+    The zoom did not feel sluggish because drawing was slow (measured: 978
+    canvas columns ≈ 1.5 ms); it felt sluggish because every wheel notch waited
+    for the network. One download of about 4 MB at project open turns zooming
+    into pure arithmetic.
+
+    Binary rather than JSON: 2M int8 pairs written as ``[0.37,-0.84,…]`` text
+    would be roughly ten times the bytes for exactly the same shape.
+    """
+    settings: Settings = request.app.state.settings
+    media = session.get(Media, media_id)
+    if media is None:
+        raise AppError("media_not_found", "音频不存在", status=404)
+
+    project_root = settings.projects_dir / project_id
+    peaks = peaks_service.load_or_build(
+        settings.ffmpeg_path, project_root, Path(media.path), media.sha256
+    )
+    body = peaks_service.serialize(peaks)
+    return Response(
+        content=body,
+        media_type="application/octet-stream",
+        headers={
+            "Cache-Control": "private, max-age=3600",
+            # The client wants to know how many buckets arrived before it parses
+            # them; these two also make the endpoint readable from curl.
+            "X-Envelope-Buckets": str(peaks.count),
+            "X-Envelope-Duration-Ms": str(peaks.duration_ms),
+        },
+    )
+
+
 @router.get("/projects/{project_id}/media/{media_id}/waveform")
 def waveform(
     project_id: str,
@@ -76,10 +118,11 @@ def waveform(
     from_ms: int = Query(default=0, ge=0),
     to_ms: int | None = Query(default=None, ge=0),
 ) -> dict[str, object]:
-    """Peaks for one visible window.
+    """Peaks for one visible window, as JSON.
 
-    A 12h episode at 512 buckets/s is ~22M buckets; shipping the whole thing
-    would stall the browser, so the client always asks for a window (§7.1).
+    Kept for scripting and inspection; the editor now fetches the whole
+    envelope once (see ``/waveform/envelope``) because a request per zoom notch
+    is what made zooming feel slow.
     """
     settings: Settings = request.app.state.settings
     media = session.get(Media, media_id)
@@ -97,7 +140,6 @@ def waveform(
         to_ms=min(end, peaks.duration_ms),
     )
     payload["duration_ms"] = peaks.duration_ms
-    payload["levels"] = list(peaks_service.LEVELS)
     return payload
 
 

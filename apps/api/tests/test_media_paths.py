@@ -121,7 +121,7 @@ def test_peaks_read_a_chinese_path(tmp_path: Path) -> None:
 
     source = make_audio(tmp_path / "波形 测试.wav", seconds=1.0)
     result = peaks_module.compute("ffmpeg", source)
-    assert result.levels, "decoded no PCM for a Chinese filename"
+    assert result.count > 0, "decoded no PCM for a Chinese filename"
     assert 900 <= result.duration_ms <= 1100
 
 

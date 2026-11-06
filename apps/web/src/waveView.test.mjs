@@ -12,9 +12,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  MAX_BUCKETS_PER_SECOND,
   MIN_VISIBLE_MS,
-  bucketsForWindow,
   clampView,
   initialView,
   shouldRememberView,
@@ -45,6 +43,13 @@ test("clampView refuses to scroll before zero", () => {
 test("clampView enforces the minimum window", () => {
   const view = clampView({ from: 1000, to: 1001 }, HOUR);
   assert.equal(view.to - view.from, MIN_VISIBLE_MS);
+});
+
+test("the minimum window is three seconds, not one", () => {
+  // The finest thing this app cuts on is a word; 3 s over ~1000 px is 3 ms per
+  // pixel, so a word edge lands within a pixel of where it is drawn. Zooming
+  // deeper would buy precision nobody can act on.
+  assert.equal(MIN_VISIBLE_MS, 3000);
 });
 
 test("clampView survives a file shorter than the minimum window", () => {
@@ -98,21 +103,6 @@ test("panTo preserves the window length at the edges", () => {
 test("isZoomed is false for the whole file and true once narrowed", () => {
   assert.equal(isZoomed({ from: 0, to: HOUR }, HOUR), false);
   assert.equal(isZoomed({ from: 0, to: HOUR - 2 }, HOUR), true);
-});
-
-test("bucketsForWindow scales with zoom", () => {
-  const wide = bucketsForWindow(1000, HOUR);
-  const narrow = bucketsForWindow(1000, 10_000);
-  assert.ok(narrow > wide, "zooming in must ask for finer buckets");
-  assert.ok(wide >= 1);
-});
-
-test("bucketsForWindow never exceeds the server ceiling", () => {
-  assert.equal(bucketsForWindow(4000, MIN_VISIBLE_MS), MAX_BUCKETS_PER_SECOND);
-});
-
-test("bucketsForWindow never returns zero", () => {
-  assert.ok(bucketsForWindow(100, HOUR * 12) >= 1);
 });
 
 test("msToX and xToMs round-trip", () => {

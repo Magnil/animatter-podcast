@@ -7,6 +7,8 @@ shows up as a blank or misaligned waveform — hard to diagnose from the UI.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
@@ -17,11 +19,15 @@ from animatter.media import peaks as peaks_service
 
 def make_peaks(samples: np.ndarray, *, sample_rate: int = 16000) -> peaks_service.Peaks:
     duration_ms = int(len(samples) / sample_rate * 1000)
-    levels = []
-    for rate in peaks_service.LEVELS:
-        per_bucket = max(1, sample_rate // rate)
-        levels.append((rate, peaks_service._bucket(samples, per_bucket)))
-    return peaks_service.Peaks(duration_ms=duration_ms, sample_rate=sample_rate, levels=tuple(levels))
+    buckets = min(peaks_service.MAX_BUCKETS, len(samples))
+    per_bucket = max(1, len(samples) // max(1, buckets))
+    pairs = peaks_service._bucket(samples, per_bucket)
+    return peaks_service.Peaks(
+        duration_ms=duration_ms,
+        sample_rate=sample_rate,
+        min=peaks_service._quantise(pairs[:, 0]),
+        max=peaks_service._quantise(pairs[:, 1]),
+    )
 
 
 # --- bucketing ----------------------------------------------------------
@@ -49,6 +55,26 @@ def test_bucket_zero_size_clamped() -> None:
     assert peaks_service._bucket(samples, 0).shape == (3, 2)
 
 
+# --- quantisation -------------------------------------------------------
+
+
+def test_quantise_keeps_full_scale_inside_int8() -> None:
+    # A hot source overshoots ±32767; clamping rather than wrapping is what
+    # keeps the drawn shape from inverting at the loudest moments.
+    values = np.array([-32768, -16384, 0, 16384, 32767, 40000], dtype=np.int32)
+    got = peaks_service._quantise(values).tolist()
+    assert got[0] == -127
+    assert got[2] == 0
+    assert got[4] == 127
+    assert got[5] == 127, "overshoot must clamp, not wrap"
+
+
+def test_quantise_is_symmetric() -> None:
+    values = np.array([-16384, 16384], dtype=np.int32)
+    lo, hi = peaks_service._quantise(values).tolist()
+    assert lo == -hi
+
+
 # --- serialization ------------------------------------------------------
 
 
@@ -59,47 +85,60 @@ def test_round_trip_preserves_data() -> None:
     restored = peaks_service.deserialize(peaks_service.serialize(original))
 
     assert restored.duration_ms == original.duration_ms
-    assert len(restored.levels) == len(original.levels)
-    for (rate_a, data_a), (rate_b, data_b) in zip(original.levels, restored.levels, strict=True):
-        assert rate_a == rate_b
-        assert np.array_equal(data_a, data_b)
+    assert restored.count == original.count
+    assert np.array_equal(restored.min, original.min)
+    assert np.array_equal(restored.max, original.max)
 
 
 def test_deserialize_rejects_bad_magic() -> None:
     with pytest.raises(ValueError, match="峰值缓存"):
-        peaks_service.deserialize(b"XXXX" + b"\x00" * 20)
+        peaks_service.deserialize(b"XXXX" + bytes(20))
+
+
+def test_deserialize_rejects_truncated_blob() -> None:
+    # A half-written 4 MB download must fail loudly rather than draw a
+    # half-length waveform that silently misaligns every word against the audio.
+    blob = peaks_service.serialize(make_peaks(np.zeros(1600, dtype=np.int16)))
+    with pytest.raises(ValueError, match="截断"):
+        peaks_service.deserialize(blob[:-1])
 
 
 def test_serialize_header_is_stable() -> None:
     blob = peaks_service.serialize(make_peaks(np.zeros(1600, dtype=np.int16)))
-    assert blob[:4] == b"PKC1"
+    assert blob[:4] == b"PKE1"
 
 
-# --- level selection ----------------------------------------------------
+def test_envelope_size_is_two_bytes_per_bucket() -> None:
+    # The whole design rests on this: 2M buckets must be ~4 MB, not ~16 MB.
+    peaks = make_peaks(np.zeros(16000 * 60, dtype=np.int16))
+    blob = peaks_service.serialize(peaks)
+    assert len(blob) == 18 + peaks.count * 2
 
 
-def test_level_for_picks_next_coarser() -> None:
-    peaks = make_peaks(np.zeros(16000, dtype=np.int16))
-    assert peaks.level_for(1)[0] == 8
-    assert peaks.level_for(64)[0] == 64
-    assert peaks.level_for(100)[0] == 512
+# --- bucket geometry ----------------------------------------------------
 
 
-def test_level_for_above_max_uses_finest() -> None:
-    peaks = make_peaks(np.zeros(16000, dtype=np.int16))
-    assert peaks.level_for(99999)[0] == 4096
+def test_bucket_ms_follows_file_length() -> None:
+    peaks = make_peaks(np.zeros(16000 * 10, dtype=np.int16))
+    assert peaks.bucket_ms == pytest.approx(1000 / 16000, rel=0.01)
 
 
-# --- windowing ----------------------------------------------------------
+def test_empty_peaks_report_zero_bucket_ms() -> None:
+    empty = np.array([], dtype=np.int8)
+    peaks = peaks_service.Peaks(duration_ms=0, sample_rate=16000, min=empty, max=empty)
+    assert peaks.bucket_ms == 0.0
+    assert peaks.count == 0
+
+
+# --- windowing (kept for scripting; the editor no longer calls it) ------
 
 
 def test_window_returns_requested_span() -> None:
     samples = np.ones(16000 * 10, dtype=np.int16) * 1000  # 10 seconds
     peaks = make_peaks(samples)
     payload = peaks_service.window_payload(peaks, buckets_per_second=8, from_ms=2000, to_ms=4000)
-    assert payload["rate"] == 8
-    # 2 seconds at 8 buckets/s = 16 buckets.
-    assert len(payload["min"]) == 16
+    # 2 seconds at 8 buckets/s ≈ 16 buckets (exact count depends on decimation).
+    assert 8 <= len(payload["min"]) <= 20
     assert payload["from_ms"] == pytest.approx(2000, abs=200)
 
 
@@ -124,10 +163,39 @@ def test_window_past_end_returns_empty_arrays() -> None:
 
 
 def test_cache_path_uses_sha_not_filename() -> None:
-    from pathlib import Path
+    from pathlib import Path as _Path
 
-    path = peaks_service.cache_path(Path("/tmp/proj"), "abc123")
-    assert path.name == "abc123.pkc"
+    path = peaks_service.cache_path(_Path("/tmp/proj"), "abc123")
+    assert path.name == "abc123.pke"
+
+
+def test_legacy_cache_is_removed(tmp_path: Path) -> None:
+    """The old 143 MB multi-level file must not linger beside the new one."""
+    legacy = tmp_path / "peaks" / "sha-old.pkc"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_bytes(b"PKC1" + bytes(64))
+
+    peaks_service.forget_legacy_cache(tmp_path, "sha-old")
+    assert not legacy.exists()
+    # Idempotent: a second call must not raise.
+    peaks_service.forget_legacy_cache(tmp_path, "sha-old")
+
+
+def test_memory_cache_avoids_a_second_disk_read(tmp_path: Path) -> None:
+    """The 99 ms re-deserialise per request is what this cache exists to remove."""
+    from pathlib import Path as _Path
+
+    samples = (np.sin(np.linspace(0, 400, 16000 * 2)) * 20000).astype(np.int16)
+    built = make_peaks(samples)
+    target = peaks_service.cache_path(tmp_path, "sha-mem")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(peaks_service.serialize(built))
+    peaks_service.forget("sha-mem")
+
+    first = peaks_service.load_or_build("ffmpeg", tmp_path, _Path("unused.wav"), "sha-mem")
+    target.unlink()  # prove the second call never touches disk
+    second = peaks_service.load_or_build("ffmpeg", tmp_path, _Path("unused.wav"), "sha-mem")
+    assert second is first
 
 
 # --- boundary editing ---------------------------------------------------

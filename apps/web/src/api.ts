@@ -170,6 +170,21 @@ export const api = {
         `?buckets_per_second=${bps}&from_ms=${fromMs}&to_ms=${toMs}`,
     ),
 
+  /**
+   * The whole-file envelope, as one binary download.
+   *
+   * Deliberately not `request()`: this body is ~4 MB of int8 pairs and parsing
+   * it as JSON would cost ten times the bytes plus a string decode. The caller
+   * gets the raw buffer so `parseEnvelope` can *view* it without copying.
+   */
+  waveformEnvelope: async (projectId: string, mediaId: string): Promise<ArrayBuffer> => {
+    const response = await fetch(
+      `/api/projects/${projectId}/media/${mediaId}/waveform/envelope`,
+    );
+    if (!response.ok) throw await failure(response, "波形加载失败");
+    return response.arrayBuffer();
+  },
+
   boundary: (
     versionId: string,
     action: "new_sentence" | "merge" | "to_prev" | "to_next",

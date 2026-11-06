@@ -32,6 +32,7 @@ import {
   wordState,
   type TokenRange,
 } from "./transcript";
+import { FOLLOW_GRACE_MS, planWindow, scrollOffsetFor } from "./virtualList";
 
 export type TokenSelection = TokenRange;
 
@@ -93,6 +94,104 @@ export function SentenceList({
   const [renaming, setRenaming] = useState<string | null>(null);
 
   const activeOrd = findActiveSentence(sentences, positionMs);
+
+  // ---- Windowing -----------------------------------------------------------
+  // Only the rows near the viewport are mounted. The full list is ~25k nodes and
+  // one word click cost 650 ms to paint; slicing the list took it to 199 ms.
+  const listRef = useRef<HTMLDivElement | null>(null);
+  /** Measured row heights, keyed by sentence ord. Survives scrolling by design. */
+  const heights = useRef<Map<number, number>>(new Map());
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(0);
+  /** When the reader last scrolled by hand, so playhead-following can stand down. */
+  const userScrolledAt = useRef(0);
+
+  const plan = useMemo(
+    () => planWindow(sentences.length, heights.current, scrollTop, viewportHeight),
+    // `scrollTop`/`viewportHeight` decide the window; a re-render from any other
+    // state must not walk the height map again.
+    [sentences.length, scrollTop, viewportHeight],
+  );
+
+  /**
+   * Keep the scroll position after the mounted rows change.
+   *
+   * Windowing replaces the mounted slice, so the browser recomputes where the
+   * content sits. The spacer above already accounts for the skipped rows, which
+   * is what keeps `scrollTop` meaningful — but React applies the new spacer and
+   * the new rows in one commit, so the scroller can briefly clamp `scrollTop`
+   * to the old (shorter) content. Restoring it synchronously after layout is
+   * what stops the list from snapping to the top on every scroll.
+   */
+  useLayoutEffect(() => {
+    const element = listRef.current;
+    if (!element) return;
+    if (Math.abs(element.scrollTop - scrollTop) > 1) element.scrollTop = scrollTop;
+  }, [plan.start, plan.end, scrollTop]);
+
+  // Measure the scroll viewport, including when the sidebar is resized.
+  useEffect(() => {
+    const element = listRef.current;
+    if (!element) return;
+    const measure = (): void => setViewportHeight(element.clientHeight);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  /**
+   * Record a row's real height after it renders.
+   *
+   * Rows are 77–235 px depending on how many lines the text takes, so a fixed
+   * row height would make the scrollbar jump by a whole row whenever a tall one
+   * scrolled past. Called from a layout effect on each mounted row.
+   */
+  const measureRow = useCallback((ord: number, element: HTMLDivElement | null): void => {
+    if (!element) return;
+    const height = element.getBoundingClientRect().height;
+    if (height <= 0) return;
+    const previous = heights.current.get(ord);
+    if (previous !== undefined && Math.abs(previous - height) < 1) return;
+    heights.current.set(ord, height);
+  }, []);
+
+  /**
+   * Scroll a row into view, mounting it first if needed.
+   *
+   * With every row mounted this was `scrollIntoView()`. It cannot be any more:
+   * the target row may not exist. Setting `scrollTop` from the height model
+   * makes the window planner mount it on the next render, so one call suffices.
+   */
+  const revealOrd = useCallback(
+    (ord: number): void => {
+      const element = listRef.current;
+      if (!element) return;
+      const target = scrollOffsetFor(ord, heights.current, element.clientHeight);
+      if (Math.abs(element.scrollTop - target) < 2) return;
+      element.scrollTop = target;
+      setScrollTop(target);
+    },
+    [],
+  );
+
+  /**
+   * Follow the playhead — but not while the reader is scrolling.
+   *
+   * The sentence being spoken must be on screen, or the transcript and the audio
+   * drift apart. It must not, however, yank the list back every time a sentence
+   * changes while someone is reading somewhere else; the windowed list can only
+   * be read by scrolling, so fighting the scrollbar would make it unusable. A
+   * short grace period after a manual scroll is enough to tell the two apart.
+   */
+  const revealedOrd = useRef<number | null>(null);
+  useEffect(() => {
+    if (activeOrd < 0 || revealedOrd.current === activeOrd) return;
+    revealedOrd.current = activeOrd;
+    if (performance.now() - userScrolledAt.current < FOLLOW_GRACE_MS) return;
+    revealOrd(activeOrd);
+  }, [activeOrd, revealOrd]);
+
   const range = selectionRange(selection);
   const single = isSingleWord(range);
 
@@ -299,8 +398,20 @@ export function SentenceList({
         <span className="rail-hint">{describeSelection(tokens, range)}</span>
       </div>
 
-      <div className="sentence-list" role="list">
-        {sentences.map((sentence) => {
+      <div
+        className="sentence-list"
+        role="list"
+        ref={listRef}
+        onScroll={(event) => {
+          userScrolledAt.current = performance.now();
+          setScrollTop(event.currentTarget.scrollTop);
+        }}
+      >
+        {/* Height of the rows above the window. Without it the scroller would
+            only be as tall as the mounted slice, and the scrollbar would sit at
+            the bottom on the first screenful. */}
+        {plan.paddingTop > 0 ? <div style={{ height: plan.paddingTop }} aria-hidden="true" /> : null}
+        {sentences.slice(plan.start, plan.end).map((sentence) => {
           const slice = tokens.slice(sentence.token_start, sentence.token_end);
           const cps = charsPerSecond(sentence.text, sentence.start_ms, sentence.end_ms);
           const tooFast = cps > CPS_WARN_ZH;
@@ -327,6 +438,10 @@ export function SentenceList({
                 .filter(Boolean)
                 .join(" ")}
               data-ord={sentence.ord}
+              // The height model needs real heights: rows run 77–235 px with
+              // seven common values, so a constant would make the scrollbar
+              // jump by a line whenever a tall sentence scrolled past.
+              ref={(element) => measureRow(sentence.ord, element)}
               style={speaker ? { borderLeftColor: speaker.color } : undefined}
             >
               <div className="sentence-head">
@@ -449,6 +564,9 @@ export function SentenceList({
             </div>
           );
         })}
+        {plan.paddingBottom > 0 ? (
+          <div style={{ height: plan.paddingBottom }} aria-hidden="true" />
+        ) : null}
       </div>
 
       {bubbleStyle && range ? (

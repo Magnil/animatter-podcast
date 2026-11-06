@@ -21,11 +21,11 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type Waveform as WaveformData } from "./api";
+import { api } from "./api";
+import { hasShape, parseEnvelope, peakBetween, type Envelope } from "./envelope";
 import {
   MIN_VISIBLE_MS,
   ZOOM_STEP,
-  bucketsForWindow,
   clampView,
   initialView,
   isZoomed,
@@ -126,10 +126,18 @@ export function Waveform({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ handle: EdgeHandle; previewMs: number } | null>(null);
   const [hovered, setHovered] = useState<EdgeHandle | null>(null);
-  // Bumped on every drag move so the canvas redraws the preview position.
-  const [, setTick] = useState(0);
+  /**
+   * Bumped on every drag move so the canvas redraws the preview position.
+   *
+   * The value is read by `draw`'s dependency list — that is the whole point of
+   * the state. Leaving it out (as it was) meant `setTick` re-rendered the
+   * component but `draw`'s identity never changed, so the effect that calls it
+   * never re-ran: the handle moved in `dragRef` and nothing was painted. The
+   * drag looked frozen until release, which read as 「按住边界卡一下」.
+   */
+  const [tick, setTick] = useState(0);
 
-  const [peaks, setPeaks] = useState<WaveformData | null>(null);
+  const [peaks, setPeaks] = useState<Envelope | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [width, setWidth] = useState(800);
   // Restored from the per-media memory below, so the window survives even a
@@ -138,7 +146,7 @@ export function Waveform({
     initialView(rememberedView(projectId, mediaId), durationMs),
   );
 
-  const total = Math.max(1, peaks?.duration_ms || durationMs || 1);
+  const total = Math.max(1, peaks?.durationMs || durationMs || 1);
   const span = Math.max(1, view.to - view.from);
   const zoomed = isZoomed(view, total);
 
@@ -188,29 +196,33 @@ export function Waveform({
     [total],
   );
 
-  // Fetch only the visible window. Debounced because a wheel gesture fires
-  // dozens of events and each one would otherwise be a request.
+  // Fetch the whole envelope once per media file.
+  //
+  // This replaces a per-window fetch that fired on every zoom notch. Measured
+  // on a real 105-minute episode: 121–152 ms per notch, because each one waited
+  // for a round trip. Now the download happens once and zooming never touches
+  // the network again.
+  //
+  // No debounce and no cancellation token: there is exactly one request per
+  // media file, so the machinery that used to coalesce a burst has nothing left
+  // to coalesce.
   useEffect(() => {
     let cancelled = false;
-    const bps = bucketsForWindow(width, Math.max(1, view.to - view.from));
-    const timer = window.setTimeout(() => {
-      void api
-        .waveform(projectId, mediaId, bps, Math.round(view.from), Math.round(view.to))
-        .then((payload) => {
-          if (!cancelled) {
-            setPeaks(payload);
-            setLoadError(null);
-          }
-        })
-        .catch((error: unknown) => {
-          if (!cancelled) setLoadError(error instanceof Error ? error.message : String(error));
-        });
-    }, 90);
+    setLoadError(null);
+    void api
+      .waveformEnvelope(projectId, mediaId)
+      .then((buffer) => {
+        if (cancelled) return;
+        setPeaks(parseEnvelope(buffer));
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setLoadError(error instanceof Error ? error.message : String(error));
+      });
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
     };
-  }, [projectId, mediaId, view.from, view.to, width]);
+  }, [projectId, mediaId]);
 
   const msToX = useCallback((ms: number) => msToXIn(ms, view, width), [view, width]);
   const xToMs = useCallback((x: number) => xToMsIn(x, view, width), [view, width]);
@@ -220,8 +232,15 @@ export function Waveform({
     if (!canvas) return;
 
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.round(width * dpr);
-    canvas.height = Math.round(CANVAS_HEIGHT * dpr);
+    const pixelWidth = Math.round(width * dpr);
+    const pixelHeight = Math.round(CANVAS_HEIGHT * dpr);
+    // Assigning `canvas.width` reallocates the whole backing store and wipes it
+    // — on every draw. During a drag that was a fresh ~1.6 MB bitmap 60 times a
+    // second for a resize that had not happened.
+    if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+      canvas.width = pixelWidth;
+      canvas.height = pixelHeight;
+    }
 
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
@@ -240,7 +259,12 @@ export function Waveform({
       ctx.fillRect(x0, 0, Math.max(1, x1 - x0), CANVAS_HEIGHT);
     };
 
+    // Cull to the visible window before drawing. At full zoom-out all 1074
+    // sentence bands are on screen and this saves nothing; zoomed in it is the
+    // difference between touching 1074 rects and touching the dozen that show.
+    const viewTo = view.from + span;
     for (const marker of markers) {
+      if (marker.end_ms < view.from || marker.start_ms > viewTo) continue;
       band(marker.start_ms, marker.end_ms, marker.active ? "rgba(59,130,246,0.18)" : "rgba(148,163,184,0.10)");
     }
 
@@ -248,6 +272,7 @@ export function Waveform({
     ctx.lineWidth = 1;
     ctx.strokeStyle = "rgba(220,38,38,0.7)";
     for (const deleted of deletions) {
+      if (deleted.end_ms < view.from || deleted.start_ms > viewTo) continue;
       band(deleted.start_ms, deleted.end_ms, "rgba(220,38,38,0.22)");
       const x0 = msToX(deleted.start_ms);
       const x1 = msToX(deleted.end_ms);
@@ -263,31 +288,29 @@ export function Waveform({
       ctx.stroke();
     }
 
-    if (!peaks || peaks.min.length === 0 || !peaks.rate) {
+    if (!hasShape(peaks)) {
       ctx.fillStyle = "#cbd5e1";
       ctx.fillRect(0, mid - 1, width, 2);
     } else {
-      // Bucket i sits at peaks.from_ms + i / rate. Mapping through time (not
-      // through array index) keeps the shape correct even when the server
-      // snapped the window to its own bucket grid.
-      const rate = peaks.rate;
-      const firstBucketMs = peaks.from_ms;
-      const bucketWidthPx = (1000 / rate / span) * width;
-      ctx.fillStyle = "#475569";
-      const count = peaks.min.length;
+      // One column = one `peakBetween` over that column's own span. Reading
+      // through the envelope's mip levels (rather than an array index computed
+      // from a server-snapped window) is what lets the shape stay correct at
+      // every zoom without asking the server to re-slice anything.
+      //
+      // Columns go into one Path2D and one `fill()`. Setting `fillStyle` inside
+      // the loop is what used to make this ~1.5 ms per frame instead of ~0.4:
+      // every assignment is a state change the canvas has to honour.
+      const msPerPixel = span / width;
+      const bars = new Path2D();
       for (let x = 0; x < width; x += 1) {
-        const ms = view.from + (x / width) * span;
-        const index = Math.floor(((ms - firstBucketMs) / 1000) * rate);
-        if (index < 0 || index >= count) continue;
-        const reach = Math.max(1, Math.ceil(bucketWidthPx));
-        let low = 0;
-        let high = 0;
-        for (let i = index; i < Math.min(count, index + reach); i += 1) {
-          low = Math.min(low, peaks.min[i] ?? 0);
-          high = Math.max(high, peaks.max[i] ?? 0);
-        }
-        ctx.fillRect(x, mid - high * (waveHeight / 2), 1, Math.max(1, (high - low) * (waveHeight / 2)));
+        const from = view.from + x * msPerPixel;
+        const amp = peakBetween(peaks, from, from + msPerPixel);
+        if (amp <= 0) continue;
+        const h = Math.max(1, amp * waveHeight);
+        bars.rect(x, mid - h / 2, 1, h);
       }
+      ctx.fillStyle = "#475569";
+      ctx.fill(bars);
     }
 
     // Boundary handles.
@@ -321,6 +344,7 @@ export function Waveform({
     // Captions sit in the top band, above the waveform, so text never obscures
     // the shape of the audio it describes.
     for (const caption of captions) {
+      if (caption.end_ms < view.from || caption.start_ms > viewTo) continue;
       const x0 = msToX(caption.start_ms);
       const x1 = msToX(caption.end_ms);
       const captionWidth = x1 - x0;
@@ -347,7 +371,7 @@ export function Waveform({
       ctx.fillStyle = "#dc2626";
       ctx.fillRect(Math.min(width - 2, Math.max(0, playX)), 0, 2, CANVAS_HEIGHT);
     }
-  }, [peaks, markers, handles, deletions, captions, activeOrd, positionMs, width, msToX, hovered, span, view.from]);
+  }, [peaks, markers, handles, deletions, captions, activeOrd, positionMs, width, msToX, hovered, span, view.from, tick]);
 
   useEffect(() => {
     draw();
