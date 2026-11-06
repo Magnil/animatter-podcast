@@ -558,18 +558,7 @@ function Desk({
   const saveArchive = useCallback(async () => {
     await run("保存项目", async () => {
       const result = await api.saveAndDownloadArchive(boot.projectId);
-      // Hand the bytes to the browser. Without this the file only ever existed
-      // in the app's data directory, which is why "点保存项目时没有弹出文件下载".
-      const url = URL.createObjectURL(result.blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = result.filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      // Revoking immediately can cancel the download in some browsers; one frame
-      // of delay is enough and the blob is tiny relative to the RAM it holds.
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      saveBlob(result.blob, result.filename);
 
       setLastArchive({ path: result.path, filename: result.filename });
       say(
@@ -578,6 +567,26 @@ function Desk({
       );
     });
   }, [boot.projectId, run, say]);
+
+  /**
+   * Hand the Audacity label track to the browser.
+   *
+   * This is the escape hatch for "I need to cut this episode today": the word
+   * timeline leaves the app as a plain label file, and the actual editing
+   * happens in Audacity. It is therefore *not* gated on having deletions —
+   * 导出成片音频 is, and that is precisely the wall this route exists to go
+   * around.
+   */
+  const downloadLabels = useCallback(async () => {
+    await run("导出 Audacity 标签", async () => {
+      const result = await api.downloadLabels(boot.version.id);
+      saveBlob(result.blob, result.filename);
+      say(
+        `已导出 ${result.lines} 条标签到 ${result.filename}。` +
+          `在 Audacity 里打开原始音频，然后 文件 > 导入 > 标签 选中这个文件。`,
+      );
+    });
+  }, [boot.version.id, run, say]);
 
   const loadArchive = useCallback(async () => {
     if (!loadPath.trim()) return;
@@ -808,12 +817,26 @@ function Desk({
             hint: "SRT / VTT / TXT",
             onSelect: () => setShowSubtitles(true),
           },
+          {
+            id: "labels",
+            label: "Audacity 标签…",
+            hint: "词级标签 .txt，可直接在 Audacity 剪辑",
+            disabled: busy,
+            onSelect: () => void downloadLabels(),
+          },
           "separator",
           {
             id: "render",
-            label: "导出成片音频…",
-            hint: settings?.export_format === "wav" ? "WAV 无损" : "M4A",
-            disabled: !edl || edl.deletions.length === 0,
+            label: exporting ? `导出成片音频… ${exporting.percent}%（进行中）` : "导出成片音频…",
+            hint:
+              edl && edl.deletions.length === 0
+                ? "先删除要剪掉的内容"
+                : !edl
+                  ? "正在计算剪辑方案…"
+                  : settings?.export_format === "wav"
+                    ? "WAV 无损"
+                    : "M4A",
+            disabled: exporting !== null || !edl || edl.deletions.length === 0,
             onSelect: () => void renderExport(),
           },
           "separator",
@@ -1234,4 +1257,23 @@ function formatClock(ms: number): string {
 function describe(caught: unknown): string {
   if (caught instanceof Error) return caught.message;
   return String(caught);
+}
+
+/**
+ * Hand a blob to the browser as a download.
+ *
+ * Shared by every "导出" action: without it the file only exists in the app's
+ * data directory, which is how "点保存项目时没有弹出文件下载" happened.
+ */
+function saveBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  // Revoking immediately can cancel the download in some browsers; one minute
+  // is generous and the blob is small relative to the audio it describes.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }

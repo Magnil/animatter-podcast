@@ -598,6 +598,52 @@ export const api = {
 
   exportFileUrl: (url: string) => url,
 
+  // --- Audacity labels ---------------------------------------------------
+
+  labelsPreview: (versionId: string, limit = 12) =>
+    requestText(`/api/versions/${versionId}/labels/preview?limit=${limit}`),
+
+  labelsInfo: (versionId: string, options: { includeFiller?: boolean } = {}) => {
+    const p = new URLSearchParams();
+    if (options.includeFiller === false) p.set("include_filler", "false");
+    return request<{
+      version_id: string;
+      filename: string;
+      lines: number;
+      words: number;
+      fillers: number;
+      silences: number;
+      deleted: number;
+      tokens: number;
+    }>(`/api/versions/${versionId}/labels/info?${p}`);
+  },
+
+  /**
+   * Fetch the label file and the numbers describing it.
+   *
+   * Same header trick as `saveAndDownloadArchive`: the filename is Chinese, HTTP
+   * headers are latin-1, so the server percent-encodes it and we decode here.
+   */
+  downloadLabels: async (
+    versionId: string,
+  ): Promise<{ blob: Blob; filename: string; lines: number }> => {
+    const response = await rawRequest(`/api/versions/${versionId}/labels/file`);
+    const decoded = (name: string): string => {
+      const raw = response.headers.get(name) ?? "";
+      try {
+        return decodeURIComponent(raw);
+      } catch {
+        return raw;
+      }
+    };
+    return {
+      blob: await response.blob(),
+      filename: decoded("X-Labels-Filename") || "audacity_labels.txt",
+      lines: Number(response.headers.get("X-Labels-Lines") ?? "0") || 0,
+    };
+  },
+
+
   undo: (versionId: string) =>
     request<{ undone: string; op_type: string }>(`/api/versions/${versionId}/undo`, {
       method: "POST",

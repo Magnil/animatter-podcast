@@ -27,6 +27,7 @@ from animatter.routers import (
     editing,
     health,
     hotwords,
+    labels,
     projects,
     proofread,
     speakers,
@@ -119,6 +120,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(archive.router)
     app.include_router(subtitles.router)
     app.include_router(speakers.router)
+    app.include_router(labels.router)
     return app
 
 
