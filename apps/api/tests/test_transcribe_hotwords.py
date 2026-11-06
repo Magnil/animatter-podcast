@@ -174,7 +174,10 @@ def test_other_projects_episode_terms_are_not_leaked(
 ) -> None:
     project_id, media_id = project_with_media
     hotword_service.replace_episode(
-        session, project_id="prj_other", media_id="med_other", candidates=[HotwordCandidate("别期嘉宾", weight=5)]
+        session,
+        project_id="prj_other",
+        media_id="med_other",
+        candidates=[HotwordCandidate("别期嘉宾", weight=5)],
     )
     session.commit()
 

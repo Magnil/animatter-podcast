@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse
@@ -57,8 +58,13 @@ class ArchiveIn(BaseModel):
 
 
 def _to_out(info: archive_service.ArchiveInfo) -> ArchiveOut:
+    # Absolute, always. The archive is written relative to the data dir, so the
+    # old value was a repo-relative path — meaningful only to whoever happens
+    # to be standing in the repo root. The user was told "已保存", read the
+    # notice, and still could not find the file; pasting that path into
+    # 载入项目 then failed from anywhere else.
     return ArchiveOut(
-        path=str(info.path),
+        path=str(info.path.resolve()),
         filename=info.path.name,
         version=info.version,
         saved_at=info.saved_at,
@@ -97,15 +103,34 @@ def download_archive(
     request: Request,
     session: Session = Depends(_session_dependency),
 ) -> FileResponse:
-    """Build (or reuse) the archive and hand it over as a file."""
+    """Build the archive, hand it over as a file, and say where it landed.
+
+    Offering only the download was not enough, and neither was offering only a
+    path. The user's report was "I clicked save, nothing was downloaded, so I
+    don't know where it is" — the notice named a path, but the path was
+    repo-relative and no file ever reached the browser. Both halves are needed:
+    a download the browser owns, and the server-side absolute path the 载入项目
+    dialog can read back.
+
+    The metadata rides along as headers rather than a second request because
+    the body is the file itself. Values are percent-encoded: HTTP headers are
+    latin-1, and a project named 「第 07 期」 would raise on the way out.
+    """
     settings: Settings = request.app.state.settings
     info = archive_service.save_project(session, settings, project_id)
-    return FileResponse(
+    response = FileResponse(
         info.path,
         media_type="application/zip",
         filename=info.path.name,
         content_disposition_type="attachment",
     )
+    resolved = info.path.resolve()
+    response.headers["X-Archive-Path"] = quote(str(resolved), safe="")
+    response.headers["X-Archive-Filename"] = quote(resolved.name, safe="")
+    response.headers["X-Archive-Sentences"] = str(info.sentence_count)
+    response.headers["X-Archive-Ops"] = str(info.op_count)
+    response.headers["X-Archive-Deletions"] = str(info.deletion_count)
+    return response
 
 
 @router.post("/archive/inspect", response_model=ArchiveOut)

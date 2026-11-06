@@ -1832,3 +1832,88 @@ key 里带**检测器参数**（改阈值必须换 key，否则用户调了滑�
 - **真实音频端到端**：75 秒样本，计划 14 处（口癖 3 · 未转写 1 · 静音 10），
   执行后 `removed_ms=4916`，`render?preview=true` 5.7s 出片 67.95 秒，
   一次 undo 回到 `removed=0 / segments=1`。
+
+## 保存即下载、大纲导入热词、缩放不再被编辑重置（2026-11-06）
+
+用户报的三条，都不是「坏掉了」，而是「做完之后不知道自己做了什么」。
+
+### 1. 点保存项目没有下载，也不知道文件在哪
+
+两个独立缺陷叠在一起，缺一个都解释不通用户的观察：
+
+- 存档写在 `data/projects/<id>/<项目名>.project`，`_to_out` 回的是**相对路径**。
+  这个路径只对「站在仓库根目录的人」有意义，「载入项目」从任何别的地方粘进去都失败。
+- `run()` 在动作**返回之后**写 `「label」完成`，把动作自己刚写的「已保存到 …」
+  覆盖掉了。所以提示是真的出现过，随即被抹掉——用户看到的是「完成」两个字。
+
+修法分三层：
+
+1. 后端 `_to_out` 一律 `path.resolve()`。
+2. 前端 `run()` 记一个 `noticeClaimed`，动作自己 `say()` 过的就不再覆盖。
+3. **真的要下载**：`GET /archive/file` 已经在，但它只回文件；而
+   `POST /archive` 只回元数据。用户要么下载、要么知道路径，二选一。
+   现在下载响应的 header 里带上服务端绝对路径（`X-Archive-Path` 等），
+   前端 `fetch` 一次拿到 blob + 路径，再把 blob 交给浏览器。
+
+> header 必须百分号编码：HTTP header 是 latin-1，项目名「第 07 期」直接塞进去
+> 会在响应阶段抛异常。测试 `test_download_headers_survive_a_chinese_project_name` 盯这个。
+
+「载入项目」对话框现在预填上一次保存的路径——保存完想立刻载回来验证，不用复制粘贴。
+
+### 2. 新建项目时不能从大纲导入热词
+
+大纲抽词端点原来挂在 `/projects/{pid}/media/{mid}/hotwords/suggest` 上。
+可是**大纲导入唯一有意义的时刻，是转写之前**，那时项目还不存在——端点把功能
+挡在了它唯一有用的地方之外。
+
+补了无状态版 `POST /api/hotwords/suggest`（不需要 project、不需要 media、不落库），
+前端 `OutlineImport` 组件：
+
+- 粘贴大纲 → 「提取候选」→ 得到带权重的词条；
+- **候选默认全选，但可以逐个取消**——LLM 会给出几个看起来很像的错词，
+  而每个错词都会让识别偏向它（§6.1），所以必须先过一遍人工；
+- 「加入本期热词（N）」只把勾选的并入草稿；已有词标「已有」并划线，不重复加；
+- 权重保留抽取器的排序（标题词 > 一次性提及），不压成默认 3。
+
+草稿在 media 行存在之前只存在于内存，创建时按顺序落库：建项目 → 注册音频 →
+写热词 → 写大纲 → 转写。顺序是硬要求：热词必须在转写**之前**进库，否则这一轮
+转写根本用不上它们。
+
+### 3. 拖句子边界会重置波形缩放
+
+根因不在 `Waveform`：拖边界提交编辑 → 编辑调 `onReload()` → `load()` 里
+`setLoading(true)` → 渲染分支 `if (loading) return "加载中…"` → **整个 `<Desk>` 连同
+`Waveform` 被卸载**，组件内 `useState` 的 `view` 自然回到「全片」。
+
+对照 Rescript：它的 zoom 也是组件内 `useState(1)`，从不重置，因为编辑**不会重挂载**
+编辑器。所以正确修法是让重载不卸载工作台，而不是往波形里塞持久化。
+
+两处都做了：
+
+- `App` 用 `bootRef` 区分「首次加载」与「编辑后重载」，只有前者清屏；
+  渲染门改成 `if (loading && !boot)`。
+- `Waveform` 另加一层按 media 的记忆（`VIEW_MEMORY`），覆盖项目切换、HMR 这类
+  真的重挂载；全片视图不入表（那是默认值，记住只是噪音）。
+  恢复时走 `initialView()` 做 `clampView`——重新导入的音频可能更短，
+  直接还原一个 40 分钟开头的窗口会画出空白画布，且没有任何提示。
+
+### 顺带修掉的一个真 bug（工作台的大纲提取）
+
+`generateFromOutline` 调完 `suggest` 就刷新列表，然后报「从大纲提取了 N 个热词」。
+但 `suggest` 只**提议**，不写库——真正的写入要调 `suggest/accept`。结果是：
+提示说有 N 个词，chip 区还是空的，下一次转写一个热词都没带上。
+现在按 `suggest → 人工确认 → accept` 走完。CDP 脚本 `check-workbench-outline.mjs`
+断言的就是「chip 数必须变多」，而不是「请求发出去了」。
+
+### 测试与验证
+
+- 后端 **537 用例**（新增 `test_outline_import.py` 9 条：无项目抽词、脏词过滤、
+  不落库、空大纲、缺 key 降级；下载是 attachment、header 带可回读的绝对路径、
+  中文项目名不炸、计数与存档一致），`ruff`、`mypy --strict` 干净。
+- 前端 **82 用例**（`waveView.test.mjs` 新增 5 条：全片视图不记忆、真缩放要记忆、
+  无记忆时全片、有记忆时原样恢复、文件变短时 clamp），`tsc --noEmit` 干净。
+  顺手把 `npm test` 漏掉的 `waveView.test.mjs` 加进脚本——它之前从来没被跑过。
+- 真机 CDP 三个脚本全 PASS：`check-outline-import.mjs`（导入→取消一个→并入草稿，
+  且钩住 `HTMLAnchorElement.prototype.click` 证明浏览器真的发起了 `.project` 下载，
+  提示里带 `D:\...` 绝对路径）、`check-zoom-and-save.mjs`（4 格滚轮后拖边界，
+  thumb 宽度与读数字节不变）、`check-workbench-outline.mjs`（chip 1 → 3）。

@@ -805,6 +805,80 @@ button.danger {
   font-size: 0.8rem;
 }
 
+/* Outline import: the same textarea idea as .hotword-outline, plus the review
+   grid. Candidates are chips rather than a table because the decision is
+   "keep or drop" per word, and a table would imply weights are the point. */
+.outline-import {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  align-items: flex-start;
+}
+
+.outline-import textarea {
+  width: 100%;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 0.8rem;
+}
+
+.outline-import-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.outline-candidates {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  padding-top: 4px;
+  border-top: 1px dashed var(--border);
+}
+
+.outline-candidates-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.outline-candidates-tools {
+  display: flex;
+  gap: 4px;
+}
+
+/* A chip that is a checkbox. Unchecked reads as "will not be added", which is
+   the opposite of the plain .chip's "this is in the list" — hence the dimmed
+   outline instead of the filled background. */
+.chip.chip-toggle {
+  cursor: pointer;
+  gap: 4px;
+  padding: 1px 7px;
+  border-style: dashed;
+  background: transparent;
+  color: var(--muted);
+}
+
+.chip.chip-toggle.on {
+  border-style: solid;
+  background: var(--accent-soft);
+  color: var(--accent-dark, #1d4ed8);
+}
+
+.chip.chip-toggle input {
+  margin: 0;
+  width: 11px;
+  height: 11px;
+}
+
+.chip.chip-toggle.dup {
+  opacity: 0.55;
+  cursor: default;
+  text-decoration: line-through;
+}
+
 .history-panel {
   max-height: 26vh;
   overflow: hidden;

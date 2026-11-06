@@ -6,7 +6,7 @@
  * mouse-only proof-reading of a two-hour episode is unbearable.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   type AppSettings,
@@ -70,9 +70,22 @@ export function App(): React.JSX.Element {
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("models");
   // Bumped after every successful edit so the history panel refetches.
   const [historyRevision, setHistoryRevision] = useState(0);
+  // Mirrors `boot` so `load` can tell "first load" from "reload after an edit"
+  // without taking `boot` as a dependency (which would rebuild the callback and
+  // re-trigger the mount effect on every reload).
+  const bootRef = useRef<Boot | null>(null);
+  bootRef.current = boot;
 
   const load = useCallback(async (projectId?: string) => {
-    setLoading(true);
+    // Only the *first* load blanks the screen. A reload after an edit must keep
+    // the workbench mounted: unmounting it throws away every piece of local
+    // state inside — the waveform's zoom window and scroll position above all.
+    // That is why dragging a sentence boundary used to snap the waveform back to
+    // full zoom: the drag committed a time edit, the edit called reload, and the
+    // reload replaced `<Desk>` with "加载中…" for a frame, resetting the view the
+    // user had just set up. Rescript keeps zoom in its own component state and
+    // never remounts the timeline, so the same drag leaves the view untouched.
+    if (bootRef.current === null) setLoading(true);
     setError(null);
     try {
       const projects = await api.listProjects();
@@ -127,8 +140,14 @@ export function App(): React.JSX.Element {
     void load();
   }, [load]);
 
-  if (loading) return <main className="boot">加载中…</main>;
-  if (error) return <main className="boot error-text" style={{ whiteSpace: "pre-wrap" }}>{error}</main>;
+  if (loading && !boot) return <main className="boot">加载中…</main>;
+  if (error && !boot) {
+    return (
+      <main className="boot error-text" style={{ whiteSpace: "pre-wrap" }}>
+        {error}
+      </main>
+    );
+  }
   if (!boot) return <main className="boot">没有可显示的内容</main>;
 
   return (
@@ -203,6 +222,9 @@ function Desk({
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [loadOpen, setLoadOpen] = useState(false);
   const [loadPath, setLoadPath] = useState("");
+  // Where the last 保存项目 put the file. The 载入 dialog pre-fills from it so
+  // "save, then load it back" needs no copying and no guesswork.
+  const [lastArchive, setLastArchive] = useState<{ path: string; filename: string } | null>(null);
   const [showSubtitles, setShowSubtitles] = useState(false);
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [episodeHotwords, setEpisodeHotwords] = useState<HotwordItem[]>([]);
@@ -322,13 +344,30 @@ function Desk({
     [boot.sentences, boot.tokens],
   );
 
+  /**
+   * Run one workspace action with the busy flag, and a fallback notice.
+   *
+   * The fallback is only a fallback: an action that says something specific
+   * ("saved to D:/...", "restored 12 fillers") wins. It used to not: `run` wrote
+   * `「label」完成` *after* the action returned, so every detailed message was
+   * replaced a moment later by "保存项目 完成". That is how a save that told you
+   * its path ended up telling you nothing — the user's complaint was accurate
+   * and the message was being overwritten, not missing.
+   */
+  const noticeClaimed = useRef(false);
+  const say = useCallback((message: string | null) => {
+    noticeClaimed.current = true;
+    setNotice(message);
+  }, [setNotice]);
+
   const run = useCallback(
     async (label: string, action: () => Promise<void>) => {
       setBusy(true);
+      noticeClaimed.current = false;
       setNotice(null);
       try {
         await action();
-        setNotice(`${label} 完成`);
+        if (!noticeClaimed.current) setNotice(`${label} 完成`);
       } catch (caught) {
         setNotice(describe(caught));
       } finally {
@@ -506,26 +545,41 @@ function Desk({
 
   const saveArchive = useCallback(async () => {
     await run("保存项目", async () => {
-      const result = await api.saveArchive(boot.projectId);
-      setNotice(
-        `已保存 ${result.filename}（${result.sentence_count} 句 · ${result.op_count} 条操作 · ${Math.round(result.size_bytes / 1024)} KB）`,
+      const result = await api.saveAndDownloadArchive(boot.projectId);
+      // Hand the bytes to the browser. Without this the file only ever existed
+      // in the app's data directory, which is why "点保存项目时没有弹出文件下载".
+      const url = URL.createObjectURL(result.blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = result.filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      // Revoking immediately can cancel the download in some browsers; one frame
+      // of delay is enough and the blob is tiny relative to the RAM it holds.
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+
+      setLastArchive({ path: result.path, filename: result.filename });
+      say(
+        `已保存并下载 ${result.filename}（${result.sentence_count} 句 · ${result.op_count} 条操作 · ${result.deletion_count} 处删除）。` +
+          `原件在 ${result.path}，「载入项目」里已经填好这个路径。`,
       );
     });
-  }, [boot.projectId, run, setNotice]);
+  }, [boot.projectId, run, say]);
 
   const loadArchive = useCallback(async () => {
     if (!loadPath.trim()) return;
     await run("载入项目", async () => {
       const result = await api.loadArchive(loadPath.trim());
       setLoadOpen(false);
-      setNotice(
+      say(
         result.media_relinked
           ? `已载入「${result.project_name}」（${result.sentence_count} 句）`
           : `已载入「${result.project_name}」，但音频未找到：${result.warning}`,
       );
       await onReload(result.project_id);
     });
-  }, [loadPath, onReload, run, setNotice]);
+  }, [loadPath, onReload, run, say]);
 
   const renderExport = useCallback(async () => {
     const lossless = settings?.export_format === "wav";
@@ -554,7 +608,7 @@ function Desk({
             id: "load",
             label: "载入项目…",
             onSelect: () => {
-              setLoadPath("");
+              setLoadPath(lastArchive?.path ?? "");
               setLoadOpen(true);
             },
           },
@@ -721,6 +775,7 @@ function Desk({
       boot.version.id,
       cleanupCounts,
       edl,
+      lastArchive,
       onReload,
       reloadCleanupCounts,
       renderExport,

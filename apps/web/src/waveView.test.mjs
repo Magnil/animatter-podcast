@@ -16,6 +16,8 @@ import {
   MIN_VISIBLE_MS,
   bucketsForWindow,
   clampView,
+  initialView,
+  shouldRememberView,
   isZoomed,
   msToX,
   panTo,
@@ -143,4 +145,32 @@ test("scrollFraction shrinks the thumb as you zoom in", () => {
 test("scrollFraction never lets the thumb run past the track", () => {
   const { start, size } = scrollFraction({ from: HOUR - 1000, to: HOUR + 1000 }, HOUR);
   assert.ok(start + size <= 1 + 1e-9);
+});
+
+// --- remembering the window across a remount ----------------------------
+
+test("shouldRememberView ignores the default full view", () => {
+  assert.equal(shouldRememberView({ from: 0, to: HOUR }, HOUR), false);
+});
+
+test("shouldRememberView keeps any real zoom", () => {
+  assert.equal(shouldRememberView({ from: 1000, to: 2000 }, HOUR), true);
+});
+
+test("initialView opens full when nothing is remembered", () => {
+  assert.deepEqual(initialView(null, HOUR), { from: 0, to: HOUR });
+});
+
+test("initialView restores a remembered window unchanged", () => {
+  const stored = { from: 60_000, to: 70_000 };
+  assert.deepEqual(initialView(stored, HOUR), stored);
+});
+
+test("initialView clamps a window that no longer fits the file", () => {
+  // Re-imported audio can be shorter than the zoom the user set up. The old
+  // code restored the raw window, which drew an empty canvas with no message.
+  const restored = initialView({ from: 40 * 60_000, to: 41 * 60_000 }, 3 * 60_000);
+  assert.ok(restored.from >= 0);
+  assert.ok(restored.to <= 3 * 60_000);
+  assert.equal(restored.to - restored.from, 60_000);
 });

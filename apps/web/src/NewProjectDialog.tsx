@@ -21,6 +21,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type AppSettings, type HotwordItem } from "./api";
 import { HotwordEditor, describeHotwords, type HotwordTab } from "./HotwordEditor";
+import { OutlineImport } from "./OutlineImport";
 
 interface Props {
   open: boolean;
@@ -45,6 +46,10 @@ export function NewProjectDialog({ open, onClose, onCreated, onNotice }: Props):
   const [models, setModels] = useState<AsrModel[]>([]);
   const [globalHotwords, setGlobalHotwords] = useState<HotwordItem[]>([]);
   const [episodeDraft, setEpisodeDraft] = useState<HotwordItem[]>([]);
+  // Raw outline text, kept so it can be stored once the project and media rows
+  // exist. The extraction itself needs neither (that is the point), but the
+  // workbench's 大纲 box should still show what was pasted here.
+  const [outlineText, setOutlineText] = useState("");
   const [tab, setTab] = useState<HotwordTab>("episode");
   const [busy, setBusy] = useState(false);
   const [stage, setStage] = useState("");
@@ -98,6 +103,31 @@ export function NewProjectDialog({ open, onClose, onCreated, onNotice }: Props):
     setEpisodeDraft((current) => current.filter((entry) => entry.text !== item.text));
   };
 
+  /**
+   * Merge reviewed candidates from the outline into the episode draft.
+   *
+   * Weights are preserved rather than flattened to the manual default: the
+   * outline extractor ranks by importance (a show title outranks a one-off
+   * mention), and that ranking is what makes the vocabulary work.
+   */
+  const addFromOutline = async (terms: { text: string; weight: number }[]): Promise<void> => {
+    setEpisodeDraft((current) => {
+      const next = [...current];
+      for (const term of terms) {
+        if (next.some((item) => item.text === term.text)) continue;
+        next.push({
+          text: term.text,
+          weight: term.weight,
+          lang: "zh",
+          enabled: true,
+          hit_count: 0,
+          miss_count: 0,
+        });
+      }
+      return next;
+    });
+  };
+
   const create = async (): Promise<void> => {
     if (!name.trim() || !audioPath.trim()) return;
     setBusy(true);
@@ -114,16 +144,30 @@ export function NewProjectDialog({ open, onClose, onCreated, onNotice }: Props):
       // transcription call or they would not be in the vocabulary.
       if (hotwordsOn && episodeDraft.length > 0) {
         setStage("保存本期热词…");
-        const applied = await api.setEpisodeHotwords(
+        const applied = await api.appendEpisodeHotwords(
           project.id,
           media.id,
-          episodeDraft.map((item) => item.text),
+          episodeDraft.map((item) => ({ text: item.text, weight: item.weight })),
         );
         if (applied.rejected.length > 0) {
           onNotice(
             `${applied.rejected.length} 个热词未通过校验：` +
               applied.rejected.map((item) => `${item.text}（${item.reason}）`).join("、"),
           );
+        }
+      }
+
+      // Keep the outline with the episode. It was pasted to produce the terms,
+      // and the workbench's 大纲 box is where it will be edited or re-extracted
+      // later; dropping it here would mean asking for the same paste twice.
+      if (outlineText.trim()) {
+        setStage("保存大纲…");
+        try {
+          await api.saveOutline(project.id, media.id, outlineText);
+        } catch {
+          // The transcript is what the user came for; a failed outline save must
+          // not cost them the transcription.
+          onNotice("大纲没有保存成功，但热词与转写不受影响");
         }
       }
 
@@ -229,6 +273,13 @@ export function NewProjectDialog({ open, onClose, onCreated, onNotice }: Props):
           {hotwordsOn ? (
             <div className="new-project-hotwords">
               <p className="section-note">{describeHotwords(globalHotwords, episodeDraft)}</p>
+              <OutlineImport
+                onAdd={addFromOutline}
+                onOutlineText={async (text) => setOutlineText(text)}
+                existing={episodeDraft.map((item) => item.text)}
+                onNotice={onNotice}
+                disabled={busy}
+              />
               <HotwordEditor
                 episodeHotwords={episodeDraft}
                 globalHotwords={globalHotwords}

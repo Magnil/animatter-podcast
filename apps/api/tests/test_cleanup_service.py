@@ -32,7 +32,6 @@ from animatter.models import (
     Token,
     TranscriptVersion,
 )
-from animatter.services import cleanup as cleanup_service
 
 
 @pytest.fixture()
@@ -245,7 +244,9 @@ def test_apply_with_nothing_left_is_a_clear_error(
     assert "nothing_to_do" in str(code)
 
 
-def test_apply_with_no_kinds_is_rejected(client: TestClient, session: Session, seeded: dict[str, str]) -> None:
+def test_apply_with_no_kinds_is_rejected(
+    client: TestClient, session: Session, seeded: dict[str, str]
+) -> None:
     response = client.post(f"/api/versions/{seeded['version']}/cleanup", json={"kinds": []})
     # An empty list means "all three" by contract; the explicit empty selection
     # is rejected only when nothing matches. Here something does, so 201.

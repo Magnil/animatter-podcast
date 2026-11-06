@@ -58,6 +58,34 @@ export function isZoomed(view: View, total: number): boolean {
 }
 
 /**
+ * Whether this window is worth remembering across a remount.
+ *
+ * Full zoom-out is the default, so storing it would be noise — and it would
+ * outlive the reason it was stored: a project whose duration later changes
+ * would still match the old "whole file" entry and get restored verbatim.
+ * Delegating to ``isZoomed`` keeps one definition of "zoomed" in the codebase;
+ * a separate threshold is how the two drift apart.
+ */
+export function shouldRememberView(view: View, total: number): boolean {
+  return isZoomed(view, total);
+}
+
+/**
+ * The window to open with: a remembered one (clamped) or the whole file.
+ *
+ * The clamp matters more than it looks. A remembered window belongs to a media
+ * file that may have been replaced — re-imported audio, a project loaded from
+ * an archive whose media relinked to a different file — and a window starting
+ * at 40 minutes in a 3-minute file draws an empty canvas with no explanation.
+ * Restoring a *clamped* window keeps the zoom without ever pointing past the end.
+ */
+export function initialView(stored: View | null, total: number): View {
+  const full = { from: 0, to: Math.max(1, total) };
+  if (stored === null) return full;
+  return clampView(stored, total);
+}
+
+/**
  * Bucket resolution for one window.
  *
  * ``buckets_per_second`` has to follow the zoom: asking 64/s for a 3h file

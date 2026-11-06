@@ -112,9 +112,25 @@ export function HotwordEditor({
     setBusy(true);
     try {
       await api.saveOutline(projectId, mediaId, outline);
-      const result = await api.suggestHotwords(projectId, mediaId);
+      // `/hotwords/suggest` only *proposes*; nothing is written until the accept
+      // call below. The old flow stopped after the proposal and then refetched,
+      // so the notice said "提取了 N 个热词" while the list stayed empty — the
+      // extraction ran, the terms were thrown away.
+      const result = await api.suggestFromOutline(projectId, mediaId, outline);
+      if (result.terms.length === 0) {
+        onNotice(
+          result.warnings[0] ?? "大纲里没有提取到可用热词，可以手动添加",
+        );
+        return;
+      }
+      const accepted = await api.acceptSuggestions(
+        projectId,
+        mediaId,
+        result.terms.map((term) => ({ text: term.text, weight: term.weight })),
+      );
       await onChanged();
-      onNotice(`从大纲提取了 ${result.terms.length} 个热词`);
+      const extra = result.rejected.length > 0 ? `，${result.rejected.length} 个未通过校验` : "";
+      onNotice(`从大纲提取了 ${accepted.episode_count} 个热词${extra}`);
       setShowOutline(false);
     } catch (caught) {
       onNotice(caught instanceof Error ? caught.message : String(caught));

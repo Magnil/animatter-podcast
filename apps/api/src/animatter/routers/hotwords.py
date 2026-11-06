@@ -325,6 +325,42 @@ def suggest_from_outline(
     )
 
 
+@router.post("/hotwords/suggest", response_model=SuggestOut)
+def suggest_stateless(request: Request, payload: OutlineIn) -> SuggestOut:
+    """Extract candidates from an outline with no project or media yet.
+
+    The new-project dialog needs this: the whole point of importing an outline
+    there is to have the words *before* the transcription runs, and at that
+    moment the project may not exist. Keying extraction to a media row would
+    make the feature impossible in the one place it matters most.
+    """
+    if not payload.content.strip():
+        raise AppError(
+            "outline_empty",
+            "没有可用的节目大纲",
+            hint="先粘贴大纲或 show notes，再提取热词。",
+        )
+    llm = _llm(request)
+    from animatter.providers.http import build_client
+
+    with build_client() as client:
+        result = outline_service.extract(
+            outline_text=payload.content, llm=llm, client=client, meta=payload.meta
+        )
+    return SuggestOut(
+        terms=[TermOut(text=c.text, weight=c.weight, lang=c.lang, enabled=True) for c in result.candidates],
+        rejected=[RejectedOut(text=text, reason=reason) for text, reason in result.report.rejected],
+        downweighted=[
+            {"text": text, "from": old, "to": new} for text, old, new in result.report.downweighted
+        ],
+        warnings=result.warnings,
+        prompt_tokens=result.prompt_tokens,
+        completion_tokens=result.completion_tokens,
+        truncated=result.truncated,
+        raw_count=result.raw_count,
+    )
+
+
 @router.post("/projects/{project_id}/media/{media_id}/hotwords/suggest/accept")
 def accept_suggestions(
     project_id: str,

@@ -27,10 +27,12 @@ import {
   ZOOM_STEP,
   bucketsForWindow,
   clampView,
+  initialView,
   isZoomed,
   msToX as msToXIn,
   panTo as panToIn,
   scrollFraction,
+  shouldRememberView,
   xToMs as xToMsIn,
   zoomAt as zoomAtIn,
   type View,
@@ -80,6 +82,27 @@ interface Props {
   onSeek: (ms: number) => void;
 }
 
+/**
+ * Zoom/scroll window per media file, kept outside React.
+ *
+ * The bug this exists for: dragging a sentence boundary re-fetched the
+ * transcript, which unmounted the workbench, which rebuilt this component and
+ * reset the window to "whole file". The user had to re-zoom after every drag.
+ * The mount fix in `App.tsx` removes the cause; this removes the symptom even
+ * if something else remounts the component later (project switch, HMR).
+ *
+ * A plain Map, not storage: a zoom level is not worth persisting across a page
+ * reload, and a stale window pointing past the end of a re-imported file would
+ * be worse than forgetting.
+ */
+const VIEW_MEMORY = new Map<string, View>();
+
+function rememberedView(projectId: string, mediaId: string): View | null {
+  const stored = VIEW_MEMORY.get(`${projectId}:${mediaId}`);
+  if (!stored) return null;
+  return { from: stored.from, to: stored.to };
+}
+
 const CANVAS_HEIGHT = 168;
 /** Top band reserved for subtitle text. */
 const CAPTION_BAND = 22;
@@ -109,7 +132,11 @@ export function Waveform({
   const [peaks, setPeaks] = useState<WaveformData | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [width, setWidth] = useState(800);
-  const [view, setView] = useState<View>({ from: 0, to: Math.max(1, durationMs) });
+  // Restored from the per-media memory below, so the window survives even a
+  // remount (project switch, hot reload) and not just a re-render.
+  const [view, setView] = useState<View>(() =>
+    initialView(rememberedView(projectId, mediaId), durationMs),
+  );
 
   const total = Math.max(1, peaks?.duration_ms || durationMs || 1);
   const span = Math.max(1, view.to - view.from);
@@ -128,9 +155,24 @@ export function Waveform({
 
   // A new media file invalidates the window; keep the old one only while the
   // same audio is loaded, otherwise the view could point past the new end.
+  // Only a *different* media file resets the window. Editing a sentence
+  // boundary changes tokens, not the file, so it must not touch the zoom —
+  // re-zooming after every drag is exactly the complaint this fixes.
   useEffect(() => {
-    setView({ from: 0, to: Math.max(1, durationMs) });
+    setView(initialView(rememberedView(projectId, mediaId), durationMs));
   }, [projectId, mediaId, durationMs]);
+
+  // Remember the window per media file. `App` now keeps the workbench mounted
+  // across reloads, so this is the second line of defence: it also covers the
+  // case where the component really is torn down and rebuilt.
+  useEffect(() => {
+    if (!shouldRememberView(view, total)) {
+      // Full view is the default; remembering it would just be noise.
+      VIEW_MEMORY.delete(`${projectId}:${mediaId}`);
+      return;
+    }
+    VIEW_MEMORY.set(`${projectId}:${mediaId}`, view);
+  }, [projectId, mediaId, view, total]);
 
   const zoomAt = useCallback(
     (anchorMs: number, factor: number) => {

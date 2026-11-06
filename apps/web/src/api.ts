@@ -23,6 +23,23 @@ export class RequestFailed extends Error {
   }
 }
 
+/** Turn a non-2xx response into the `AppError` shape every caller expects. */
+async function failure(response: Response, fallback: string): Promise<RequestFailed> {
+  let detail: ApiError = {
+    code: "unknown",
+    message: `${fallback}（HTTP ${response.status}）`,
+    hint: "",
+  };
+  try {
+    const body = (await response.json()) as { error?: ApiError; detail?: string };
+    if (body.error) detail = body.error;
+    else if (body.detail) detail = { code: "unknown", message: body.detail, hint: "" };
+  } catch {
+    // Non-JSON error body: keep the generic message.
+  }
+  return new RequestFailed(response.status, detail);
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -32,21 +49,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
 
-  if (!response.ok) {
-    let detail: ApiError = {
-      code: "unknown",
-      message: `请求失败（HTTP ${response.status}）`,
-      hint: "",
-    };
-    try {
-      const body = (await response.json()) as { error?: ApiError; detail?: string };
-      if (body.error) detail = body.error;
-      else if (body.detail) detail = { code: "unknown", message: body.detail, hint: "" };
-    } catch {
-      // Non-JSON error body: keep the generic message.
-    }
-    throw new RequestFailed(response.status, detail);
-  }
+  if (!response.ok) throw await failure(response, "请求失败");
 
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
@@ -309,16 +312,72 @@ export const api = {
       { method: "DELETE" },
     ),
 
-  suggestHotwords: (projectId: string, mediaId: string) =>
-    request<{ terms: HotwordItem[]; warnings: string[] }>(
-      `/api/projects/${projectId}/media/${mediaId}/hotwords/suggest`,
-      { method: "POST" },
+  /** Append several terms at once. `/append` keeps what is already there. */
+  appendEpisodeHotwords: (projectId: string, mediaId: string, terms: { text: string; weight: number }[]) =>
+    request<{ accepted: HotwordItem[]; rejected: { text: string; reason: string }[] }>(
+      `/api/projects/${projectId}/media/${mediaId}/hotwords/append`,
+      { method: "POST", body: JSON.stringify(terms) },
     ),
 
   saveOutline: (projectId: string, mediaId: string, content: string) =>
     request<Record<string, unknown>>(`/api/projects/${projectId}/media/${mediaId}/outline`, {
       method: "PUT",
       body: JSON.stringify({ content }),
+    }),
+
+  /**
+   * Persist reviewed candidates as the episode's list.
+   *
+   * Deliberately the *replace* endpoint: an outline extraction regenerates the
+   * episode list wholesale (AGENT.md §6.1), so after dropping the wrong
+   * candidates the operator wants exactly what is left on screen, not a merge.
+   */
+  acceptSuggestions: (
+    projectId: string,
+    mediaId: string,
+    terms: { text: string; weight: number }[],
+  ) =>
+    request<{
+      episode_count: number;
+      global_count: number;
+      vocabulary_count: number;
+      trimmed: number;
+    }>(`/api/projects/${projectId}/media/${mediaId}/hotwords/suggest/accept`, {
+      method: "POST",
+      body: JSON.stringify(terms),
+    }),
+
+  /** Extract candidates from an outline that belongs to an existing project. */
+  suggestFromOutline: (projectId: string, mediaId: string, content: string, meta = "") =>
+    request<{
+      terms: HotwordItem[];
+      rejected: { text: string; reason: string }[];
+      warnings: string[];
+      truncated: boolean;
+      raw_count: number;
+    }>(`/api/projects/${projectId}/media/${mediaId}/hotwords/suggest`, {
+      method: "POST",
+      body: JSON.stringify({ content, meta }),
+    }),
+
+  /**
+   * Extract hotword candidates from an outline with no project yet.
+   *
+   * The new-project dialog needs this: importing an outline there is only worth
+   * anything *before* the transcription runs, and at that moment the project
+   * does not exist. Keying extraction to a media row would put the feature
+   * everywhere except the one place it changes the audio.
+   */
+  suggestOutlineTerms: (content: string, meta = "") =>
+    request<{
+      terms: HotwordItem[];
+      rejected: { text: string; reason: string }[];
+      warnings: string[];
+      truncated: boolean;
+      raw_count: number;
+    }>("/api/hotwords/suggest", {
+      method: "POST",
+      body: JSON.stringify({ content, meta }),
     }),
 
   // --- project lifecycle -------------------------------------------------
@@ -408,17 +467,53 @@ export const api = {
 
   // --- archive -----------------------------------------------------------
 
-  saveArchive: (projectId: string) =>
-    request<{
-      path: string;
-      filename: string;
-      sentence_count: number;
-      op_count: number;
-      deletion_count: number;
-      size_bytes: number;
-    }>(`/api/projects/${projectId}/archive`, { method: "POST" }),
+  /**
+   * Save *and* download in one request, returning both halves of "where did it go".
+   *
+   * Writing the file on the server and reporting its path was not enough: the
+   * user's report was "I clicked 保存项目 and nothing was downloaded, so I don't
+   * know where the file is". Offering only a download would be the mirror
+   * problem — the file lands in the browser's folder, and 载入项目 still has no
+   * path it can read back. Calling both endpoints would write the archive twice.
+   *
+   * So: fetch the bytes here, read the server's absolute path out of the
+   * response headers, and let the caller hand the blob to the browser. One
+   * request, one file, and a notice that can name the exact location.
+   */
+  saveAndDownloadArchive: async (
+    projectId: string,
+  ): Promise<{
+    blob: Blob;
+    filename: string;
+    path: string;
+    sentence_count: number;
+    op_count: number;
+    deletion_count: number;
+  }> => {
+    // Not `request()`: that parses JSON, and this body is the archive itself.
+    const response = await fetch(`/api/projects/${projectId}/archive/file`);
+    if (!response.ok) throw await failure(response, "保存失败");
 
-  archiveUrl: (projectId: string) => `/api/projects/${projectId}/archive/file`,
+    // Percent-encoded on the server because HTTP headers are latin-1 and the
+    // project names are not: 「第 07 期」 would raise on the way out otherwise.
+    const decoded = (name: string): string => {
+      const raw = response.headers.get(name) ?? "";
+      try {
+        return decodeURIComponent(raw);
+      } catch {
+        return raw;
+      }
+    };
+    const number = (name: string): number => Number(response.headers.get(name) ?? "0") || 0;
+    return {
+      blob: await response.blob(),
+      filename: decoded("X-Archive-Filename") || "project.project",
+      path: decoded("X-Archive-Path"),
+      sentence_count: number("X-Archive-Sentences"),
+      op_count: number("X-Archive-Ops"),
+      deletion_count: number("X-Archive-Deletions"),
+    };
+  },
 
   inspectArchive: (path: string) =>
     request<{
