@@ -765,7 +765,7 @@ function Desk({
         items: [
           {
             id: "open",
-            label: "模型与参数…",
+            label: "模型…",
             onSelect: () => {
               setSettingsSection("models");
               setSettingsOpen(true);
