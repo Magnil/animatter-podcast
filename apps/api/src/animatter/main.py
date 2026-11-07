@@ -34,6 +34,9 @@ from animatter.routers import (
     subtitles,
     transcribe,
 )
+from animatter.routers import (
+    script as script_router,
+)
 from animatter.routers import settings as settings_router
 from animatter.services import renders as renders_service
 
@@ -121,6 +124,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(subtitles.router)
     app.include_router(speakers.router)
     app.include_router(labels.router)
+    app.include_router(script_router.router)
     return app
 
 

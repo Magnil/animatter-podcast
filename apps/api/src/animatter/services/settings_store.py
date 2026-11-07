@@ -62,6 +62,24 @@ DEFAULTS: dict[str, Any] = {
     "subtitle_cps": 9,
     "subtitle_max_line": 20,
     "subtitle_max_lines": 2,
+    # -- text generation (导出 › ShowNotes / 文稿) --
+    #: Rewrite style for 文稿. ShowNotes has no style: it is always a summary
+    #: plus a timeline.
+    "script_format": "dialogue",  # dialogue | article
+    #: Appended verbatim to the end of every ShowNotes block. Multi-line on
+    #: purpose — 「主播：xxx」 and a subscription line are two different lines,
+    #: and forcing them onto one would make the signature unreadable.
+    "shownotes_signature": "",
+    #: Per-style prompt overrides. Empty means "use the built-in default", which
+    #: is what lets a future prompt improvement reach users who never edited it.
+    "script_prompt_shownotes": "",
+    "script_prompt_dialogue": "",
+    "script_prompt_article": "",
+    #: Model parameters for document generation only. Editing and proof-reading
+    #: keep their own hard-coded low temperature: those tasks want the boring
+    #: answer, while a rewrite wants some latitude.
+    "text_temperature": 0.6,
+    "text_max_tokens": 8000,
 }
 
 
@@ -142,6 +160,7 @@ _RANGES: dict[str, tuple[int, int]] = {
     "subtitle_cps": (4, 30),
     "subtitle_max_line": (8, 60),
     "subtitle_max_lines": (1, 4),
+    "text_max_tokens": (1000, 32000),
 }
 _NEGATIVE_RANGES: dict[str, tuple[int, int]] = {
     # Detector threshold in dBFS: quieter than this counts as silence. ffmpeg's
@@ -151,6 +170,7 @@ _NEGATIVE_RANGES: dict[str, tuple[int, int]] = {
 _ENUMS: dict[str, set[str]] = {
     "export_format": {"m4a", "wav"},
     "export_bitrate": {"128k", "192k", "256k", "320k"},
+    "script_format": {"dialogue", "article"},
     "asr_model": {
         "qwen-audio-3.1-asr-flash-filetrans",
         "qwen-audio-3.0-asr-flash-filetrans",
@@ -158,6 +178,23 @@ _ENUMS: dict[str, set[str]] = {
         "paraformer-v2",
     },
     "llm_model": {"qwen-plus", "qwen-max", "qwen-turbo"},
+}
+
+#: Free-text keys: prompts and the signature. Length-capped so a paste accident
+#: cannot store a megabyte into the settings blob, which is read on every save.
+_TEXT_KEYS: dict[str, int] = {
+    "cleanup_fillers": 20_000,
+    "shownotes_signature": 2_000,
+    "script_prompt_shownotes": 8_000,
+    "script_prompt_dialogue": 8_000,
+    "script_prompt_article": 8_000,
+}
+
+#: Floats, with the range enforced. Temperature is the only one today, and the
+#: range matters: 0 makes the rewrite deterministic and stilted, 2 makes it
+#: hallucinate.
+_FLOATS: dict[str, tuple[float, float]] = {
+    "text_temperature": (0.0, 1.5),
 }
 
 
@@ -180,6 +217,22 @@ def _validate(key: str, value: Any) -> Any:
         if not isinstance(value, str):
             raise SettingsError("cleanup_fillers 必须是文本（每行一个词）")
         return value
+    if key in _TEXT_KEYS:
+        if not isinstance(value, str):
+            raise SettingsError(f"{key} 必须是文本")
+        limit = _TEXT_KEYS[key]
+        if len(value) > limit:
+            raise SettingsError(f"{key} 太长（上限 {limit} 字）")
+        return value
+    if key in _FLOATS:
+        floor, ceiling = _FLOATS[key]
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not floor <= float(value) <= ceiling
+        ):
+            raise SettingsError(f"{key} 必须是 {floor}–{ceiling} 之间的小数")
+        return float(value)
     if key in _ENUMS:
         if not isinstance(value, str) or value not in _ENUMS[key]:
             raise SettingsError(f"{key} 只能是 {', '.join(sorted(_ENUMS[key]))} 之一")

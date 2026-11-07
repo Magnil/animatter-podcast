@@ -12,6 +12,7 @@ import {
   type AppSettings,
   type HotwordItem,
   type RenderState,
+  type ScriptFormat,
   type Sentence,
   type SpeakerInfo,
   type Token,
@@ -22,6 +23,7 @@ import { isTerminal, percentOf, pollDelayMs, renderEta } from "./renderProgress"
 import { HistoryPanel } from "./HistoryPanel";
 import { NewProjectDialog } from "./NewProjectDialog";
 import { SubtitlePanel } from "./SubtitlePanel";
+import { ScriptPanel } from "./ScriptPanel";
 import { CleanupDialog } from "./CleanupDialog";
 import { HotwordPanel } from "./HotwordPanel";
 import { MenuBar, type Menu } from "./MenuBar";
@@ -238,6 +240,10 @@ function Desk({
   // "save, then load it back" needs no copying and no guesswork.
   const [lastArchive, setLastArchive] = useState<{ path: string; filename: string } | null>(null);
   const [showSubtitles, setShowSubtitles] = useState(false);
+  // Which generation the 导出 menu asked for. Kept as state rather than two
+  // booleans so opening the panel means "generate this", not "open a dialog".
+  const [scriptFormat, setScriptFormat] = useState<ScriptFormat>("shownotes");
+  const [showScript, setShowScript] = useState(false);
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [episodeHotwords, setEpisodeHotwords] = useState<HotwordItem[]>([]);
   const [globalHotwords, setGlobalHotwords] = useState<HotwordItem[]>([]);
@@ -781,6 +787,15 @@ function Desk({
               setSettingsOpen(true);
             },
           },
+          {
+            id: "text-settings",
+            label: "文本处理…",
+            hint: "模型参数 / ShowNotes 签名 / 提示词",
+            onSelect: () => {
+              setSettingsSection("text");
+              setSettingsOpen(true);
+            },
+          },
           "separator",
           {
             id: "hotwords",
@@ -825,6 +840,33 @@ function Desk({
             onSelect: () => void downloadLabels(),
           },
           "separator",
+          // ShowNotes and 文稿 share a group because they are the same act —
+          // publishing the episode's text — even though one is a summary and
+          // the other is a rewrite. Audio sits below, separated, because it is
+          // a different deliverable with a long runtime.
+          {
+            id: "shownotes",
+            label: "ShowNotes…",
+            hint: "概述 + 时间轴目录 + 签名",
+            disabled: busy,
+            onSelect: () => {
+              setScriptFormat("shownotes");
+              setShowScript(true);
+            },
+          },
+          {
+            id: "script",
+            label: "文稿…",
+            hint: "对话式 / 文章式",
+            disabled: busy,
+            onSelect: () => {
+              setScriptFormat(
+                settings?.script_format === "article" ? "article" : "dialogue",
+              );
+              setShowScript(true);
+            },
+          },
+          "separator",
           {
             id: "render",
             label: exporting ? `导出成片音频… ${exporting.percent}%（进行中）` : "导出成片音频…",
@@ -860,6 +902,16 @@ function Desk({
               void api.saveSettings({ export_format: "wav" }).catch(() => undefined);
             },
           },
+          "separator",
+          {
+            id: "sig-settings",
+            label: "文本处理设置…",
+            hint: "模型参数、签名、提示词",
+            onSelect: () => {
+              setSettingsSection("text");
+              setSettingsOpen(true);
+            },
+          },
         ],
       },
     ],
@@ -877,7 +929,6 @@ function Desk({
       settings,
     ],
   );
-
   /**
    * Rewrite one word.
    *
@@ -1236,6 +1287,41 @@ function Desk({
                 versionId={boot.version.id}
                 hasDeletions={(edl?.deletions.length ?? 0) > 0}
                 onNotice={setNotice}
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showScript ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setShowScript(false)}>
+          <div
+            className="modal modal-wide"
+            role="dialog"
+            aria-modal="true"
+            aria-label="ShowNotes / 文稿"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header className="modal-head">
+              <h2>ShowNotes / 文稿</h2>
+              <button type="button" className="ghost" onClick={() => setShowScript(false)} aria-label="关闭">
+                ✕
+              </button>
+            </header>
+            <div className="modal-body modal-single">
+              <ScriptPanel
+                versionId={boot.version.id}
+                hasDeletions={(edl?.deletions.length ?? 0) > 0}
+                onNotice={setNotice}
+                initialFormat={scriptFormat}
+                onFormatChange={(next) => {
+                  setScriptFormat(next);
+                  // Only 文稿 has a style to remember; ShowNotes would inherit it
+                  // and then reopen 文稿 in the wrong mode next time.
+                  if (next === "shownotes" || !settings) return;
+                  setSettings({ ...settings, script_format: next });
+                  void api.saveSettings({ script_format: next }).catch(() => undefined);
+                }}
               />
             </div>
           </div>

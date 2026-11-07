@@ -17,9 +17,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type AppSettings, type HotwordItem } from "./api";
 import { HotwordEditor, type HotwordTab } from "./HotwordEditor";
+import { PromptEditor, type PromptRow } from "./PromptEditor";
 
 /** Which section the menu item asked for; scrolled into view on open. */
-export type SettingsSection = "models" | "hotwords" | "cleanup" | "editing" | "export";
+export type SettingsSection = "models" | "hotwords" | "cleanup" | "editing" | "export" | "text";
 
 interface Props {
   open: boolean;
@@ -66,6 +67,7 @@ export function SettingsDialog({
   const [llmModels, setLlmModels] = useState<string[]>([]);
   const [globalHotwords, setGlobalHotwords] = useState<HotwordItem[]>([]);
   const [episodeHotwords, setEpisodeHotwords] = useState<HotwordItem[]>([]);
+  const [prompts, setPrompts] = useState<PromptRow[]>([]);
   const [hotwordTab, setHotwordTab] = useState<HotwordTab>("global");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -115,6 +117,16 @@ export function SettingsDialog({
       })
       .catch((caught: unknown) => {
         if (!cancelled) setError(caught instanceof Error ? caught.message : String(caught));
+      });
+    // Prompts load separately: a failure there must not blank the settings form,
+    // and the built-in prompts are still usable without the defaults listed.
+    void api
+      .scriptPrompts()
+      .then((rows) => {
+        if (!cancelled) setPrompts(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setPrompts([]);
       });
     void refreshHotwordsRef.current().catch((caught: unknown) => {
       if (!cancelled) setError(caught instanceof Error ? caught.message : String(caught));
@@ -440,6 +452,95 @@ export function SettingsDialog({
                 </select>
               </label>
               {NUMERIC.slice(5).map(numeric)}
+            </section>
+
+            <section ref={(node) => { sectionRefs.current.text = node; }}>
+              <h3>文本处理</h3>
+              <p className="section-note">
+                「导出 › ShowNotes / 文稿」用这里的模型与提示词。改提示词只影响下一次生成，
+                已经生成的内容不会被追溯改动。
+              </p>
+
+              <label className="field">
+                <span>
+                  文稿默认格式
+                  <em className="hint">对话式保留说话人；文章式改写成书面文章</em>
+                </span>
+                <select
+                  value={settings.script_format}
+                  onChange={(event) =>
+                    patch("script_format", event.target.value as AppSettings["script_format"])
+                  }
+                >
+                  <option value="dialogue">对话式（轻度整理，保留说话人）</option>
+                  <option value="article">文章式（段落化、书面化，不分说话人）</option>
+                </select>
+              </label>
+
+              <label className="field">
+                <span>
+                  温度
+                  <em className="hint">
+                    0.2–0.4 保守贴近原话，0.6 平衡，0.9 以上容易自由发挥
+                  </em>
+                </span>
+                <input
+                  type="number"
+                  min={0}
+                  max={1.5}
+                  step={0.1}
+                  value={settings.text_temperature}
+                  onChange={(event) => patch("text_temperature", Number(event.target.value))}
+                />
+              </label>
+              <label className="field">
+                <span>
+                  最大输出长度
+                  <em className="hint">
+                    单次调用的 token 上限；长节目分段生成，每段都会用这个上限
+                  </em>
+                </span>
+                <input
+                  type="number"
+                  min={1000}
+                  max={32000}
+                  step={500}
+                  value={settings.text_max_tokens}
+                  onChange={(event) => patch("text_max_tokens", Number(event.target.value))}
+                />
+              </label>
+
+              <label className="field">
+                <span>
+                  ShowNotes 签名
+                  <em className="hint">原文追加在 ShowNotes 末尾；可多行，留空则不写</em>
+                </span>
+                <textarea
+                  rows={4}
+                  value={settings.shownotes_signature}
+                  placeholder={"主播：马小褂\n收听：小宇宙 / 苹果播客"}
+                  onChange={(event) => patch("shownotes_signature", event.target.value)}
+                  spellCheck={false}
+                />
+              </label>
+
+              {prompts.length > 0 ? (
+                <PromptEditor
+                  prompts={prompts}
+                  values={{
+                    shownotes: settings.script_prompt_shownotes,
+                    dialogue: settings.script_prompt_dialogue,
+                    article: settings.script_prompt_article,
+                  }}
+                  onChange={(format, value) => {
+                    if (format === "shownotes") patch("script_prompt_shownotes", value);
+                    else if (format === "dialogue") patch("script_prompt_dialogue", value);
+                    else patch("script_prompt_article", value);
+                  }}
+                />
+              ) : (
+                <p className="muted">提示词载入中…</p>
+              )}
             </section>
           </div>
         )}

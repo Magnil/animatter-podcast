@@ -667,6 +667,52 @@ export const api = {
   audioUrl: (projectId: string, mediaId: string) =>
     `/api/projects/${projectId}/media/${mediaId}/audio`,
 
+  // --- ShowNotes / 文稿 ---------------------------------------------------
+
+  /**
+   * Generate one document.
+   *
+   * One request that takes as long as the model takes — several minutes on a
+   * 105-minute episode. That is why the panel shows elapsed time instead of a
+   * fake percentage: there is no server-side progress to read, only a promise
+   * that has not settled yet.
+   */
+  generateScript: (
+    versionId: string,
+    options: { format: ScriptFormat; mapped?: boolean; title?: string },
+  ) =>
+    request<{
+      format: ScriptFormat;
+      title: string;
+      body: string;
+      filename: string;
+      chapters: { heading: string; start_ms: number; clock: string }[];
+      turns: number;
+      blocks: number;
+      warnings: string[];
+    }>(`/api/versions/${versionId}/script/generate`, {
+      method: "POST",
+      body: JSON.stringify({
+        format: options.format,
+        mapped: options.mapped ?? true,
+        title: options.title ?? "",
+      }),
+    }),
+
+  scriptPrompts: () =>
+    request<{ format: ScriptFormat; label: string; default: string; current: string }[]>(
+      "/api/script/prompts",
+    ),
+
+  /** Download what was just generated; the body round-trips through here. */
+  downloadScript: async (body: string, filename: string): Promise<Blob> => {
+    const response = await rawRequest("/api/script/file", {
+      method: "POST",
+      body: JSON.stringify({ body, filename }),
+    });
+    return response.blob();
+  },
+
   // --- speakers ----------------------------------------------------------
 
   speakers: (projectId: string) =>
@@ -700,6 +746,9 @@ export const api = {
 
 export const mediaIdFromVersion = (versionId: string): string => versionId;
 
+/** ShowNotes has no style of its own; 文稿 has two. */
+export type ScriptFormat = "shownotes" | "dialogue" | "article";
+
 export interface AppSettings {
   asr_model: string;
   llm_model: string;
@@ -725,6 +774,13 @@ export interface AppSettings {
   subtitle_cps: number;
   subtitle_max_line: number;
   subtitle_max_lines: number;
+  script_format: ScriptFormat;
+  shownotes_signature: string;
+  script_prompt_shownotes: string;
+  script_prompt_dialogue: string;
+  script_prompt_article: string;
+  text_temperature: number;
+  text_max_tokens: number;
 }
 
 export interface CleanupItem {

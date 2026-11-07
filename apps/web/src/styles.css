@@ -1104,11 +1104,26 @@ button.small,
 
 .menu-label {
   flex: 1;
+  white-space: nowrap;
 }
 
 .menu-hint {
   color: var(--muted);
   font-size: 0.72rem;
+  /* The 导出 menu carries hints up to 「词级标签 .txt，可直接在 Audacity 剪辑」,
+     and `.menu-label { flex: 1 }` let the hint squeeze the label until
+     「ShowNotes…」 rendered as 「ShowNote …」. A hint that truncates the thing it
+     describes is worse than no hint, so the hint wraps and the label does not. */
+  max-width: 48%;
+  text-align: right;
+  white-space: normal;
+}
+
+.menu-dropdown {
+  /* Same reason: grow for a long hint instead of clipping the label to make
+     room for it. */
+  min-width: max-content;
+  max-width: 400px;
 }
 
 .menu-sep {
@@ -1252,6 +1267,66 @@ button.small,
   font-size: 0.76rem;
   line-height: 1.5;
   white-space: pre-wrap;
+}
+
+/* The generated document is editable, so it is a textarea rather than a
+   preview: every model rewrite needs a human pass, and correcting it anywhere
+   other than here means exporting a document you already know is wrong. */
+.script-body {
+  width: 100%;
+  min-height: 320px;
+  resize: vertical;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.script-panel {
+  border: none;
+  padding: 0;
+  background: transparent;
+}
+
+.script-panel .tabs {
+  margin-bottom: 2px;
+}
+
+.prompt-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.prompt-block {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.prompt-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.prompt-text {
+  width: 100%;
+  resize: vertical;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 0.76rem;
+  line-height: 1.55;
 }
 
 .issue-list {
