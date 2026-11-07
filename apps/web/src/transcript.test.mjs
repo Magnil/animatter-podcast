@@ -13,6 +13,7 @@ import {
   findActiveSentence,
   isSingleWord,
   selectionRange,
+  speakerConflict,
   tokenRangeOfSentences,
   wordState,
 } from "./transcript.ts";
@@ -126,4 +127,85 @@ test("tokenRangeOfSentences spans from the first to the last picked sentence", (
   assert.deepEqual(tokenRangeOfSentences(sentences, new Set([0, 2])), { from: 0, to: 12 });
   assert.deepEqual(tokenRangeOfSentences(sentences, new Set([1])), { from: 4, to: 9 });
   assert.equal(tokenRangeOfSentences(sentences, new Set()), null);
+});
+
+// --- speaker conflicts --------------------------------------------------
+// The server refuses these outright; these tests are about knowing *before*
+// the click, and about the message naming the real reason instead of pointing
+// at the selection.
+
+const dialogue = [
+  { token_start: 0, token_end: 4, speaker_id: 0 },
+  { token_start: 4, token_end: 8, speaker_id: 1 },
+  { token_start: 8, token_end: 12, speaker_id: 0 },
+];
+
+test("merging two different speakers is reported, and says what to do", () => {
+  const reason = speakerConflict(dialogue, { from: 0, to: 8 }, "merge");
+  assert.match(reason, /不同说话人/);
+  assert.match(reason, /取消.*标注/, "拒绝必须给出下一步");
+});
+
+test("merging within one speaker is allowed", () => {
+  assert.equal(speakerConflict(dialogue, { from: 0, to: 4 }, "merge"), null);
+});
+
+test("merging unannotated sentences is allowed", () => {
+  const bare = dialogue.map((s) => ({ ...s, speaker_id: null }));
+  assert.equal(speakerConflict(bare, { from: 0, to: 8 }, "merge"), null);
+});
+
+test("one annotated and one unannotated sentence can still merge", () => {
+  const mixed = [
+    { token_start: 0, token_end: 4, speaker_id: null },
+    { token_start: 4, token_end: 8, speaker_id: 1 },
+  ];
+  assert.equal(speakerConflict(mixed, { from: 0, to: 8 }, "merge"), null);
+});
+
+test("joining a whole sentence upward checks the neighbour too", () => {
+  // Selection is exactly sentence 1 (speaker 1); its neighbour above is speaker 0.
+  assert.match(speakerConflict(dialogue, { from: 4, to: 8 }, "to_prev"), /不同说话人/);
+  // Sentence 2 (speaker 0) joined up into sentence 1 (speaker 1) — also refused.
+  assert.match(speakerConflict(dialogue, { from: 8, to: 12 }, "to_prev"), /不同说话人/);
+});
+
+test("joining within the same speaker is allowed", () => {
+  const same = [
+    { token_start: 0, token_end: 4, speaker_id: 0 },
+    { token_start: 4, token_end: 8, speaker_id: 0 },
+  ];
+  assert.equal(speakerConflict(same, { from: 4, to: 8 }, "to_prev"), null);
+});
+
+test("moving part of a sentence to another speaker's sentence is refused", () => {
+  // Half of sentence 1 moves up into sentence 0.
+  assert.match(speakerConflict(dialogue, { from: 4, to: 6 }, "to_prev"), /归属/);
+});
+
+test("splitting is never a speaker conflict", () => {
+  // A split keeps both halves with their original speaker, so it cannot
+  // misattribute anything and must not be gated.
+  assert.equal(speakerConflict(dialogue, { from: 2, to: 6 }, "new_sentence"), null);
+});
+
+test("an empty selection reports nothing", () => {
+  assert.equal(speakerConflict(dialogue, null, "merge"), null);
+  assert.equal(speakerConflict(dialogue, { from: 4, to: 4 }, "merge"), null);
+});
+
+test("the first sentence joining up has no neighbour and is not blocked", () => {
+  assert.equal(speakerConflict(dialogue, { from: 0, to: 4 }, "to_prev"), null);
+});
+
+test("joining is only about the two adjacent sentences", () => {
+  // A multi-sentence selection is not a join; the server rejects it for a
+  // different reason ("selection spans more than one sentence") and this
+  // helper must not claim a speaker conflict it cannot see.
+  const many = [
+    { token_start: 0, token_end: 4, speaker_id: 0 },
+    { token_start: 4, token_end: 8, speaker_id: 1 },
+    { token_start: 8, token_end: 12, speaker_id: 0 },
+  ];
+  assert.equal(speakerConflict(many, { from: 0, to: 12 }, "to_prev"), null);
 });

@@ -122,14 +122,40 @@ def test_merge_three_sentences() -> None:
     assert result[0].origin == "manual_merge"
 
 
-def test_merge_keeps_first_speaker() -> None:
+def test_merge_refuses_two_different_speakers() -> None:
+    """A sentence carries one speaker, so merging two is a forced choice.
+
+    Picking either one is wrong: the merged row would attribute one person's
+    words to the other. Refusing is the only answer that keeps the transcript
+    honest, and the editor reports it rather than silently dropping a label.
+    """
     original = [
         SentenceSpan(0, 0, 2, speaker_id=0),
         SentenceSpan(1, 2, 4, speaker_id=1),
     ]
+    with pytest.raises(InvalidBoundaryError, match="SPEAKER-1"):
+        merge_range(original, 0, 4)
+
+
+def test_merge_keeps_the_one_annotation_it_has() -> None:
+    """Unannotated neighbours merge freely, and the label survives.
+
+    Keeping "whatever the first sentence had" would drop a label the user had
+    just set on the second one — which is a silent data loss, not a merge.
+    """
+    original = [
+        SentenceSpan(0, 0, 2, speaker_id=None),
+        SentenceSpan(1, 2, 4, speaker_id=1),
+    ]
     result = merge_range(original, 0, 4)
     assert len(result) == 1
-    assert result[0].speaker_id == 0
+    assert result[0].speaker_id == 1
+
+
+def test_merge_of_two_unannotated_sentences_has_no_speaker() -> None:
+    result = merge_range(spans((0, 2), (2, 4)), 0, 4)
+    assert len(result) == 1
+    assert result[0].speaker_id is None
 
 
 def test_merge_empty_range_rejected() -> None:

@@ -146,3 +146,71 @@ export function describeSelection(
   if (picked.length === 1) return `已选 1 个词「${shown}」`;
   return `已选 ${picked.length} 个词「${shown}」`;
 }
+
+export interface SpeakerSpan {
+  token_start: number;
+  token_end: number;
+  speaker_id: number | null;
+}
+
+/**
+ * Why a boundary action would put words under the wrong speaker, or `null`.
+ *
+ * This mirrors the server rule so the button can be disabled *with a reason*
+ * instead of accepting the click and coming back with a 400. The server stays
+ * the authority — this only decides whether to offer the action in the first
+ * place, and saying why is the point: a greyed-out button with no explanation
+ * reads as a bug.
+ *
+ * Both directions of misalignment are here, because they are reached by
+ * different buttons: merging combines two labels into one row, while joining
+ * moves words from under one label to under another.
+ */
+export function speakerConflict(
+  sentences: SpeakerSpan[],
+  range: TokenRange | null,
+  action: "new_sentence" | "merge" | "to_prev" | "to_next",
+): string | null {
+  if (!range || action === "new_sentence") return null;
+  if (range.to <= range.from) return null;
+
+  const touched = sentences.filter(
+    (sentence) => sentence.token_start < range.to && range.from < sentence.token_end,
+  );
+  if (touched.length === 0) return null;
+
+  // Merging concerns every sentence the selection covers. Joining concerns at
+  // most two: the one holding the selection and the neighbour it moves into —
+  // and a selection covering several sentences is not a join at all, so that
+  // case is left to the server's "selection spans more than one sentence".
+  let involved: SpeakerSpan[];
+  if (action === "merge") {
+    involved = touched;
+  } else {
+    if (touched.length !== 1) return null;
+    const source = touched[0];
+    if (!source) return null;
+    const neighbour = neighbourOf(sentences, source, action);
+    involved = neighbour ? [source, neighbour] : [source];
+  }
+
+  const labels = new Set(
+    involved.map((sentence) => sentence.speaker_id).filter((id): id is number => id !== null),
+  );
+  if (labels.size <= 1) return null;
+
+  return action === "merge"
+    ? "涉及不同说话人，先取消其中一句的标注再合并"
+    : "这两句属于不同说话人，搬词会改掉这段发言的归属";
+}
+
+function neighbourOf(
+  sentences: SpeakerSpan[],
+  sentence: SpeakerSpan,
+  action: "merge" | "to_prev" | "to_next",
+): SpeakerSpan | null {
+  if (action === "to_prev") {
+    return sentences.filter((s) => s.token_end === sentence.token_start).at(-1) ?? null;
+  }
+  return sentences.find((s) => s.token_start === sentence.token_end) ?? null;
+}

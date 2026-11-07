@@ -1559,3 +1559,13 @@ button.small,
   color: var(--text);
   font-weight: 600;
 }
+
+/* Why a boundary button is disabled. Rendered as text rather than a title
+   attribute: a disabled button does not receive pointer events, so its tooltip
+   never appears — the one moment the explanation matters. */
+.rail-conflict {
+  flex-basis: 100%;
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: var(--warn);
+}

@@ -28,6 +28,7 @@ import {
   describeSelection,
   isSingleWord,
   selectionRange,
+  speakerConflict,
   tokenRangeOfSentences,
   wordState,
   type TokenRange,
@@ -355,6 +356,23 @@ export function SentenceList({
   const canJoin = rangeForRail !== null;
   const canMerge = sentenceSelection.size >= 1 || rangeForRail !== null;
 
+  // Boundary actions that would put words under the wrong speaker are disabled.
+  // The server refuses them anyway; offering a button that always fails is just
+  // a slower way of saying no. Names which direction is blocked, because "can't
+  // join" is not actionable when only one of the two directions is refused.
+  const joinUpConflict = speakerConflict(sentences, rangeForRail, "to_prev");
+  const joinDownConflict = speakerConflict(sentences, rangeForRail, "to_next");
+  const mergeConflict = speakerConflict(sentences, rangeForRail, "merge");
+  const railConflict =
+    mergeConflict ??
+    (joinUpConflict !== null && joinDownConflict !== null
+      ? "上下相邻的两句都属于别的说话人，先取消其中一句的标注"
+      : joinUpConflict !== null
+        ? "并入上句会跨说话人，先取消其中一句的标注"
+        : joinDownConflict !== null
+          ? "并入下句会跨说话人，先取消其中一句的标注"
+          : null);
+
   return (
     <div className="transcript-pane">
       <div className="sentence-rail" role="toolbar" aria-label="句子边界">
@@ -371,31 +389,39 @@ export function SentenceList({
         <button
           type="button"
           className="ghost"
-          disabled={!canJoin || busy}
+          disabled={!canJoin || busy || joinUpConflict !== null}
           onClick={() => onBoundary("to_prev")}
-          title="把选区并入上一句"
+          title={joinUpConflict ?? "把选区并入上一句"}
         >
           并入上句
         </button>
         <button
           type="button"
           className="ghost"
-          disabled={!canJoin || busy}
+          disabled={!canJoin || busy || joinDownConflict !== null}
           onClick={() => onBoundary("to_next")}
-          title="把选区并入下一句"
+          title={joinDownConflict ?? "把选区并入下一句"}
         >
           并入下句
         </button>
         <button
           type="button"
           className="ghost"
-          disabled={!canMerge || busy}
+          disabled={!canMerge || busy || mergeConflict !== null}
           onClick={() => onBoundary("merge")}
-          title="把选区涉及的所有句子合并成一句"
+          title={mergeConflict ?? "把选区涉及的所有句子合并成一句"}
         >
           合并句子
         </button>
         <span className="rail-hint">{describeSelection(tokens, range)}</span>
+        {/* The reason is rendered, not only in the button's title: a disabled
+            button swallows the pointer events that would show a tooltip, so a
+            title attribute on it is invisible exactly when it is needed. */}
+        {railConflict !== null ? (
+          <span className="rail-conflict" role="status">
+            {railConflict}
+          </span>
+        ) : null}
       </div>
 
       <div

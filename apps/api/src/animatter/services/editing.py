@@ -106,7 +106,7 @@ def apply_boundary(
     if not spans:
         raise EditError("no_sentences", "该版本还没有句子", "先完成转写。")
 
-    before = [(s.token_start, s.token_end) for s in spans]
+    before = [(s.token_start, s.token_end, s.speaker_id) for s in spans]
 
     try:
         if action == "new_sentence":
@@ -124,7 +124,7 @@ def apply_boundary(
             raise EditError("unknown_action", f"未知的边界操作 {action}")
         validate(spans, len(tokens))
     except InvalidBoundaryError as exc:
-        raise EditError("invalid_boundary", str(exc), "检查选区是否跨句或落在边界上。") from exc
+        raise _boundary_error(str(exc)) from exc
 
     _persist_spans(session, version_id, spans)
     _record(
@@ -136,12 +136,32 @@ def apply_boundary(
             "direction": direction,
             "from_token": from_token,
             "to_token": to_token,
+            # Speaker ids ride along so undo restores the annotations too. A
+            # snapshot of bare ranges would restore the shape of the transcript
+            # and leave every sentence pointing at whoever now sits at that ord.
             "before": before,
             "after": [[s.token_start, s.token_end] for s in spans],
         },
     )
     log.info("edit.boundary", action=action, from_token=from_token, to_token=to_token)
     return spans
+
+
+def _boundary_error(message: str) -> EditError:
+    """Turn a range-algebra refusal into an error the editor can explain.
+
+    A speaker conflict is not a bad selection — the selection is fine and the
+    answer is "un-annotate one of the two first". Telling the user to "check
+    whether the selection crosses a sentence" would send them looking at
+    something that is not wrong.
+    """
+    if message.startswith("SPEAKER-1"):
+        return EditError(
+            "speaker_conflict",
+            "这两句属于不同说话人，不能合并或互相搬词",
+            "先在句子上把其中一句的说话人改掉（或取消标注），再合并。",
+        )
+    return EditError("invalid_boundary", message, "检查选区是否跨句或落在边界上。")
 
 
 def _split_around(spans: list[SentenceSpan], from_token: int, to_token: int) -> list[SentenceSpan]:
@@ -161,7 +181,18 @@ def _is_boundary(spans: list[SentenceSpan], token_index: int) -> bool:
 
 
 def _persist_spans(session: Session, version_id: str, spans: list[SentenceSpan]) -> None:
-    """Replace the sentence rows for a version with ``spans``."""
+    """Replace the sentence rows for a version with ``spans``.
+
+    Rows are matched by ``ord``, which is **positional** — after a split every
+    sentence below the cut has a new ord, so the row at ord N is no longer the
+    sentence that used to be there. That makes it mandatory to write
+    ``speaker_id`` from the span on the update path, not just on insert:
+    skipping it left each row holding whatever label the *previous* occupant of
+    that position had. Splitting 「A 说话」 into two made the second half inherit
+    the next sentence's speaker, and merging two sentences silently dropped the
+    label of the one that was deleted. The annotation then disagreed with the
+    words it covered, which is worse than having no annotation at all.
+    """
     existing = {
         row.ord: row for row in session.scalars(select(Sentence).where(Sentence.version_id == version_id))
     }
@@ -185,6 +216,7 @@ def _persist_spans(session: Session, version_id: str, spans: list[SentenceSpan])
         else:
             row.token_start = span.token_start
             row.token_end = span.token_end
+            row.speaker_id = span.speaker_id
             row.origin = span.origin
             row.updated_at = now
 
@@ -586,7 +618,7 @@ def undo_op(session: Session, version_id: str, op_id: str | None = None) -> dict
         return {"undone": op.id, "op_type": op.op_type}
 
     before = payload.get("before") or []
-    spans = [SentenceSpan(ord=i, token_start=int(s), token_end=int(e)) for i, (s, e) in enumerate(before)]
+    spans = [_snapshot_span(index, item) for index, item in enumerate(before)]
     tokens = transcribe_service.load_tokens(session, version_id)
     validate(spans, len(tokens))
     _persist_spans(session, version_id, spans)
@@ -594,6 +626,28 @@ def undo_op(session: Session, version_id: str, op_id: str | None = None) -> dict
     session.flush()
     log.info("edit.undo", op_id=op.id, action=payload.get("action"))
     return {"undone": op.id, "op_type": op.op_type}
+
+
+def _snapshot_span(index: int, item: object) -> SentenceSpan:
+    """Rebuild one row of a ``before`` snapshot.
+
+    Older history rows stored ``[start, end]`` without the speaker, because the
+    boundary edit used not to record it. Those snapshots still have to undo: an
+    operation written before this fix must not become un-undoable after it. They
+    restore the shape and leave the label as NULL — which is honest, since the
+    old code never knew what it was either.
+    """
+    if not isinstance(item, list | tuple) or len(item) < 2:
+        raise EditError("corrupt_history", "这条操作记录的格式无法识别", "只能跳过它继续编辑。")
+    start = int(item[0])
+    end = int(item[1])
+    speaker = item[2] if len(item) > 2 else None
+    return SentenceSpan(
+        ord=index,
+        token_start=start,
+        token_end=end,
+        speaker_id=int(speaker) if isinstance(speaker, int) else None,
+    )
 
 
 def undo_last(session: Session, version_id: str) -> dict[str, object]:

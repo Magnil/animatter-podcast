@@ -30,6 +30,37 @@ class InvalidBoundaryError(ValueError):
     """Raised when an edit would violate an invariant (AGENT.md INV-1..4)."""
 
 
+def _merged_speaker(spans: list[SentenceSpan], first: int, last: int) -> int | None:
+    """Speaker for the sentence that results from merging ``spans[first..last]``.
+
+    Refuses to merge across two *different* annotated speakers: a sentence
+    carries one speaker, so collapsing a question and its answer into one row
+    would have to throw one of the two away, and the transcript would then
+    attribute the answer to the person who asked. Unannotated neighbours merge
+    freely — there is nothing to contradict.
+
+    When exactly one side is annotated, that annotation survives. Keeping
+    "whatever the first sentence had" would silently drop a label the user had
+    just set on the second one.
+    """
+    annotated = {span.speaker_id for span in spans[first : last + 1] if span.speaker_id is not None}
+    if len(annotated) > 1:
+        raise InvalidBoundaryError("SPEAKER-1: 这两句属于不同说话人，合并会把其中一人的发言算到另一人头上")
+    return next(iter(annotated)) if annotated else None
+
+
+def _guard_cross_speaker(host: SentenceSpan, donor: SentenceSpan) -> None:
+    """Refuse to move ``donor``'s words under ``host``'s speaker label.
+
+    The whole-sentence case is a merge and is guarded there. This is the partial
+    case: 「并入上句」 on half of the *next* sentence moves those words into the
+    previous sentence, whose speaker label then covers words that person did not
+    say. Same misalignment, reached by a different button.
+    """
+    if host.speaker_id is not None and donor.speaker_id is not None and host.speaker_id != donor.speaker_id:
+        raise InvalidBoundaryError("SPEAKER-1: 这两句属于不同说话人，把词移过去会把一人的发言算到另一人头上")
+
+
 def renumber(spans: list[SentenceSpan]) -> list[SentenceSpan]:
     """Reassign ``ord`` from 0 so display order is always positional."""
     return [replace(span, ord=position) for position, span in enumerate(spans)]
@@ -129,9 +160,7 @@ def merge_range(spans: list[SentenceSpan], from_token: int, to_token: int) -> li
         spans[first],
         token_start=spans[first].token_start,
         token_end=spans[last].token_end,
-        # Merging sentences with different speakers keeps the first one; the
-        # editor must resolve the conflict explicitly.
-        speaker_id=spans[first].speaker_id,
+        speaker_id=_merged_speaker(spans, first, last),
         origin="manual_merge",
     )
     return renumber([*spans[:first], merged, *spans[last + 1 :]])
@@ -173,6 +202,7 @@ def extend_into(
         if direction == "prev":
             if position == 0:
                 raise InvalidBoundaryError("no previous sentence")
+            _guard_cross_speaker(result[position - 1], span)
             moved = replace(span, token_start=to_token)
             grown = replace(result[position - 1], token_end=to_token)
             result[position - 1] = grown
@@ -180,6 +210,7 @@ def extend_into(
         else:
             if position == len(spans) - 1:
                 raise InvalidBoundaryError("no next sentence")
+            _guard_cross_speaker(result[position + 1], span)
             moved = replace(span, token_end=from_token)
             grown = replace(result[position + 1], token_start=from_token)
             result[position] = moved
