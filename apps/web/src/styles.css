@@ -1610,3 +1610,50 @@ button.small,
   color: var(--warn);
   font-size: 0.8rem;
 }
+
+/* 备选标题：a list of clickable titles, each showing its own character count so
+   the 22-character rule is visible instead of something the user has to trust. */
+.title-options ul {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.title-options li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.title-option {
+  flex: 1;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  text-align: left;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+}
+.title-option:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.title-option.in-use {
+  border-color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+  cursor: default;
+}
+.title-count {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.title-badge {
+  color: var(--muted);
+  font-size: 0.7rem;
+  white-space: nowrap;
+}

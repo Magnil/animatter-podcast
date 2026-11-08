@@ -75,6 +75,9 @@ class GenerateOut(BaseModel):
     body: str
     filename: str
     chapters: list[ChapterOut]
+    #: Candidate titles, ≤ 22 chars each, first one is what the body uses. Only
+    #: ShowNotes produces these; the 文稿 formats return an empty list.
+    titles: list[str] = []
     turns: int
     blocks: int
     warnings: list[str]
@@ -148,7 +151,7 @@ def generate_script(
         format=result.format,
         title=result.title,
         body=result.body,
-        filename=_filename(result.title, result.format),
+        filename=_filename(result.filename_base, result.format),
         chapters=[
             ChapterOut(
                 heading=chapter.heading,
@@ -157,6 +160,7 @@ def generate_script(
             )
             for chapter in chapters
         ],
+        titles=result.titles,
         turns=result.turns,
         blocks=result.blocks,
         warnings=result.warnings,

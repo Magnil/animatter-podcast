@@ -78,13 +78,13 @@ docs/                    本文件拆出来的设计文档
 
 ```powershell
 # 后端：在 apps/api 下跑
-..\..\.venv\Scripts\python.exe -m pytest -q            # 651 passed, 1 skipped, 3 deselected
+..\..\.venv\Scripts\python.exe -m pytest -q            # 680 passed, 1 skipped, 3 deselected
 ..\..\.venv\Scripts\python.exe -m ruff check src tests
 ..\..\.venv\Scripts\python.exe -m mypy --strict src    # 74 files
 
 # 前端：在 apps/web 下跑
 npx tsc --noEmit
-npm test                                               # node --test，133 passed
+npm test                                               # node --test，139 passed
 npx vite build
 
 # 启动（仓库根）

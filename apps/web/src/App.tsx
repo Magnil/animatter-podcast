@@ -856,7 +856,7 @@ function Desk({
           {
             id: "shownotes",
             label: "ShowNotes…",
-            hint: "概述 + 时间轴目录 + 签名",
+            hint: "备选标题 + 两段概述 + 时间轴 + 签名",
             disabled: busy,
             onSelect: () => {
               setScriptFormat("shownotes");

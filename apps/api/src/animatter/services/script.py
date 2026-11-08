@@ -34,8 +34,9 @@ from animatter.core.script import (
     ScriptSentence,
     Turn,
     build_turns,
+    host_speaker,
     numbered_lines,
-    parse_chapters,
+    parse_shownotes_plan,
     plan_blocks,
     render_article,
     render_dialogue,
@@ -194,20 +195,35 @@ def _plan(
     system: str,
     temperature: float,
     max_tokens: int,
-) -> tuple[str, list[str], list[tuple[str, int]]]:
-    """One call for summary, points and chapter line numbers.
+) -> tuple[script_core.ShownotesPlan, list[str]]:
+    """One call for the titles, the teaser and the chapter line numbers.
 
     A transcript longer than the planning budget is truncated here and nowhere
-    else. Truncating the *planning* input costs a chapter or a point; truncating
-    the *body* input costs the content itself, which is why the body path splits
-    into blocks instead.
+    else. Truncating the *planning* input costs a chapter; truncating the *body*
+    input costs the content itself, which is why the body path splits into
+    blocks instead.
+
+    The host's name is handed over explicitly. "Chapter starts where the host
+    picks the conversation up" is unactionable without it — diarization returns
+    anonymous ids, and a model guessing which of 说话人1 / 说话人2 is the host
+    gets it wrong about half the time, which is indistinguishable from a model
+    that ignored the rule.
     """
+    host = host_speaker(turns)
+    host_line = ""
+    if host is not None:
+        host_line = f"主持人：{script_core.speaker_name(host, names)}（章节从这一位开口处开始）\n"
+
     listing = numbered_lines(turns, names)
     note = ""
     if len(listing) > script_core.MAX_PLAN_CHARS:
         listing = listing[: script_core.MAX_PLAN_CHARS]
         note = "\n（转写稿过长，以上只是前一部分；章节按能看到的内容划分。）"
-    user = f"节目名称：{title_hint}\n\n=== 转写稿开始 ===\n{listing}\n=== 转写稿结束 ==={note}"
+    user = (
+        f"节目名称：{title_hint}\n"
+        f"{host_line}\n"
+        f"=== 转写稿开始 ===\n{listing}\n=== 转写稿结束 ==={note}"
+    )
     text = _chat(
         llm,
         client,
@@ -217,7 +233,7 @@ def _plan(
         max_tokens=max_tokens,
         json_mode=True,
     )
-    return parse_chapters(parse_json_object(text) or {}, turns)
+    return parse_shownotes_plan(parse_json_object(text) or {}, turns, host=host)
 
 
 @dataclass(frozen=True)
@@ -228,6 +244,13 @@ class GeneratedDocument:
     title: str
     body: str
     chapters: list[Chapter]
+    #: Candidate titles the model offered, already filtered to ≤ 22 chars. The
+    #: first one is the H1; the rest are what the user picks from when the
+    #: model's own pick is not the best one.
+    titles: list[str]
+    #: What the *file* is called, before the format label. Kept apart from
+    #: ``title`` because the headline is model-written and changes on every run.
+    filename_base: str
     turns: int
     blocks: int
     warnings: list[str]
@@ -268,7 +291,7 @@ def generate(
         warnings.append(f"转写稿较长，分 {len(blocks)} 段生成")
 
     if fmt == SHOWNOTES_FORMAT:
-        summary, points, chapter_refs = _plan(
+        plan, dropped_titles = _plan(
             llm,
             client,
             turns=turns,
@@ -280,28 +303,75 @@ def generate(
         )
         chapters = [
             Chapter(heading=heading, start_ms=turns[index].start_ms, first_ord=turns[index].first_ord)
-            for heading, index in chapter_refs
+            for heading, index in plan.chapters
             if 0 <= index < len(turns)
         ]
-        if not summary:
+        if not plan.summary:
             raise AppError(
                 "empty_summary",
                 "模型没有给出概述",
                 hint="换个模型或降低温度后重试；内置提示词里 summary 是必填项。",
                 status=502,
             )
+        if dropped_titles:
+            # Reported rather than silently discarded: the model ignoring the
+            # 22-character rule is the one failure a human must adjudicate, and
+            # a shorter-than-asked list with no explanation reads like a bug.
+            warnings.append(f"{len(dropped_titles)} 个备选标题超过 22 字，已隐藏：{dropped_titles[0]}")
+        if not plan.titles:
+            warnings.append("模型没有给出合规的备选标题，标题沿用项目名")
+        if len(chapters) < 3:
+            warnings.append(f"只识别出 {len(chapters)} 个章节，可能没有找到主持人接话的转折点")
+
+        # Chapters must reach the end. A plan that stops at 60 % of a 62-minute
+        # episode reads like a deliberate choice and is in fact a half-finished
+        # list — the single most common failure on long transcripts, and one the
+        # user cannot see without comparing the last timestamp to the duration.
+        span = 0.0
+        if chapters and turns:
+            total = max(1, turns[-1].start_ms - turns[0].start_ms)
+            span = (chapters[-1].start_ms - turns[0].start_ms) / total
+        if chapters and span < 0.75:
+            warnings.append(
+                f"章节只覆盖到 {span:.0%}，后面可能漏了转折点——可以手动补，或调高最大输出长度后重生成"
+            )
+
+        # Numbers are checked against the transcript instead of trusted.
+        transcript_text = "".join(turn.text for turn in turns)
+        invented = script_core.unverified_numbers(plan.summary + "".join(plan.titles), transcript_text)
+        if invented:
+            warnings.append(f"概述里的这些数字在转写稿里找不到，发布前请核对：{'、'.join(invented[:6])}")
+
+        # Length is a hard requirement in the prompt and the model overshoots it
+        # by ~50 % anyway: measured 405 字 against a 260 字 cap, because "be
+        # vivid" and "be short" pull in opposite directions. Reported rather
+        # than trimmed — cutting a teaser at an arbitrary character is how you
+        # end up with a sentence that stops mid-clause.
+        summary_chars = len(plan.summary.replace("\n", ""))
+        if summary_chars > 300:
+            warnings.append(f"概述 {summary_chars} 字，比 260 字的上限长，建议删到两段以内好读")
+
+        # The H1 is the first compliant title, so a generated document is
+        # publishable without a manual edit. An explicit `title` argument still
+        # wins: that is a human overriding the model on purpose.
+        headline = title.strip() or (plan.titles[0] if plan.titles else project.name)
         body = render_shownotes(
-            title=document_title,
-            summary=summary,
-            points=points,
+            title=headline,
+            summary=plan.summary,
             chapters=chapters,
             signature=str(stored.get("shownotes_signature") or ""),
         )
         return GeneratedDocument(
             format=fmt,
-            title=document_title,
+            title=headline,
+            # Filenames follow the project, not the headline: the headline
+            # changes every time the model is re-run, and a folder of
+            # 「音乐如何被画出来_ShowNotes.md」 and 「网络动画MV的中间态_ShowNotes.md」
+            # is the same episode saved twice.
+            filename_base=project.name,
             body=body,
             chapters=chapters,
+            titles=plan.titles,
             turns=len(turns),
             blocks=len(blocks),
             warnings=warnings,
@@ -362,6 +432,8 @@ def generate(
         title=document_title,
         body=body,
         chapters=[],
+        titles=[],
+        filename_base=project.name,
         turns=len(turns),
         blocks=len(blocks),
         warnings=warnings,

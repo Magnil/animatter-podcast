@@ -17,6 +17,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type ScriptFormat } from "./api";
+import { countTitleChars } from "./titleCount";
 
 interface Props {
   versionId: string;
@@ -33,13 +34,14 @@ interface Result {
   body: string;
   filename: string;
   chapters: { heading: string; start_ms: number; clock: string }[];
+  titles: string[];
   turns: number;
   blocks: number;
   warnings: string[];
 }
 
 const FORMATS: { id: ScriptFormat; label: string; hint: string }[] = [
-  { id: "shownotes", label: "ShowNotes", hint: "概述 + 时间轴目录 + 签名" },
+  { id: "shownotes", label: "ShowNotes", hint: "备选标题 + 两段概述 + 时间轴 + 签名" },
   { id: "dialogue", label: "文稿 · 对话式", hint: "保留说话人，清口癖与口语" },
   { id: "article", label: "文稿 · 文章式", hint: "改写成书面文章，不分说话人" },
 ];
@@ -127,6 +129,31 @@ export function ScriptPanel({
   }, [body, onNotice]);
 
   const dirty = result !== null && body !== result.body;
+
+  /**
+   * Swap the H1 for one of the other candidate titles.
+   *
+   * Rewrites the first `# ` line of the *current* body rather than re-rendering
+   * from the result: the user may already have edited the paragraphs, and
+   * replacing the whole body to change one line would throw that away. If the
+   * body has no H1 (the user deleted it), one is inserted at the top.
+   */
+  const applyTitle = useCallback(
+    (title: string) => {
+      setBody((current) => {
+        const lines = current.split("\n");
+        const index = lines.findIndex((line) => line.startsWith("# "));
+        if (index >= 0) {
+          lines[index] = `# ${title}`;
+        } else {
+          lines.unshift(`# ${title}`, "");
+        }
+        return lines.join("\n");
+      });
+      onNotice(`标题已换成「${title}」`);
+    },
+    [onNotice],
+  );
 
   const summary = useMemo(() => {
     if (!result) return null;
@@ -216,6 +243,33 @@ export function ScriptPanel({
             ))}
           </ul>
         </details>
+      ) : null}
+
+      {result && result.titles.length > 0 ? (
+        <div className="title-options">
+          <p className="section-note">
+            备选标题（已按 22 字上限筛过，第一个是正文里的标题）。点一个替换 H1，不会动正文其他部分。
+          </p>
+          <ul>
+            {result.titles.map((title, index) => {
+              const inUse = body.split("\n").some((line) => line === `# ${title}`);
+              return (
+                <li key={title}>
+                  <button
+                    type="button"
+                    className={inUse ? "title-option in-use" : "title-option"}
+                    disabled={inUse}
+                    onClick={() => applyTitle(title)}
+                  >
+                    <span className="title-text">{title}</span>
+                    <span className="title-count">{countTitleChars(title)} 字</span>
+                  </button>
+                  {index === 0 && !inUse ? <span className="title-badge">原选</span> : null}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
       ) : null}
 
       {body ? (

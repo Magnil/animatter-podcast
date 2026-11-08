@@ -717,6 +717,8 @@ export const api = {
       body: string;
       filename: string;
       chapters: { heading: string; start_ms: number; clock: string }[];
+      /** Candidate titles (≤22 chars); the first one is what the body uses. */
+      titles: string[];
       turns: number;
       blocks: number;
       warnings: string[];

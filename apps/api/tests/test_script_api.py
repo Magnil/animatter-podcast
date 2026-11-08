@@ -153,7 +153,7 @@ def test_shownotes_chapters_use_transcript_times(
     # read the millisecond value off turn 2 (the "先说说今敏" sentence at 4000).
     stub_llm(
         monkeypatch,
-        '{"summary": "聊动画 MV。", "points": ["今敏"], '
+        '{"summary": "聊动画 MV。", "titles": ["一小时的动画课"], '
         '"chapters": [{"heading": "开场", "line": 0}, {"heading": "今敏", "line": 2}]}',
     )
     response = client.post(
@@ -163,9 +163,167 @@ def test_shownotes_chapters_use_transcript_times(
     assert response.status_code == 200, response.text
     payload = response.json()
     assert [c["start_ms"] for c in payload["chapters"]] == [0, 4000]
-    assert [c["clock"] for c in payload["chapters"]] == ["00:00", "00:04"]
+    assert [c["clock"] for c in payload["chapters"]] == ["00:00:00", "00:00:04"]
     assert "## 时间轴" in payload["body"]
     assert payload["filename"].endswith("_ShowNotes.md")
+
+
+def test_the_headline_is_the_first_compliant_title(
+    client: TestClient, seeded: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A generated document must be publishable without a manual rename."""
+    stub_llm(
+        monkeypatch,
+        '{"summary": "S", "titles": ["音乐如何被画出来：学院与二次元之间的网络创作", "另一个角度"], '
+        '"chapters": []}',
+    )
+    payload = client.post(
+        f"/api/versions/{seeded['version']}/script/generate",
+        json={"format": "shownotes", "mapped": False},
+    ).json()
+    assert payload["title"] == "音乐如何被画出来：学院与二次元之间的网络创作"
+    assert payload["body"].startswith("# 音乐如何被画出来")
+    assert payload["titles"] == ["音乐如何被画出来：学院与二次元之间的网络创作", "另一个角度"]
+
+
+def test_an_over_long_title_is_hidden_and_reported(
+    client: TestClient, seeded: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Dropping silently would look like the model returned one title fewer.
+    stub_llm(
+        monkeypatch,
+        '{"summary": "S", "titles": ["音乐如何被画出来：学院派与二次元之间的网络创作", "短的"], '
+        '"chapters": []}',
+    )
+    payload = client.post(
+        f"/api/versions/{seeded['version']}/script/generate",
+        json={"format": "shownotes", "mapped": False},
+    ).json()
+    assert payload["titles"] == ["短的"]
+    assert any("22" in w for w in payload["warnings"])
+
+
+def test_the_filename_keeps_the_project_name_not_the_headline(
+    client: TestClient, seeded: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Re-generating yields a different headline; the file must not move.
+
+    Otherwise the same episode lands in the folder twice under two names, and
+    the older one looks like a different episode.
+    """
+    stub_llm(monkeypatch, '{"summary": "S", "titles": ["第一次的标题"], "chapters": []}')
+    first = client.post(
+        f"/api/versions/{seeded['version']}/script/generate",
+        json={"format": "shownotes", "mapped": False},
+    ).json()
+    stub_llm(monkeypatch, '{"summary": "S", "titles": ["第二次的标题"], "chapters": []}')
+    second = client.post(
+        f"/api/versions/{seeded['version']}/script/generate",
+        json={"format": "shownotes", "mapped": False},
+    ).json()
+    assert first["title"] != second["title"]
+    assert first["filename"] == second["filename"]
+    assert first["filename"] == "漫物质_ShowNotes.md"
+
+
+def test_the_host_is_named_in_the_prompt(
+    client: TestClient, seeded: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """「章节从主持人开口处开始」 is unactionable without naming that speaker.
+
+    Diarization returns anonymous ids, and a model guessing which of 说话人1 /
+    说话人2 is the host is wrong about half the time — indistinguishable from a
+    model that ignored the rule.
+    """
+    calls = stub_llm(monkeypatch, '{"summary": "S", "titles": [], "chapters": []}')
+    client.post(
+        f"/api/versions/{seeded['version']}/script/generate",
+        json={"format": "shownotes", "mapped": False},
+    )
+    assert "主持人：" in str(calls[0]["user"])
+
+
+def test_a_single_speaker_recording_gets_no_host_line(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Naming a host in a monologue would make the chapter rule look applied.
+
+    The rule is only meaningful when there are two roles to distinguish, so the
+    prompt must say nothing rather than guess.
+    """
+    from sqlalchemy.orm import Session as DbSession
+
+    from animatter.ids import new_id as _new_id
+    from animatter.models import Media, Project, Sentence, Token, TranscriptVersion
+
+    db = client.app.state.db  # type: ignore[attr-defined]
+    with DbSession(db.engine) as session:  # type: ignore[arg-type]
+        project = Project(
+            id=_new_id("prj"), name="独白节目", created_at=utcnow_iso(), updated_at=utcnow_iso()
+        )
+        session.add(project)
+        session.flush()
+        media = Media(
+            id=_new_id("med"),
+            project_id=project.id,
+            path="y.wav",
+            sha256=_new_id("sha"),
+            duration_ms=4000,
+            sample_rate=16000,
+            channels=1,
+            codec="wav",
+            kind="original",
+            created_at=utcnow_iso(),
+        )
+        session.add(media)
+        session.flush()
+        version = TranscriptVersion(
+            id=_new_id("ver"),
+            project_id=project.id,
+            media_id=media.id,
+            job_id="job",
+            version=1,
+            created_at=utcnow_iso(),
+            duration_ms=4000,
+            token_count=2,
+            sentence_count=2,
+            is_active=True,
+        )
+        session.add(version)
+        session.flush()
+        for idx, (text, start, end) in enumerate([("独白一", 0, 2000), ("独白二", 2000, 4000)]):
+            session.add(
+                Token(
+                    version_id=version.id,
+                    idx=idx,
+                    start_ms=start,
+                    end_ms=end,
+                    text=text,
+                    kind="word",
+                    src_word_idx=idx,
+                    punc_after="。",
+                    derived=False,
+                    revised=False,
+                )
+            )
+            session.add(
+                Sentence(
+                    id=_new_id("sen"),
+                    version_id=version.id,
+                    ord=idx,
+                    token_start=idx,
+                    token_end=idx + 1,
+                    speaker_id=0,  # one speaker only
+                    origin="asr",
+                    updated_at=utcnow_iso(),
+                )
+            )
+        session.commit()
+        version_id = version.id
+
+    calls = stub_llm(monkeypatch, '{"summary": "S", "titles": [], "chapters": []}')
+    client.post(f"/api/versions/{version_id}/script/generate", json={"format": "shownotes"})
+    assert "主持人：" not in str(calls[0]["user"])
 
 
 def test_the_signature_reaches_the_rendered_file(
