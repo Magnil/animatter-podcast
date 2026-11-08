@@ -71,6 +71,10 @@ class VersionOut(BaseModel):
     #: Zero is a real, reportable answer — it is what the UI needs to tell
     #: "hotwords were off" apart from "hotwords were on but the list was empty".
     hotword_count: int = 0
+    #: How far this timeline has been shifted from the ASR's own timestamps.
+    #: Surfaced on the version (not only on /time-shift) so the editor can show
+    #: 「已对齐到 −80ms」 without an extra round trip on every load.
+    time_shift_ms: int = 0
 
 
 class TokenOut(BaseModel):
@@ -203,6 +207,10 @@ def transcribe(
         sentence_count=version.sentence_count,
         created_at=version.created_at,
         hotword_count=len(vocabulary or {}),
+        # `getattr` rather than an attribute read: several tests stub the
+        # transcription service with a minimal namespace, and a missing display
+        # field must not turn a successful transcription into a 500.
+        time_shift_ms=getattr(version, "time_shift_ms", 0),
     )
 
 
@@ -221,6 +229,7 @@ def list_versions(project_id: str, session: Session = Depends(_session_dependenc
             token_count=row.token_count,
             sentence_count=row.sentence_count,
             created_at=row.created_at,
+            time_shift_ms=row.time_shift_ms,
         )
         for row in rows
     ]
@@ -283,6 +292,7 @@ def get_transcript(
             token_count=version.token_count,
             sentence_count=version.sentence_count,
             created_at=version.created_at,
+            time_shift_ms=version.time_shift_ms,
         ),
         sentences=sentence_rows,
         tokens=token_rows,

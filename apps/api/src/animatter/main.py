@@ -21,6 +21,7 @@ from animatter.errors import install_error_handlers
 from animatter.log import configure_logging, get_logger
 from animatter.migrate import upgrade_to_head
 from animatter.routers import (
+    align,
     archive,
     cleanup,
     clipping,
@@ -125,6 +126,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(speakers.router)
     app.include_router(labels.router)
     app.include_router(script_router.router)
+    app.include_router(align.router)
     return app
 
 

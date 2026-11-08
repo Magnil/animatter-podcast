@@ -796,6 +796,15 @@ function Desk({
               setSettingsOpen(true);
             },
           },
+          {
+            id: "align-settings",
+            label: "时间轴对齐…",
+            hint: "整条时间轴整体偏移 ±1000ms，可撤销",
+            onSelect: () => {
+              setSettingsSection("align");
+              setSettingsOpen(true);
+            },
+          },
           "separator",
           {
             id: "hotwords",
@@ -1211,6 +1220,9 @@ function Desk({
         mediaId={boot.mediaId}
         section={settingsSection}
         onHotwordsChanged={() => void reloadHotwords()}
+        versionId={boot.version.id}
+        onTranscriptChanged={onReload}
+        onNotice={setNotice}
       />
 
       <NewProjectDialog

@@ -122,6 +122,8 @@ export interface Version {
   token_count: number;
   sentence_count: number;
   created_at: string;
+  /** How far this timeline sits from the ASR's own timestamps (ms). */
+  time_shift_ms?: number;
 }
 
 export interface Transcript {
@@ -184,6 +186,34 @@ export const api = {
     if (!response.ok) throw await failure(response, "波形加载失败");
     return response.arrayBuffer();
   },
+
+  /**
+   * Move the whole timeline to `shiftMs` relative to the ASR's own timestamps.
+   *
+   * A target, not a step: sending the same value twice must not double the
+   * offset. See `services/align.py` for why that distinction is load-bearing.
+   */
+  timeShift: (versionId: string, shiftMs: number) =>
+    request<{
+      shift_ms: number;
+      previous_ms: number;
+      delta_ms: number;
+      tokens: number;
+      deletions: number;
+      clamped: boolean;
+      reason: string;
+    }>(`/api/versions/${versionId}/time-shift`, {
+      method: "POST",
+      body: JSON.stringify({ shift_ms: shiftMs }),
+    }),
+
+  timeShiftState: (versionId: string) =>
+    request<{
+      time_shift_ms: number;
+      earliest_ms: number;
+      latest_ms: number;
+      duration_ms: number;
+    }>(`/api/versions/${versionId}/time-shift`),
 
   boundary: (
     versionId: string,

@@ -21,6 +21,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type AppSettings, type HotwordItem } from "./api";
 import type { HotwordTab } from "./HotwordEditor";
 import type { PromptRow } from "./PromptEditor";
+import { AlignPanel } from "./settings/AlignPanel";
 import { CleanupPanel } from "./settings/CleanupPanel";
 import { EditingPanel } from "./settings/EditingPanel";
 import { ExportPanel } from "./settings/ExportPanel";
@@ -29,7 +30,14 @@ import { ModelsPanel } from "./settings/ModelsPanel";
 import { TextPanel } from "./settings/TextPanel";
 
 /** Which panel the menu item asked for. */
-export type SettingsSection = "models" | "hotwords" | "cleanup" | "editing" | "export" | "text";
+export type SettingsSection =
+  | "models"
+  | "hotwords"
+  | "cleanup"
+  | "editing"
+  | "export"
+  | "text"
+  | "align";
 
 interface Props {
   open: boolean;
@@ -40,6 +48,11 @@ interface Props {
   mediaId?: string;
   onHotwordsChanged?: () => void;
   section?: SettingsSection;
+  /** Absent when no project is loaded; 时间轴对齐 then says so instead of acting. */
+  versionId?: string;
+  /** Reload the transcript after 时间轴对齐 rewrites token times. */
+  onTranscriptChanged?: () => Promise<void>;
+  onNotice?: (message: string) => void;
 }
 
 interface NavEntry {
@@ -59,6 +72,9 @@ const NAV: NavEntry[] = [
   { id: "editing", label: "剪辑", summary: "影响下一次渲染与边界吸附" },
   { id: "export", label: "导出", summary: "只在写出文件时生效，不改工程" },
   { id: "text", label: "文本处理", summary: "只在生成 ShowNotes / 文稿时生效" },
+  // Applies to a version rather than to preferences, so it is placed last and
+  // says so — the other six panels are all "next time" settings.
+  { id: "align", label: "时间轴对齐", summary: "直接改写当前版本的词级时间轴（可撤销）" },
 ];
 
 export function SettingsDialog({
@@ -69,6 +85,9 @@ export function SettingsDialog({
   mediaId,
   onHotwordsChanged,
   section = "models",
+  versionId,
+  onTranscriptChanged,
+  onNotice,
 }: Props): React.JSX.Element | null {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [models, setModels] = useState<
@@ -287,20 +306,36 @@ export function SettingsDialog({
               {active === "text" ? (
                 <TextPanel settings={settings} patch={patch} prompts={prompts} />
               ) : null}
+
+              {active === "align" ? (
+                <AlignPanel
+                  versionId={versionId}
+                  onApplied={onTranscriptChanged ?? (async () => undefined)}
+                  onNotice={onNotice ?? (() => undefined)}
+                />
+              ) : null}
             </div>
           </div>
         )}
 
         <footer className="modal-foot">
           <span className="settings-dirty">
-            {dirty.size > 0 ? `${dirty.size} 项未保存` : ""}
+            {active === "align"
+              ? // 时间轴对齐 writes immediately, so 保存 would be a lie. Saying it
+                // here is cheaper than a user pressing 取消 and expecting a rewind.
+                "对齐立即生效，与本面板的「保存」无关"
+              : dirty.size > 0
+                ? `${dirty.size} 项未保存`
+                : ""}
           </span>
           <button type="button" className="ghost" onClick={onClose}>
-            取消
+            {active === "align" ? "关闭" : "取消"}
           </button>
-          <button type="button" disabled={!settings || saving} onClick={() => void save()}>
-            {saving ? "保存中…" : "保存"}
-          </button>
+          {active === "align" ? null : (
+            <button type="button" disabled={!settings || saving} onClick={() => void save()}>
+              {saving ? "保存中…" : "保存"}
+            </button>
+          )}
         </footer>
       </div>
     </div>

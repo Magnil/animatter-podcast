@@ -125,6 +125,13 @@ class TranscriptVersion(Base):
     token_count: Mapped[int] = mapped_column(Integer, default=0)
     sentence_count: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: How far this version's whole timeline has been shifted from what the ASR
+    #: reported, in ms (negative = moved earlier). Only a *record* of what was
+    #: applied: the token and deletion rows already hold the shifted times, and a
+    #: new value is applied as ``target - current``. Storing the delta rather than
+    #: recomputing from the raw response is what lets a human's own edge drags
+    #: survive a realignment instead of being silently reset.
+    time_shift_ms: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
 class Token(Base):
