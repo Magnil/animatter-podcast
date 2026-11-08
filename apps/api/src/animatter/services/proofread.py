@@ -1,6 +1,6 @@
 """LLM proof-reading: propose text repairs constrained to known hotwords.
 
-The design constraint that makes this safe (AGENT.md §6.5):
+The design constraint that makes this safe (AGENTS.md §6.5):
 
 1. The model may only propose changes **justified by a term in the glossary**.
    Anything else is discarded before it reaches the review queue, which is what

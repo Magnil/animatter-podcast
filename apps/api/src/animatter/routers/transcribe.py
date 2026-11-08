@@ -51,7 +51,7 @@ class TranscribeIn(BaseModel):
     #: ``True`` → merge the project's global and episode hotwords into
     #: ``parameters.vocabulary``. The client used to send this flag only for the
     #: field to be silently dropped by pydantic, so *every* transcription ran
-    #: with an empty vocabulary no matter what the UI said (AGENT.md §2.1).
+    #: with an empty vocabulary no matter what the UI said (AGENTS.md §2.1).
     use_hotwords: bool = False
     #: Explicit override; when omitted and ``use_hotwords`` is set, the stored
     #: glossary is used. Kept for the CLI and for replaying a historical run.

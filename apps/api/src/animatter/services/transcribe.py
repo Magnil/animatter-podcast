@@ -1,6 +1,6 @@
 """The transcription use case: media → uploaded → transcribed → normalised → stored.
 
-One job is one HTTP-independent unit of work (AGENT.md §6.2). Status transitions
+One job is one HTTP-independent unit of work (AGENTS.md §6.2). Status transitions
 are persisted at every step so a crash mid-flight leaves an inspectable record
 rather than a mystery.
 """

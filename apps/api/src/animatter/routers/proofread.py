@@ -196,7 +196,7 @@ def accept_correction(candidate_id: str, session: Session = Depends(_session_dep
     tokens = transcribe_service.load_tokens(session, candidate.version_id)
 
     # The feedback loop: a human-confirmed fix teaches the glossary which terms
-    # the ASR actually gets wrong (AGENT.md §6.1).
+    # the ASR actually gets wrong (AGENTS.md §6.1).
     if candidate.matched_hotword:
         hotword_service.record_hit(session, candidate.matched_hotword)
 

@@ -3,7 +3,7 @@
 Sentences are stored as half-open token ranges ``[token_start, token_end)``
 rather than as parent pointers on tokens, because re-drawing a boundary is a
 range operation and parent pointers would leave dangling references behind
-(AGENT.md §6.4).
+(AGENTS.md §6.4).
 
 Every function here returns a *new* list; nothing mutates in place.
 """
@@ -27,7 +27,7 @@ class SentenceSpan:
 
 
 class InvalidBoundaryError(ValueError):
-    """Raised when an edit would violate an invariant (AGENT.md INV-1..4)."""
+    """Raised when an edit would violate an invariant (AGENTS.md INV-1..4)."""
 
 
 def _merged_speaker(spans: list[SentenceSpan], first: int, last: int) -> int | None:

@@ -1,7 +1,7 @@
 """Domain error type and its HTTP rendering.
 
 Every error the API returns carries a ``hint`` that tells the operator what to
-do next; a bare "failed" is a bug (AGENT.md §8).
+do next; a bare "failed" is a bug (AGENTS.md §8).
 """
 
 from __future__ import annotations

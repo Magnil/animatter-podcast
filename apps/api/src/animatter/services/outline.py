@@ -1,4 +1,4 @@
-"""Outline → per-episode hotwords (AGENT.md §6.1).
+"""Outline → per-episode hotwords (AGENTS.md §6.1).
 
 The LLM proposes; this module decides. Every candidate must survive
 :func:`animatter.core.hotwords.sanitize` and every accepted term keeps its

@@ -1,4 +1,4 @@
-"""Hotword sanitising (AGENT.md §2.1, §6.1).
+"""Hotword sanitising (AGENTS.md §2.1, §6.1).
 
 Every rejection rule here maps to a documented provider constraint or a measured
 failure mode. The weight cap in particular is not a style preference: `weight=5`

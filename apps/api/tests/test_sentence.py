@@ -1,4 +1,4 @@
-"""Sentence range algebra (AGENT.md §6.4, INV-1..4).
+"""Sentence range algebra (AGENTS.md §6.4, INV-1..4).
 
 The editor's 「另起一句 / 并入上句 / 并入下句」 actions all reduce to the
 operations exercised here. Every test asserts the invariants hold afterwards,

@@ -1,4 +1,4 @@
-"""Project lifecycle: rows, directories, and the on-disk layout from AGENT.md §5.2."""
+"""Project lifecycle: rows, directories, and the on-disk layout from AGENTS.md §5.2."""
 
 from __future__ import annotations
 

@@ -1,7 +1,7 @@
 """Edit Decision List: turning a set of deletions into a rendering plan.
 
 This is the module the whole editing pipeline stands on. Two properties are
-non-negotiable (AGENT.md §6.5):
+non-negotiable (AGENTS.md §6.5):
 
 1. **Deletions are the source of truth, kept segments are derived.** Users delete
    things; they do not specify what to keep. Deriving keeps from deletes means an
@@ -326,7 +326,7 @@ def compile_edl(
 ) -> Edl:
     """Build the keep list from a deletion set.
 
-    Steps mirror AGENT.md §6.5: normalise → snap → guard → derive keeps →
+    Steps mirror AGENTS.md §6.5: normalise → snap → guard → derive keeps →
     drop slivers → refuse an empty result.
     """
     if original_duration_ms <= 0:

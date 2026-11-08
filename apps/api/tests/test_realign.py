@@ -1,4 +1,4 @@
-"""Timeline-preserving text repair (AGENT.md §6.3).
+"""Timeline-preserving text repair (AGENTS.md §6.3).
 
 These tests exist because the failure mode is silent: a correction that shifts
 timestamps produces subtitles that are *wrong but plausible*, and nobody notices

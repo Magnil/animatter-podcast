@@ -1,11 +1,11 @@
-"""SQLAlchemy schema mirroring AGENT.md §5.1.
+"""SQLAlchemy schema mirroring AGENTS.md §5.1.
 
 Conventions enforced here:
 
 * Primary keys are TEXT ids produced by :func:`animatter.ids.new_id`.
 * Timestamps are TEXT ISO-8601 UTC — SQLite has no native timestamp type and
   strings survive JSON round-trips without timezone ambiguity.
-* Durations and offsets are INTEGER milliseconds. Never floats (AGENT.md §16.2).
+* Durations and offsets are INTEGER milliseconds. Never floats (AGENTS.md §16.2).
 
 The ``token`` table is append-only by design; ``sentence`` holds the only
 mutable structure (ranges over tokens).
@@ -103,7 +103,7 @@ class TranscribeJob(Base):
     error_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
     usage_json: Mapped[str] = mapped_column(Text, default="{}")
     raw_path: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # --- chunked transcription (>2h sources, AGENT.md §6.2) -----------
+    # --- chunked transcription (>2h sources, AGENTS.md §6.2) -----------
     parent_job_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     segment_index: Mapped[int] = mapped_column(Integer, default=0)
     segment_start_ms: Mapped[int] = mapped_column(Integer, default=0)
@@ -310,7 +310,7 @@ class Job(Base):
 
 
 class CorrectionCandidate(Base):
-    """Model-proposed text repair awaiting human review (AGENT.md §6.5).
+    """Model-proposed text repair awaiting human review (AGENTS.md §6.5).
 
     Nothing is rewritten automatically: a candidate records what the model thinks
     is wrong, what it proposes, and which hotword justifies the change. Only

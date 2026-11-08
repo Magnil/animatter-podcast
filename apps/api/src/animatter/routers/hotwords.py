@@ -287,7 +287,7 @@ def suggest_from_outline(
 
     Returns candidates **without writing them**: extraction is a proposal, and
     the operator must be able to delete the wrong ones before they shape an ASR
-    run (AGENT.md §6.1).
+    run (AGENTS.md §6.1).
     """
     content = payload.content if payload is not None else ""
     meta = payload.meta if payload is not None else ""

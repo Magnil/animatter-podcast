@@ -1,7 +1,7 @@
 /**
  * Correction desk shell.
  *
- * Layout follows AGENT.md §7.2: waveform on top, sentence list below, action bar
+ * Layout follows AGENTS.md §7.2: waveform on top, sentence list below, action bar
  * for the current selection. Keyboard shortcuts are the primary workflow —
  * mouse-only proof-reading of a two-hour episode is unbearable.
  */

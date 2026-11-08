@@ -2,7 +2,7 @@
 
 A model that proposes anything is worse than no model at all, because every
 false candidate costs a human decision. These tests pin the rules that make the
-queue trustworthy (AGENT.md §6.5):
+queue trustworthy (AGENTS.md §6.5):
 
 * only changes justified by a glossary term survive;
 * the quoted original must exist verbatim in the token stream;

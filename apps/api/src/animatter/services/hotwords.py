@@ -3,7 +3,7 @@
 The global library maps to a pre-compiled vocabulary list on Bailian, which has
 a hard quota of 50 lists per account and a 5-minute update cooldown. Those two
 facts are why this module tracks a content hash and a "next allowed" timestamp
-instead of syncing on every write (AGENT.md §2.1).
+instead of syncing on every write (AGENTS.md §2.1).
 """
 
 from __future__ import annotations
@@ -127,7 +127,7 @@ def remove_global(session: Session, text: str) -> None:
 
 def record_hit(session: Session, text: str, *, delta: int = 1) -> None:
     """Credit a term that a human confirmed — this is the feedback loop that
-    makes the glossary improve without manual curation (AGENT.md §6.1)."""
+    makes the glossary improve without manual curation (AGENTS.md §6.1)."""
     row = session.scalars(select(Hotword).where(Hotword.project_id.is_(None), Hotword.text == text)).first()
     if row is not None:
         row.hit_count += delta

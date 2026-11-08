@@ -16,7 +16,7 @@ from typing import Final
 from animatter.errors import AppError
 
 #: ASR input is forced to this profile: it fits a 12h episode under the 1GB
-#: temporary-storage limit (AGENT.md §6.0).
+#: temporary-storage limit (AGENTS.md §6.0).
 ASR_SAMPLE_RATE: Final[int] = 16000
 ASR_CHANNELS: Final[int] = 1
 ASR_BITRATE: Final[str] = "64k"

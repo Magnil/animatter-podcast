@@ -9,7 +9,7 @@
  * touching neighbouring words.
  *
  * Rendering stays canvas-based: a 3h episode is ~1.9GB of float PCM once
- * decoded, so the backend pre-reduces it to min/max buckets (AGENT.md §7.1).
+ * decoded, so the backend pre-reduces it to min/max buckets (AGENTS.md §7.1).
  *
  * Zoom is a *window*, not a wider canvas. A 3h episode at 64 buckets/s is
  * 691k buckets; at 8× zoom it would be 5.5M, and the browser would spool the

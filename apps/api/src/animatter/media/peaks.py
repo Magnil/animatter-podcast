@@ -185,7 +185,7 @@ def deserialize(blob: bytes) -> Peaks:
 
 
 def cache_path(project_dir: Path, media_sha: str) -> Path:
-    """Cache key is the content hash, never the filename (AGENT.md §15.6 item 33)."""
+    """Cache key is the content hash, never the filename (AGENTS.md §15.6 item 33)."""
     return project_dir / "peaks" / f"{media_sha}.pke"
 
 

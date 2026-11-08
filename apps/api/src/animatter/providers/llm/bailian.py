@@ -2,7 +2,7 @@
 
 Uses ``/compatible-mode/v1`` because it is one stable protocol across models,
 so swapping ``qwen-plus`` for a bigger model is a config change rather than a
-rewrite. The same workspace key and host serve it (AGENT.md §2.2).
+rewrite. The same workspace key and host serve it (AGENTS.md §2.2).
 """
 
 from __future__ import annotations

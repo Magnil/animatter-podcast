@@ -1,7 +1,7 @@
 /**
  * Transcript pane: word-level editing, direct manipulation.
  *
- * Design rules this file encodes (AGENT.md §6.3, §7.3):
+ * Design rules this file encodes (AGENTS.md §6.3, §7.3):
  *
  * * **The unit is the ASR word.** Clicking a word selects that word; dragging
  *   extends by whole words. There is no character selection any more, because

@@ -2,7 +2,7 @@
  * Typed API client.
  *
  * Every call surfaces the backend's `AppError(code, message, hint)` shape rather
- * than a bare status, because the hint is the actionable part (AGENT.md §8).
+ * than a bare status, because the hint is the actionable part (AGENTS.md §8).
  */
 
 export interface ApiError {
@@ -404,7 +404,7 @@ export const api = {
    * Persist reviewed candidates as the episode's list.
    *
    * Deliberately the *replace* endpoint: an outline extraction regenerates the
-   * episode list wholesale (AGENT.md §6.1), so after dropping the wrong
+   * episode list wholesale (AGENTS.md §6.1), so after dropping the wrong
    * candidates the operator wants exactly what is left on screen, not a merge.
    */
   acceptSuggestions: (

@@ -64,10 +64,10 @@ class Settings(BaseSettings):
     #: "find what looks wrong" work and much cheaper than the big models.
     llm_model: str = "qwen-plus"
     #: Default instant-hotword weight. 5 was measured to corrupt correct
-    #: words (AGENT.md §6.1), so 3 is the deliberate default.
+    #: words (AGENTS.md §6.1), so 3 is the deliberate default.
     hotword_default_weight: int = 3
 
-    # --- media limits (see AGENT.md §2) -------------------------------
+    # --- media limits (see AGENTS.md §2) -------------------------------
     max_upload_bytes: int = 1_000_000_000  # Bailian temporary storage hard limit
     max_asr_seconds: int = 12 * 3600
     diarization_safe_seconds: int = 2 * 3600

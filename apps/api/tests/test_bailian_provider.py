@@ -3,7 +3,7 @@
 Parameter correctness is not cosmetic here: a wrong model for the upload policy,
 or a dropped ``X-DashScope-OssResourceResolve`` header, produces a file that is
 silently unreachable rather than an error. These tests pin the exact wire
-format (AGENT.md §2.1).
+format (AGENTS.md §2.1).
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """Merge character-level tokens into word-level tokens
 
-The editing unit moved from the character to the ASR word (AGENT.md §6.3), so
+The editing unit moved from the character to the ASR word (AGENTS.md §6.3), so
 existing transcripts must be rewritten: characters that came from one ASR word
 become one token covering that word's real span.
 

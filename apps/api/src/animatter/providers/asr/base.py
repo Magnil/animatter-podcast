@@ -1,6 +1,6 @@
 """Provider protocols.
 
-Capabilities differ by model (AGENT.md §2.2): ``paraformer-v2`` accepts a
+Capabilities differ by model (AGENTS.md §2.2): ``paraformer-v2`` accepts a
 pre-compiled ``vocabulary_id`` but not instant ``vocabulary`` or ``context``;
 ``qwen3-asr-flash-filetrans`` accepts neither. Services must branch on these
 declarations rather than on the model name.

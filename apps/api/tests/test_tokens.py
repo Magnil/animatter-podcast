@@ -1,4 +1,4 @@
-"""Word → token expansion (AGENT.md §6.3).
+"""Word → token expansion (AGENTS.md §6.3).
 
 Since 2026-11-06 the editing unit is the **ASR word**, not the character; see the
 module docstring for why. These tests pin that contract plus the arithmetic that

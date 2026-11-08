@@ -1,7 +1,7 @@
 """Structured logging with secret redaction.
 
 Redaction is not optional: request bodies and OSS URLs pass through log calls,
-and both can carry credentials or private media paths (AGENT.md §11).
+and both can carry credentials or private media paths (AGENTS.md §11).
 """
 
 from __future__ import annotations

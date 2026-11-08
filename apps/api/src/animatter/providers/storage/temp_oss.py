@@ -1,6 +1,6 @@
 """Bailian temporary OSS upload (``getPolicy`` → multipart POST → ``oss://`` URL).
 
-The three rules that make this fail confusingly if violated (AGENT.md §2.3):
+The three rules that make this fail confusingly if violated (AGENTS.md §2.3):
 
 1. The ``model`` used to fetch the policy must equal the model used for
    inference, or the uploaded object is simply not visible to the ASR call.

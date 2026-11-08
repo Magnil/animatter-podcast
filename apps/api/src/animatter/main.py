@@ -1,6 +1,6 @@
 """FastAPI application factory.
 
-Security posture (AGENT.md §11): loopback-only binding, no auth (single local
+Security posture (AGENTS.md §11): loopback-only binding, no auth (single local
 user), and an Origin check on state-changing requests so a random page in the
 same browser cannot drive the local API.
 """

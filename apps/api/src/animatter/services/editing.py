@@ -1,6 +1,6 @@
 """Transcript editing: sentence boundaries, text repair, and undo.
 
-Two kinds of edit are recorded separately on purpose (AGENT.md §6.4):
+Two kinds of edit are recorded separately on purpose (AGENTS.md §6.4):
 
 * ``boundary`` — re-drawing sentence ranges; does not touch any token text;
 * ``text`` — correcting a wrong character; does not touch any range.

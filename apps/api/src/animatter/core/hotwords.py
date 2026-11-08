@@ -1,6 +1,6 @@
 """Hotword sanitising and merging.
 
-Every rule here comes from a documented or measured constraint (AGENT.md §2.1,
+Every rule here comes from a documented or measured constraint (AGENTS.md §2.1,
 §6.1). The most important one is the weight cap: ``weight=5`` was measured to
 push a *correct* word ("句级") into a hotword ("剧集"), so the default is 3 and
 5 is treated as a deliberate, warned-about choice.
@@ -251,7 +251,7 @@ def truncate_to_limit(vocabulary: dict[str, int], limit: int = DEFAULT_LIMIT) ->
     """Trim a merged vocabulary, returning the trimmed map and how many were dropped.
 
     The provider silently drops a *random* subset past its ceiling, so trimming
-    here is what keeps behaviour reproducible (AGENT.md §2.1).
+    here is what keeps behaviour reproducible (AGENTS.md §2.1).
     """
     if len(vocabulary) <= limit:
         return dict(vocabulary), 0

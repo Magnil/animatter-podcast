@@ -2,7 +2,7 @@
 
 Covers ``qwen-audio-*-asr-flash-filetrans``, ``fun-asr`` and ``paraformer-v2``:
 they share the submit/poll/download shape and differ only in which parameter
-gates each capability (AGENT.md §2.1/§2.2).
+gates each capability (AGENTS.md §2.1/§2.2).
 """
 
 from __future__ import annotations

@@ -10,7 +10,7 @@
  * wrong terms, and every wrong term biases the recogniser, so the candidates
  * are reviewed before they reach the episode list: nothing is added until the
  * operator presses 加入本期热词, and any single word can be dropped first
- * (AGENT.md §6.1).
+ * (AGENTS.md §6.1).
  *
  * The new-project dialog has no project or media row yet, which is why this
  * calls the stateless endpoint rather than the per-episode one. Creating the

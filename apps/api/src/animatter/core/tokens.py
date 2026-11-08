@@ -4,7 +4,7 @@ This is the module the rest of the editor stands on, and the one place where a
 wrong assumption silently corrupts every downstream timestamp.
 
 The ASR returns **word-level** spans, and since 2026-11-06 the editor works at
-exactly that granularity: **one token = one ASR word**. AGENT.md §6.3.
+exactly that granularity: **one token = one ASR word**. AGENTS.md §6.3.
 
 Why word-level rather than character-level
 ------------------------------------------
@@ -165,5 +165,5 @@ def expand_words(words: list[WordSpan], *, start_idx: int = 0) -> list[TokenSpan
 
 
 def looks_like_sentence_end(text: str) -> bool:
-    """Heuristic used when stitching segmentation seams (AGENT.md §6.2)."""
+    """Heuristic used when stitching segmentation seams (AGENTS.md §6.2)."""
     return bool(text) and text[-1] in "。！？.!?"

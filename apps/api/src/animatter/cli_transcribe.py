@@ -1,7 +1,7 @@
 """CLI: ``animatter transcribe`` — the M1 acceptance path.
 
 Runs the full chain without a browser so the network/API surface can be proven
-in isolation (AGENT.md §13: "M1 之前不要动前端").
+in isolation (AGENTS.md §13: "M1 之前不要动前端").
 """
 
 from __future__ import annotations

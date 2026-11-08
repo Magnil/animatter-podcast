@@ -1,6 +1,6 @@
 """Rendering a keep-list into an audio file with ffmpeg.
 
-Two details that decide whether the output is usable (AGENT.md §6.5):
+Two details that decide whether the output is usable (AGENTS.md §6.5):
 
 * **Every join needs a short fade.** Concatenating PCM at an arbitrary sample
   produces a step discontinuity, which is audible as a click. 5ms in/out is not

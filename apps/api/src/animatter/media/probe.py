@@ -1,7 +1,7 @@
 """Startup probes for the external binaries the pipeline cannot run without.
 
 Failing fast here beats discovering a missing ffmpeg forty minutes into a
-render (AGENT.md §15.6 item 31).
+render (AGENTS.md §15.6 item 31).
 """
 
 from __future__ import annotations

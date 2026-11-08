@@ -1,6 +1,6 @@
 """Accepting corrections: rewrite tokens without moving the timeline.
 
-The one invariant that matters here (AGENT.md §6.5): applying a correction
+The one invariant that matters here (AGENTS.md §6.5): applying a correction
 changes text inside a token range, never the range's time boundaries. Sentence
 ranges are adjusted only when the token *count* changes, so a 4-char → 1-token
 fix keeps every later subtitle exactly where it was.

@@ -5,7 +5,7 @@ The normalisation step is where the two most consequential conversions happen:
 1. **Word → token expansion** (``core.tokens``), which manufactures the
    character-level timestamps the editor needs.
 2. **Segment offsetting**, where per-chunk results get their ``segment_start_ms``
-   added back to land on the original timeline (AGENT.md §6.2).
+   added back to land on the original timeline (AGENTS.md §6.2).
 
 Both are pure and therefore tested without any network.
 """

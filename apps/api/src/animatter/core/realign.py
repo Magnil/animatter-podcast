@@ -1,6 +1,6 @@
 """Text repair that cannot move the timeline.
 
-The hard rule of this module (AGENT.md §6.3): a correction may change *what is
+The hard rule of this module (AGENTS.md §6.3): a correction may change *what is
 written*, never *when it happened*. Character-level timestamps are interpolated
 from ASR word spans, so letting a model rewrite text freely would silently
 destroy every downstream timestamp — subtitles would drift and cuts would land
