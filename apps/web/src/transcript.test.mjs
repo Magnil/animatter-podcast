@@ -9,7 +9,6 @@ import test from "node:test";
 
 import {
   bubbleCenter,
-  describeSelection,
   findActiveSentence,
   isSingleWord,
   selectionRange,
@@ -88,23 +87,6 @@ test("bubbleCenter keeps the whole bubble inside the viewport", () => {
 test("bubbleCenter centres on a viewport narrower than the bubble", () => {
   // Bounds invert (min 92 > max 8); it must centre, not park at an arbitrary edge.
   assert.equal(bubbleCenter(50, 168, 100), 50);
-});
-
-test("describeSelection names the single word", () => {
-  const tokens = [{ text: "播客" }, { text: "剪辑" }];
-  assert.equal(describeSelection(tokens, { from: 0, to: 1 }), "已选 1 个词「播客」");
-  assert.equal(describeSelection(tokens, { from: 0, to: 2 }), "已选 2 个词「播客剪辑」");
-});
-
-test("describeSelection truncates long selections", () => {
-  const tokens = [{ text: "一".repeat(40) }];
-  const label = describeSelection(tokens, { from: 0, to: 1 });
-  assert.ok(label.includes("…"), label);
-  assert.ok(label.length < 40, label);
-});
-
-test("describeSelection explains the empty state", () => {
-  assert.match(describeSelection([], null), /点击或拖选/);
 });
 
 test("findActiveSentence picks the containing sentence only", () => {

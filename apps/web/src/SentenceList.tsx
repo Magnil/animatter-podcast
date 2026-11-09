@@ -25,7 +25,6 @@ import type { Sentence, SpeakerInfo, Token } from "./api";
 import { charsPerSecond, formatTime } from "./format";
 import {
   bubbleCenter,
-  describeSelection,
   isSingleWord,
   selectionRange,
   speakerConflict,
@@ -376,8 +375,7 @@ export function SentenceList({
   return (
     <div className="transcript-pane">
       <div className="sentence-rail" role="toolbar" aria-label="句子边界">
-        <span className="rail-title">句边界</span>
-        <button
+        <span className="rail-title">句边界</span>        <button
           type="button"
           className="ghost"
           disabled={!canSplit || busy}
@@ -413,15 +411,17 @@ export function SentenceList({
         >
           合并句子
         </button>
-        <span className="rail-hint">{describeSelection(tokens, range)}</span>
-        {/* The reason is rendered, not only in the button's title: a disabled
-            button swallows the pointer events that would show a tooltip, so a
-            title attribute on it is invisible exactly when it is needed. */}
-        {railConflict !== null ? (
-          <span className="rail-conflict" role="status">
-            {railConflict}
-          </span>
-        ) : null}
+        {/* Always rendered, even when there is nothing to say.
+ 
+            Two heights are what made this rail feel jumpy: the word-count
+            readout (gone) and this line. It only appears when a boundary action
+            would cross speakers — which is most clicks — so the rail flipped
+            between one and two rows constantly. Reserving the row keeps the
+            panel still; the text still appears and disappears, the geometry no
+            longer does. */}
+        <span className="rail-conflict" role="status">
+          {railConflict ?? ""}
+        </span>
       </div>
 
       <div

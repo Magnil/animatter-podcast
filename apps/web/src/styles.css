@@ -141,16 +141,6 @@ button.ghost:hover:not(:disabled) {
   padding: 6px;
 }
 
-.actionbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  padding: 8px 0 12px;
-  border-bottom: 1px solid var(--border);
-}
-
 .actions {
   display: flex;
   gap: 6px;
@@ -387,16 +377,6 @@ button.ghost:hover:not(:disabled) {
   font-size: 0.72rem;
   color: var(--muted);
   letter-spacing: 0.04em;
-}
-
-.rail-hint {
-  font-size: 0.72rem;
-  color: var(--muted);
-  margin-left: auto;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* --- speaker name + menu --- */
@@ -1074,15 +1054,6 @@ button.danger {
   min-width: 8px;
 }
 
-.actionbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding-top: 2px;
-}
-
 button.small,
 .ghost.small {
   font-size: 0.74rem;
@@ -1563,8 +1534,12 @@ button.small,
 /* Why a boundary button is disabled. Rendered as text rather than a title
    attribute: a disabled button does not receive pointer events, so its tooltip
    never appears — the one moment the explanation matters. */
+/* Reserves its row even when empty (see SentenceList): the text is only shown
+   when a boundary action would cross speakers, but the line box always exists,
+   so selecting words cannot change the rail's height. */
 .rail-conflict {
   flex-basis: 100%;
+  min-height: 1.4em;
   font-size: 0.72rem;
   line-height: 1.4;
   color: var(--warn);

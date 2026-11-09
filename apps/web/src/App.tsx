@@ -326,14 +326,6 @@ function Desk({
     };
   }, [boot.version.id, boot.tokens]);
   const activeOrd = findActiveSentence(boot.sentences, playback.positionMs);
-  const withinSentence = useMemo(() => {
-    if (!selection) return null;
-    const from = Math.min(selection.from, selection.to);
-    const to = Math.max(selection.from, selection.to);
-    return (
-      boot.sentences.find((s) => from >= s.token_start && to <= s.token_end) ?? null
-    );
-  }, [boot.sentences, selection]);
 
   const markers: Marker[] = useMemo(
     () =>
@@ -1029,22 +1021,14 @@ function Desk({
 
   // Derived enablement. Each action needs a different kind of target, and
   // getting this wrong is how a button ends up silently doing nothing.
-  const tokenCount = selection ? Math.abs(selection.to - selection.from) : 0;
-
-  const selectionSummary = (() => {
-    if (sentenceSelection.size > 0) {
-      const ords = [...sentenceSelection].sort((a, b) => a - b);
-      const contiguous = ords.every((ord, i) => i === 0 || ord === ords[i - 1]! + 1);
-      const label = contiguous
-        ? `第 ${ords[0]! + 1}–${ords[ords.length - 1]! + 1} 句`
-        : `第 ${ords.map((o) => o + 1).join("、")} 句`;
-      return `已选 ${sentenceSelection.size} 句（${label}）`;
-    }
-    if (tokenCount > 0) {
-      return `已选 ${tokenCount} 个词${withinSentence ? `（第 ${withinSentence.ord + 1} 句）` : "（跨句）"}`;
-    }
-    return "点词选中，拖选连续词；选中后弹出「删除 / 修正」";
-  })();
+  //
+  // There is deliberately no "已选 N 个词「…」" readout here any more. The word
+  // being acted on is already highlighted in the transcript, and the label
+  // repeated it in a bar that re-flowed to a second line whenever a long word
+  // was picked — so the panel under the cursor grew and shrank with the
+  // selection, which is worse than saying nothing. What is *not* visible on
+  // its own is a cross-speaker conflict, and that is still rendered, in the
+  // rail next to the buttons it disables.
 
   return (
     <div className="workbench">
@@ -1182,10 +1166,6 @@ function Desk({
                 {showOutput ? "收起成片" : "试听成片"}
               </button>
             ) : null}
-          </div>
-
-          <div className="actionbar">
-            <span className="muted small">{selectionSummary}</span>
           </div>
 
           {notice ? <div className="notice">{notice}</div> : null}

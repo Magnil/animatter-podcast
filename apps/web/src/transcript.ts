@@ -133,20 +133,6 @@ export function isSingleWord(range: TokenRange | null): boolean {
   return range !== null && range.to - range.from === 1;
 }
 
-/** One-line description of the current selection, for the toolbar. */
-export function describeSelection(
-  words: { text: string }[],
-  range: TokenRange | null,
-): string {
-  if (!range) return "点击或拖选文字，选中整词后弹出「删除 / 修正」";
-  const picked = words.slice(range.from, range.to);
-  if (picked.length === 0) return "没有选中文字";
-  const text = picked.map((word) => word.text).join("");
-  const shown = text.length > 18 ? `${text.slice(0, 18)}…` : text;
-  if (picked.length === 1) return `已选 1 个词「${shown}」`;
-  return `已选 ${picked.length} 个词「${shown}」`;
-}
-
 export interface SpeakerSpan {
   token_start: number;
   token_end: number;
