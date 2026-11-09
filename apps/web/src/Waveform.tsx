@@ -176,14 +176,27 @@ export function Waveform({
     return () => observer.disconnect();
   }, []);
 
-  // A new media file invalidates the window; keep the old one only while the
-  // same audio is loaded, otherwise the view could point past the new end.
-  // Only a *different* media file resets the window. Editing a sentence
-  // boundary changes tokens, not the file, so it must not touch the zoom —
-  // re-zooming after every drag is exactly the complaint this fixes.
+  // Only a *different* media file resets the window. Editing a sentence boundary
+  // changes tokens, not the file, so it must not touch the zoom — re-zooming after
+  // every drag is exactly what the user complained about.
+  //
+  // `durationMs` is in the dependency list but deliberately does *not* reset:
+  // when it merely changes (a re-transcribed version, a relinked file with a
+  // slightly different length) the existing window is clamped into the new range
+  // instead. It used to call `initialView(...)`, which reads the remembered entry
+  // or falls back to "whole file" — so a length change threw away a zoom without
+  // anybody asking for it. Losing the window is only ever acceptable when the
+  // audio is genuinely a different file.
+  const mediaKeyRef = useRef<string | null>(null);
   useEffect(() => {
+    const key = `${projectId}:${mediaId}`;
+    if (mediaKeyRef.current === key) {
+      setView((current) => clampView(current, total));
+      return;
+    }
+    mediaKeyRef.current = key;
     setView(initialView(rememberedView(projectId, mediaId), durationMs));
-  }, [projectId, mediaId, durationMs]);
+  }, [projectId, mediaId, durationMs, total]);
 
   // Remember the window per media file. `App` now keeps the workbench mounted
   // across reloads, so this is the second line of defence: it also covers the
@@ -596,21 +609,14 @@ export function Waveform({
         aria-valuemax={durationMs}
         aria-valuenow={Math.round(positionMs)}
         onKeyDown={(event) => {
-          const anchor = Math.min(total, Math.max(0, positionMs));
+          // Only seeking and panning. Zoom and the reset to "whole file" are
+          // deliberately *not* on the keyboard: the window is something the user
+          // sets up once and expects to stay put, and every extra binding is one
+          // more way to lose it by accident (a stray key while the canvas has
+          // focus). Wheel over the canvas and the − / + / 全部 buttons are the only
+          // two entries, and both are explicit targets.
           if (event.key === "ArrowLeft") onSeek(Math.max(0, positionMs - span / 20));
           if (event.key === "ArrowRight") onSeek(Math.min(durationMs, positionMs + span / 20));
-          if (event.key === "+" || event.key === "=") {
-            event.preventDefault();
-            zoomAt(anchor, ZOOM_STEP);
-          }
-          if (event.key === "-" || event.key === "_") {
-            event.preventDefault();
-            zoomAt(anchor, 1 / ZOOM_STEP);
-          }
-          if (event.key === "0") {
-            event.preventDefault();
-            setView({ from: 0, to: total });
-          }
           if (event.key === "Home") {
             event.preventDefault();
             panTo(0);
@@ -621,7 +627,7 @@ export function Waveform({
           }
         }}
       />
-      <Scrollbar view={view} total={total} onPan={panTo} onZoomTo={setView} />
+      <Scrollbar view={view} total={total} onPan={panTo} />
       <div className="waveform-bar">
         <p className="waveform-hint">
           滚轮缩放 · Shift+滚轮平移 · 拖动圆点调整句边界（只有被拖的词会变）· 红色区域是已删除 ·
@@ -663,17 +669,23 @@ export function Waveform({
   );
 }
 
-/** A scrollbar over the visible window: thumb drag pans, track click pages. */
+/**
+ * A scrollbar over the visible window: thumb drag pans, track click pages.
+ *
+ * Panning only. It used to reset to "whole file" on double-click, and that was a
+ * trap: clicking the progress bar twice in a row (or missing the thumb and
+ * hitting the track again) silently threw away a zoom the user had spent a while
+ * dialling in. Reset is the 全部 button's job — a deliberate target you cannot hit
+ * by accident. Nothing on this control changes the *span*, only its position.
+ */
 function Scrollbar({
   view,
   total,
   onPan,
-  onZoomTo,
 }: {
   view: View;
   total: number;
   onPan: (from: number) => void;
-  onZoomTo: (view: View) => void;
 }): React.JSX.Element {
   const trackRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ startX: number; startFrom: number } | null>(null);
@@ -730,7 +742,6 @@ function Scrollbar({
           event.currentTarget.releasePointerCapture(event.pointerId);
         }
       }}
-      onDoubleClick={() => onZoomTo({ from: 0, to: total })}
     >
       <div
         className="waveform-thumb"
