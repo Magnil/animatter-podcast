@@ -49,7 +49,7 @@ export default async ({ evaluate, shot, wait, out }) => {
     const b = document.querySelector(".word-bubble");
     if (!b) return null;
     const target = [...b.querySelectorAll("button")]
-      .find((x) => (x.textContent || "").includes("隐去"));
+      .find((x) => x.classList.contains("bubble-hide"));
     if (!target) return null;
     target.click();
     return (target.textContent || "").trim();

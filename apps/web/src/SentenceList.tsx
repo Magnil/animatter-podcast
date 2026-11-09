@@ -63,7 +63,12 @@ interface Props {
 
 const CPS_WARN_ZH = 9;
 
-const BUBBLE_WIDTH = 168;
+//: Bubble geometry, used to keep it on screen. Two widths because the bubble has
+//: two shapes: three one-character buttons (~112 px), or one text field. Measuring
+//: the DOM would be the alternative, but the bubble is positioned in the same
+//: render that creates it, so there is nothing to measure yet on the first paint.
+const BUBBLE_WIDTH = 112;
+const BUBBLE_WIDTH_FORM = 232;
 const BUBBLE_HEIGHT = 40;
 
 export function SentenceList({
@@ -377,7 +382,8 @@ export function SentenceList({
     if (!anchor || !range) return null;
     const viewportWidth = typeof window === "undefined" ? 0 : window.innerWidth;
     const viewportHeight = typeof window === "undefined" ? 0 : window.innerHeight;
-    const width = viewportWidth ? Math.min(BUBBLE_WIDTH, viewportWidth - 16) : BUBBLE_WIDTH;
+    const natural = correcting === null ? BUBBLE_WIDTH : BUBBLE_WIDTH_FORM;
+    const width = viewportWidth ? Math.min(natural, viewportWidth - 16) : natural;
     const center = viewportWidth ? bubbleCenter(anchor.left, width, viewportWidth) : anchor.left;
     const below = anchor.bottom + 6;
     const flipUp = viewportHeight > 0 && below + BUBBLE_HEIGHT > viewportHeight - 8;
@@ -388,7 +394,7 @@ export function SentenceList({
       width,
       transform: "translateX(-50%)",
     };
-  }, [anchor, range]);
+  }, [anchor, correcting, range]);
 
   const rangeForRail = useMemo(
     () =>
@@ -674,31 +680,34 @@ export function SentenceList({
                 type="button"
                 className="bubble-cut"
                 disabled={busy}
+                aria-label="删除"
                 onClick={() => {
                   setCorrecting(null);
                   onDeleteWords();
                 }}
-                title="把选中的词从音频里剪掉（Del）"
+                title="把选中的词从音频中「删除」（DEL）"
               >
-                ✂ 删除
+                删
               </button>
               <button
                 type="button"
                 className="bubble-fix"
                 disabled={busy}
+                aria-label="修正"
                 onClick={() => setCorrecting(selectedText)}
                 title={
                   range.to - range.from === 1
-                    ? "改写这个词，时间不变（Enter）"
-                    : `把选中的 ${range.to - range.from} 个词合并成一个修正后的词，时间范围不变（Enter）`
+                    ? "「修正」这个词而时间不变（Enter）"
+                    : `把选中的 ${range.to - range.from} 个词「修正」成一个词而时间范围不变（Enter）`
                 }
               >
-                ✎ 修正
+                修
               </button>
               <button
                 type="button"
                 className="bubble-hide"
                 disabled={busy}
+                aria-label={allHidden ? "取消隐去" : "隐去"}
                 onClick={() => {
                   setCorrecting(null);
                   onHideWords(!allHidden);
@@ -706,10 +715,14 @@ export function SentenceList({
                 title={
                   allHidden
                     ? "把这些词放回字幕，音频本来就没动（Backspace）"
-                    : "只在字幕里去掉这些词，音频不剪（Backspace）"
+                    : "只在字幕中「隐去」这些词而音频不变（Backspace）"
                 }
               >
-                {allHidden ? "◇ 恢复" : "◌ 隐去"}
+                {/* 显 rather than 隐 when every selected word is already hidden:
+                    the button would restore, and a control that lies about what
+                    it does is how a toggle gets clicked twice. Counterpart of 隐,
+                    same one-character rule. */}
+                {allHidden ? "显" : "隐"}
               </button>
             </>
           ) : (

@@ -348,6 +348,20 @@ button.ghost:hover:not(:disabled) {
   padding: 0.2rem 0.55rem;
 }
 
+/* One character per button. The labels used to be 「✂ 删除 / ✎ 修正 / ◌ 隐去」, which
+   wrapped onto two lines inside the bubble's fixed width and made the whole
+   control look broken. A single character each fits on one line at any zoom, and
+   the meaning is in the tooltip — one hover away, and never in the way. */
+.word-bubble .bubble-cut,
+.word-bubble .bubble-fix,
+.word-bubble .bubble-hide {
+  flex: 1;
+  padding: 0.2rem 0;
+  text-align: center;
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
 .word-bubble .bubble-cut {
   background: var(--danger);
   border-color: var(--danger);
