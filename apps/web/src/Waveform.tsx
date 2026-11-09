@@ -67,10 +67,9 @@ export interface Caption {
 /**
  * A word hidden from the subtitles but still audible.
  *
- * Drawn differently from a deletion on purpose: a deletion is a red block
- * because the audio is gone, while this is a thin grey line because the audio is
- * *there* and only the text is missing. Same visual weight would make the user
- * think they had cut something.
+ * Drawn as a grey hatched *region*, deliberately unlike a deletion: a deletion is
+ * a solid red block because the audio is gone, while here the audio is still
+ * there and only the text is missing.
  */
 export interface HiddenSpan {
   start_ms: number;
@@ -86,7 +85,7 @@ interface Props {
   handles: EdgeHandle[];
   /** Deleted spans, drawn as red overlays. */
   deletions?: DeletionSpan[];
-  /** Words hidden from the text but still audible, drawn as thin grey lines. */
+  /** Words hidden from the text but still audible, drawn as grey hatched regions. */
   hidden?: HiddenSpan[];
   /** Subtitles drawn on the waveform so text and audio line up visually. */
   captions?: Caption[];
@@ -329,43 +328,69 @@ export function Waveform({
       ctx.fill(bars);
     }
 
-    // Words hidden from the text, still audible: one hairline where the hidden run
-    // starts, no fill. A block would read as a deletion, which is the opposite
-    // claim — the point of these marks is "there *is* audio here, it is just not
-    // in the subtitle".
+    // Words hidden from the text, still audible.
     //
-    // One line rather than a pair of edges: `hiddenSpans` already merges a
-    // consecutive run of hidden words into one span, so a single mark says "from
-    // here on the text is missing", which is the question the user is asking.
+    // A *region*, not a mark. The first version drew a single line at the start of
+    // each run, which answered "something happens here" but not "until where" — the
+    // user had to guess where it ended. Grey wash + 45° hatch + both edges.
     //
-    // Two strokes, and the halo is not decoration. The line has to survive both
-    // backgrounds it crosses: the near-white gaps between words and the dark
-    // #475569 bars of the wave itself. A light line vanishes on the bands, a dark
-    // one vanishes in the bars — measured, both were tried. A 3 px white stroke
-    // under a 1 px slate one is readable on either, and still reads as a hairline
-    // because only the core carries the colour.
+    // Still deliberately unlike a deletion: that is a solid red block with no
+    // pattern, because the audio is gone. Here the fill is a light wash and the
+    // hatch reads as "striped out of the text", which is exactly what happened —
+    // the audio underneath is untouched and still visible through it.
     //
-    // Drawn *after* the wave, not with the sentence bands: bands belong behind the
-    // data, an annotation about where a word sits belongs on top of it. It goes
-    // *before* the boundary handles so their grips stay on top.
+    // Drawn *after* the wave so the fill tints the bars instead of being covered by
+    // them; captions are painted later still, so subtitle text stays legible on
+    // top. Goes *before* the boundary handles so their grips stay on top.
     ctx.save();
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = "rgba(255,255,255,0.85)";
-    ctx.beginPath();
     for (const span of hidden) {
       if (span.end_ms < view.from || span.start_ms > viewTo) continue;
-      // Half-pixel offset: a 1 px line on an integer x straddles two device
-      // columns and renders as two half-opacity lines, which is the difference
-      // between "hairline" and "smudge" on a light background.
-      const x = Math.round(msToX(span.start_ms)) + 0.5;
-      if (x < 0 || x > width) continue;
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, CANVAS_HEIGHT);
+      const x0 = msToX(span.start_ms);
+      const x1 = msToX(span.end_ms);
+      if (x1 < 0 || x0 > width) continue;
+      // A 200 ms word is sub-pixel at full zoom-out. Widening it to 2 px keeps the
+      // region visible without pretending it covers more time than it does.
+      const left = Math.max(0, x0);
+      const right = Math.min(width, Math.max(x1, x0 + 2));
+      const regionWidth = right - left;
+
+      ctx.fillStyle = "rgba(148,163,184,0.22)";
+      ctx.fillRect(left, 0, regionWidth, CANVAS_HEIGHT);
+
+      // Hatch: 45° lines, clipped to the region. Clipping rather than computing
+      // each line's span keeps the diagonals continuous across the whole height
+      // and stops them bleeding into the neighbouring audio.
+      //
+      // Only ~6 px apart on purpose: a hidden run is often a couple of words, which
+      // at a normal zoom is 10–30 px wide. Wider spacing and some regions would
+      // catch no diagonal at all and read as a plain grey block — i.e. as a
+      // deletion.
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(left, 0, regionWidth, CANVAS_HEIGHT);
+      ctx.clip();
+      ctx.strokeStyle = "rgba(71,85,105,0.32)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      const spacing = 6;
+      for (let x = left - CANVAS_HEIGHT; x < right + CANVAS_HEIGHT; x += spacing) {
+        ctx.moveTo(x + 0.5, CANVAS_HEIGHT);
+        ctx.lineTo(x + 0.5 + CANVAS_HEIGHT, 0);
+      }
+      ctx.stroke();
+      ctx.restore();
+
+      // Both edges, so the extent is unambiguous even when the hatch is dense.
+      // 1 device pixel, not 1 CSS pixel: at dpr 1.5 a CSS-pixel edge is 1.5 device
+      // pixels wide and picks up antialiasing on both sides, which at this zoom
+      // read as a fuzzy grey band rather than an edge.
+      ctx.fillStyle = "rgba(100,116,139,0.55)";
+      const edgeWidth = 1 / (window.devicePixelRatio || 1);
+      if (x0 >= 0 && x0 <= width) ctx.fillRect(Math.round(x0), 0, edgeWidth, CANVAS_HEIGHT);
+      if (x1 >= 0 && x1 <= width) {
+        ctx.fillRect(Math.round(x1) - edgeWidth, 0, edgeWidth, CANVAS_HEIGHT);
+      }
     }
-    ctx.stroke();
-    ctx.lineWidth = 1;
-    ctx.strokeStyle = "rgba(100,116,139,0.95)";
-    ctx.stroke();
     ctx.restore();
 
     // Boundary handles.
@@ -600,7 +625,7 @@ export function Waveform({
       <div className="waveform-bar">
         <p className="waveform-hint">
           滚轮缩放 · Shift+滚轮平移 · 拖动圆点调整句边界（只有被拖的词会变）· 红色区域是已删除 ·
-          灰色竖线是已隐去（音频还在）
+          灰色斜线区域是已隐去（音频还在）
         </p>
         <div className="waveform-zoom">
           <span className="muted small">{formatSpan(span)}</span>
