@@ -137,6 +137,39 @@ export function isSingleWord(range: TokenRange | null): boolean {
   return range !== null && range.to - range.from === 1;
 }
 
+/**
+ * Time spans of the words hidden from the text, for the waveform.
+ *
+ * Consecutive hidden words merge into one run, and "consecutive" is measured in
+ * the *token stream*, not in time. Adjacent words are routinely separated by a
+ * 100–200 ms inter-word gap, and an early version merged only when the times
+ * touched — which drew two lines 100 ms apart for what the user had selected as
+ * one run of seven words.
+ *
+ * Zero-length tokens are dropped for the same reason `wordState` treats them as
+ * not-deleted: there is no audio there, so a line would point at nothing.
+ */
+export function hiddenSpans(tokens: TokenLike[]): Span[] {
+  const spans: Span[] = [];
+  let inRun = false;
+  for (const token of tokens) {
+    if (!token.hidden) {
+      inRun = false;
+      continue;
+    }
+    if (token.end_ms <= token.start_ms) continue;
+    if (inRun) {
+      const last = spans[spans.length - 1];
+      // The run's mark sits at its start, so only the extent has to grow.
+      if (last) last.end_ms = Math.max(last.end_ms, token.end_ms);
+      continue;
+    }
+    spans.push({ start_ms: token.start_ms, end_ms: token.end_ms });
+    inRun = true;
+  }
+  return spans;
+}
+
 export interface SpeakerSpan {
   token_start: number;
   token_end: number;

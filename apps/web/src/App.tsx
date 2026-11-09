@@ -19,6 +19,7 @@ import {
   type Version,
 } from "./api";
 import { loadAllSentences } from "./transcriptLoad";
+import { hiddenSpans as hiddenWordSpans } from "./transcript";
 import { isTerminal, percentOf, pollDelayMs, renderEta } from "./renderProgress";
 import { HistoryPanel } from "./HistoryPanel";
 import { NewProjectDialog } from "./NewProjectDialog";
@@ -307,6 +308,11 @@ function Desk({
     () => (edl?.deletions ?? []).map((d) => ({ start_ms: d.start_ms, end_ms: d.end_ms })),
     [edl],
   );
+  // Words hidden from the subtitles but still audible. Their own marks on the
+  // waveform, because otherwise the only trace of a hide is the 「已隐去 N」 tag in
+  // the sentence header — invisible from the timeline, where the user is looking
+  // when they ask "what did I actually change".
+  const hiddenSpans = useMemo(() => hiddenWordSpans(boot.tokens), [boot.tokens]);
   const playback = usePlayback(audioUrl, boot.version.duration_ms, deletedSpans);
 
   // The EDL is derived on the server from the deletion set; refetch whenever the
@@ -1123,6 +1129,7 @@ function Desk({
             markers={markers}
             handles={handles}
             deletions={edl?.deletions ?? []}
+            hidden={hiddenSpans}
             captions={boot.sentences.map((sentence) => ({
               start_ms: sentence.start_ms,
               end_ms: sentence.end_ms,

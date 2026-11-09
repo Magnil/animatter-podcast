@@ -64,6 +64,19 @@ export interface Caption {
   ord: number;
 }
 
+/**
+ * A word hidden from the subtitles but still audible.
+ *
+ * Drawn differently from a deletion on purpose: a deletion is a red block
+ * because the audio is gone, while this is a thin grey line because the audio is
+ * *there* and only the text is missing. Same visual weight would make the user
+ * think they had cut something.
+ */
+export interface HiddenSpan {
+  start_ms: number;
+  end_ms: number;
+}
+
 interface Props {
   projectId: string;
   mediaId: string;
@@ -73,6 +86,8 @@ interface Props {
   handles: EdgeHandle[];
   /** Deleted spans, drawn as red overlays. */
   deletions?: DeletionSpan[];
+  /** Words hidden from the text but still audible, drawn as thin grey lines. */
+  hidden?: HiddenSpan[];
   /** Subtitles drawn on the waveform so text and audio line up visually. */
   captions?: Caption[];
   activeOrd?: number;
@@ -116,6 +131,7 @@ export function Waveform({
   markers,
   handles,
   deletions = [],
+  hidden = [],
   captions = [],
   activeOrd = -1,
   onCaptionClick,
@@ -313,6 +329,45 @@ export function Waveform({
       ctx.fill(bars);
     }
 
+    // Words hidden from the text, still audible: one hairline where the hidden run
+    // starts, no fill. A block would read as a deletion, which is the opposite
+    // claim — the point of these marks is "there *is* audio here, it is just not
+    // in the subtitle".
+    //
+    // One line rather than a pair of edges: `hiddenSpans` already merges a
+    // consecutive run of hidden words into one span, so a single mark says "from
+    // here on the text is missing", which is the question the user is asking.
+    //
+    // Two strokes, and the halo is not decoration. The line has to survive both
+    // backgrounds it crosses: the near-white gaps between words and the dark
+    // #475569 bars of the wave itself. A light line vanishes on the bands, a dark
+    // one vanishes in the bars — measured, both were tried. A 3 px white stroke
+    // under a 1 px slate one is readable on either, and still reads as a hairline
+    // because only the core carries the colour.
+    //
+    // Drawn *after* the wave, not with the sentence bands: bands belong behind the
+    // data, an annotation about where a word sits belongs on top of it. It goes
+    // *before* the boundary handles so their grips stay on top.
+    ctx.save();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(255,255,255,0.85)";
+    ctx.beginPath();
+    for (const span of hidden) {
+      if (span.end_ms < view.from || span.start_ms > viewTo) continue;
+      // Half-pixel offset: a 1 px line on an integer x straddles two device
+      // columns and renders as two half-opacity lines, which is the difference
+      // between "hairline" and "smudge" on a light background.
+      const x = Math.round(msToX(span.start_ms)) + 0.5;
+      if (x < 0 || x > width) continue;
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, CANVAS_HEIGHT);
+    }
+    ctx.stroke();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = "rgba(100,116,139,0.95)";
+    ctx.stroke();
+    ctx.restore();
+
     // Boundary handles.
     const drag = dragRef.current;
     for (const handle of handles) {
@@ -371,7 +426,7 @@ export function Waveform({
       ctx.fillStyle = "#dc2626";
       ctx.fillRect(Math.min(width - 2, Math.max(0, playX)), 0, 2, CANVAS_HEIGHT);
     }
-  }, [peaks, markers, handles, deletions, captions, activeOrd, positionMs, width, msToX, hovered, span, view.from, tick]);
+  }, [peaks, markers, handles, deletions, hidden, captions, activeOrd, positionMs, width, msToX, hovered, span, view.from, tick]);
 
   useEffect(() => {
     draw();
@@ -544,7 +599,8 @@ export function Waveform({
       <Scrollbar view={view} total={total} onPan={panTo} onZoomTo={setView} />
       <div className="waveform-bar">
         <p className="waveform-hint">
-          滚轮缩放 · Shift+滚轮平移 · 拖动圆点调整句边界（只有被拖的词会变）· 红色区域是已删除
+          滚轮缩放 · Shift+滚轮平移 · 拖动圆点调整句边界（只有被拖的词会变）· 红色区域是已删除 ·
+          灰色竖线是已隐去（音频还在）
         </p>
         <div className="waveform-zoom">
           <span className="muted small">{formatSpan(span)}</span>

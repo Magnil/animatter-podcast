@@ -10,6 +10,7 @@ import test from "node:test";
 import {
   bubbleCenter,
   findActiveSentence,
+  hiddenSpans,
   isSingleWord,
   selectionRange,
   speakerConflict,
@@ -190,4 +191,56 @@ test("joining is only about the two adjacent sentences", () => {
     { token_start: 8, token_end: 12, speaker_id: 0 },
   ];
   assert.equal(speakerConflict(many, { from: 0, to: 12 }, "to_prev"), null);
+});
+
+test('hiddenSpans picks out only the hidden words', () => {
+  const tokens = [
+    { idx: 0, start_ms: 0, end_ms: 400, hidden: true },
+    { idx: 1, start_ms: 400, end_ms: 900 },
+    { idx: 2, start_ms: 900, end_ms: 1300, hidden: true },
+  ];
+  assert.deepEqual(hiddenSpans(tokens), [
+    { start_ms: 0, end_ms: 400 },
+    { start_ms: 900, end_ms: 1300 },
+  ]);
+});
+
+test('hiddenSpans merges adjacent hidden words into one mark', () => {
+  // Two filler words scraped out back to back are contiguous in time; two lines
+  // 1 px apart look like one thick misaligned line, so they are one span.
+  const tokens = [
+    { idx: 0, start_ms: 0, end_ms: 400, hidden: true },
+    { idx: 1, start_ms: 400, end_ms: 900, hidden: true },
+    { idx: 2, start_ms: 900, end_ms: 1300 },
+  ];
+  assert.deepEqual(hiddenSpans(tokens), [{ start_ms: 0, end_ms: 900 }]);
+});
+
+test('hiddenSpans merges across the silent gap between words', () => {
+  // Real transcripts have a 100-200 ms gap between words. Merging only when the
+  // times touch drew two lines for one selected run of seven words.
+  const tokens = [
+    { idx: 0, start_ms: 0, end_ms: 400, hidden: true },
+    { idx: 1, start_ms: 560, end_ms: 900, hidden: true },
+  ];
+  assert.deepEqual(hiddenSpans(tokens), [{ start_ms: 0, end_ms: 900 }]);
+});
+
+test('hiddenSpans keeps an audible word between two hidden ones', () => {
+  const tokens = [
+    { idx: 0, start_ms: 0, end_ms: 400, hidden: true },
+    { idx: 1, start_ms: 400, end_ms: 900 },
+    { idx: 2, start_ms: 900, end_ms: 1300, hidden: true },
+  ];
+  assert.equal(hiddenSpans(tokens).length, 2);
+});
+
+test('hiddenSpans ignores zero-length hidden tokens', () => {
+  // There is no audio at that instant, so a line would point at nothing.
+  const tokens = [{ idx: 0, start_ms: 400, end_ms: 400, hidden: true }];
+  assert.deepEqual(hiddenSpans(tokens), []);
+});
+
+test('hiddenSpans returns nothing when nothing is hidden', () => {
+  assert.deepEqual(hiddenSpans(words), []);
 });
