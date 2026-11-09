@@ -78,10 +78,16 @@ def build_cues(
 
     for sentence in rows:
         slice_tokens = tokens[sentence.token_start : sentence.token_end]
-        if not slice_tokens:
+        # Hidden words («嗯», «那个») are left out of the cue text but keep their
+        # time: the audio still contains them, so cutting the cue short would put
+        # the subtitle out of sync with what a listener hears.
+        spoken = [token for token in slice_tokens if not token.hidden]
+        if not spoken:
+            # Every word hidden: the sentence contributes no text. Its audio is
+            # still there, so the surrounding cues must not be moved.
             continue
 
-        text = "".join(token.text + token.punc_after for token in slice_tokens)
+        text = "".join(token.text + token.punc_after for token in spoken)
         start = slice_tokens[0].start_ms
         end = slice_tokens[-1].end_ms
 

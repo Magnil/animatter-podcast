@@ -87,6 +87,8 @@ class TokenOut(BaseModel):
     derived: bool
     #: A human rewrote this word; the editor paints it blue.
     revised: bool = False
+    #: A human hid this word from the text only; the audio still plays.
+    hidden: bool = False
 
 
 class SentenceOut(BaseModel):
@@ -280,6 +282,7 @@ def get_transcript(
             punc_after=t.punc_after,
             derived=t.derived,
             revised=t.revised,
+            hidden=t.hidden,
         )
         for t in tokens[first:last]
     ]

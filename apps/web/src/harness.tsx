@@ -42,15 +42,15 @@ const sentences: Sentence[] = [
 
 /** Index 1 was corrected (blue); 3 is fully cut, 4 is half cut (red). */
 const tokens: Token[] = [
-  { idx: 0, start_ms: 0, end_ms: 760, text: "今天", kind: "word", punc_after: "", derived: false, revised: false },
-  { idx: 1, start_ms: 760, end_ms: 1280, text: "咱们", kind: "word", punc_after: "", derived: false, revised: true },
-  { idx: 2, start_ms: 1280, end_ms: 1960, text: "聊播客", kind: "word", punc_after: "", derived: false, revised: false },
-  { idx: 3, start_ms: 1960, end_ms: 2120, text: "剪辑", kind: "word", punc_after: "", derived: false, revised: false },
-  { idx: 4, start_ms: 2120, end_ms: 2400, text: "流程", kind: "word", punc_after: "。", derived: false, revised: false },
-  { idx: 5, start_ms: 3709, end_ms: 4360, text: "首先", kind: "word", punc_after: "", derived: false, revised: false },
-  { idx: 6, start_ms: 4360, end_ms: 5160, text: "介绍一下", kind: "word", punc_after: "", derived: false, revised: false },
-  { idx: 7, start_ms: 5160, end_ms: 5560, text: "嘉宾", kind: "word", punc_after: "", derived: false, revised: false },
-  { idx: 8, start_ms: 5560, end_ms: 6440, text: "张三", kind: "word", punc_after: "。", derived: false, revised: false },
+  { idx: 0, start_ms: 0, end_ms: 760, text: "今天", kind: "word", punc_after: "", derived: false, revised: false, hidden: false },
+  { idx: 1, start_ms: 760, end_ms: 1280, text: "咱们", kind: "word", punc_after: "", derived: false, revised: true, hidden: false },
+  { idx: 2, start_ms: 1280, end_ms: 1960, text: "聊播客", kind: "word", punc_after: "", derived: false, revised: false, hidden: false },
+  { idx: 3, start_ms: 1960, end_ms: 2120, text: "剪辑", kind: "word", punc_after: "", derived: false, revised: false, hidden: false },
+  { idx: 4, start_ms: 2120, end_ms: 2400, text: "流程", kind: "word", punc_after: "。", derived: false, revised: false, hidden: false },
+  { idx: 5, start_ms: 3709, end_ms: 4360, text: "首先", kind: "word", punc_after: "", derived: false, revised: false, hidden: false },
+  { idx: 6, start_ms: 4360, end_ms: 5160, text: "介绍一下", kind: "word", punc_after: "", derived: false, revised: false, hidden: false },
+  { idx: 7, start_ms: 5160, end_ms: 5560, text: "嘉宾", kind: "word", punc_after: "", derived: false, revised: false, hidden: false },
+  { idx: 8, start_ms: 5560, end_ms: 6440, text: "张三", kind: "word", punc_after: "。", derived: false, revised: false, hidden: false },
 ];
 
 const speakers: SpeakerInfo[] = [
@@ -127,6 +127,7 @@ function Harness(): React.JSX.Element {
         onSeek={() => undefined}
         onDeleteWords={() => setNoted("delete")}
         onCorrectWord={(proposed) => setNoted(`correct:${proposed}`)}
+        onHideWords={(hidden) => setNoted(`hide:${hidden}`)}
         onBoundary={(action) => setNoted(`boundary:${action}`)}
         onAssignSpeaker={(localId, ords) => setNoted(`assign:${localId}:${ords.join(",")}`)}
         onCreateSpeaker={(ords) => setNoted(`create:${ords.join(",")}`)}

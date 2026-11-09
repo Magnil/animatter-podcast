@@ -120,6 +120,7 @@ def merge_segments(parts: list[NormalizedTranscript]) -> NormalizedTranscript:
                     punc_after=token.punc_after,
                     derived=token.derived,
                     revised=token.revised,
+                    hidden=token.hidden,
                 )
             )
         for span in part.sentences:

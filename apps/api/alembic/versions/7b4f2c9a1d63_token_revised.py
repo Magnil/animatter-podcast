@@ -26,7 +26,17 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+def _has_column(table: str, column: str) -> bool:
+    bind = op.get_bind()
+    rows = bind.execute(sa.text(f"PRAGMA table_info({table})")).fetchall()
+    return any(str(row[1]) == column for row in rows)
+
+
 def upgrade() -> None:
+    # Idempotent, like every migration here: ``tests/test_migrations.py`` rewinds
+    # ``alembic_version`` and replays, which is what a half-failed deploy does.
+    if _has_column("token", "revised"):
+        return
     # ``server_default`` is what makes the column NOT NULL without a table
     # rebuild: SQLite cannot add a NOT NULL column without a default, and every
     # existing token was produced by the ASR, so 0 is the correct value.
@@ -37,5 +47,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if not _has_column("token", "revised"):
+        return
     with op.batch_alter_table("token") as batch:
         batch.drop_column("revised")

@@ -15,6 +15,8 @@ export interface TokenLike {
   idx: number;
   start_ms: number;
   end_ms: number;
+  /** Set when a human hid this word from the text; the audio is untouched. */
+  hidden?: boolean;
 }
 
 export interface SentenceLike {
@@ -125,9 +127,11 @@ export function tokenRangeOfSentences(
 /**
  * A selection is a whole word when it covers exactly one token.
  *
- * This is the guard that keeps corrections 1:1. Rewriting several words at once
- * has to redistribute the window's interior boundaries, which is precisely how
- * a correction used to nudge a cut point the user had been listening for.
+ * No longer a guard on corrections — multi-word selections are corrected by
+ * merging them into one token (see `apply_replacement`, which collapses the
+ * window and leaves the outer boundaries exactly where they were). It survives
+ * because the bubble's wording differs between the two cases ("改写这个词" vs
+ * "把 3 个词合并成一个").
  */
 export function isSingleWord(range: TokenRange | null): boolean {
   return range !== null && range.to - range.from === 1;
@@ -140,8 +144,7 @@ export interface SpeakerSpan {
 }
 
 /**
- * Why a boundary action would put words under the wrong speaker, or `null`.
- *
+ * Why a boundary action would put words under the wrong speaker, or `null`. *
  * This mirrors the server rule so the button can be disabled *with a reason*
  * instead of accepting the click and coming back with a 400. The server stays
  * the authority — this only decides whether to offer the action in the first

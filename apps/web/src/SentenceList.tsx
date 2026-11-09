@@ -25,7 +25,6 @@ import type { Sentence, SpeakerInfo, Token } from "./api";
 import { charsPerSecond, formatTime } from "./format";
 import {
   bubbleCenter,
-  isSingleWord,
   selectionRange,
   speakerConflict,
   tokenRangeOfSentences,
@@ -49,8 +48,10 @@ interface Props {
   onSeek: (ms: number) => void;
   /** Cut the selected words out of the audio. */
   onDeleteWords: () => void;
-  /** Rewrite one word's text. Only ever called for a single-word selection. */
+  /** Rewrite the selection's text as one word. */
   onCorrectWord: (proposed: string) => void;
+  /** Hide the selected words from the text without touching the audio. */
+  onHideWords: (hidden: boolean) => void;
   onBoundary: (action: "new_sentence" | "to_prev" | "to_next" | "merge") => void;
   onAssignSpeaker: (localId: number | null, sentenceOrds: number[]) => void;
   onCreateSpeaker: (sentenceOrds: number[]) => void;
@@ -78,6 +79,7 @@ export function SentenceList({
   onSeek,
   onDeleteWords,
   onCorrectWord,
+  onHideWords,
   onBoundary,
   onAssignSpeaker,
   onCreateSpeaker,
@@ -193,17 +195,35 @@ export function SentenceList({
   }, [activeOrd, revealOrd]);
 
   const range = selectionRange(selection);
-  const single = isSingleWord(range);
 
   const isSelected = useCallback(
     (idx: number): boolean => range !== null && idx >= range.from && idx < range.to,
     [range],
   );
 
-  const selectedWord = useMemo(
-    () => (single && range ? tokens[range.from] ?? null : null),
-    [single, range, tokens],
-  );
+  /**
+   * Text of the whole selection, used to pre-fill the correction box.
+   *
+   * A multi-word selection is corrected as **one** word: the user dragged over
+   * e.g. «句级标签» and wants to write what it should have said. The token count
+   * shrinks to one on the server (the replacement text becomes a single token),
+   * which is exactly the "merge several words into one corrected word" the
+   * feature was asked for.
+   */
+  const selectedText = useMemo(() => {
+    if (!range) return "";
+    return tokens
+      .slice(range.from, range.to)
+      .map((token) => token.text)
+      .join("");
+  }, [range, tokens]);
+
+  /** Every word in the selection already hidden → the button un-hides. */
+  const allHidden = useMemo(() => {
+    if (!range) return false;
+    const picked = tokens.slice(range.from, range.to);
+    return picked.length > 0 && picked.every((token) => token.hidden);
+  }, [range, tokens]);
 
   const rangeOfSentence = useCallback(
     (sentence: Sentence): TokenRange => ({ from: sentence.token_start, to: sentence.token_end }),
@@ -298,6 +318,47 @@ export function SentenceList({
       window.removeEventListener("keydown", onKey);
     };
   }, []);
+
+  // Word-operation shortcuts. Del / Enter / Backspace act on the current word
+  // selection, which is the same target the bubble's three buttons act on —
+  // the shortcuts exist because reaching for the mouse to hit a 20 px button
+  // 200 times an hour is the slowest part of proofreading.
+  //
+  // Not handled here: Space and brackets, which the app-level handler owns.
+  // Deliberately *not* swallowed when there is no selection, either: a stray
+  // Backspace with nothing selected should do nothing, not silently hide the
+  // word under the playhead.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.isComposing) return;
+      // Never steal a key while the correction box (or any other field) is
+      // focused: Backspace there means "delete a character".
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
+      if (range === null || busy) return;
+      // Let a focused button keep its native Enter/Space activation.
+      if (target && target.tagName === "BUTTON" && event.key === "Enter") return;
+
+      if (event.key === "Delete") {
+        event.preventDefault();
+        setCorrecting(null);
+        onDeleteWords();
+      } else if (event.key === "Enter") {
+        // Multi-word selections are corrected as one word (see selectedText).
+        event.preventDefault();
+        setCorrecting(selectedText);
+      } else if (event.key === "Backspace") {
+        // Backspace, not Delete, hides: the two keys sit next to each other and
+        // "remove the text but keep the sound" is the softer of the two, which
+        // is the softer of the two keys.
+        event.preventDefault();
+        setCorrecting(null);
+        onHideWords(!allHidden);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [allHidden, busy, onDeleteWords, onHideWords, range, selectedText]);
 
   // A new target invalidates any open editor; keeping it open would apply the
   // typed text to a different word than the one it was opened on.
@@ -449,6 +510,7 @@ export function SentenceList({
             deletedRanges,
           ) === "deleted";
           const touched = slice.some((token) => token.revised);
+          const hiddenCount = slice.filter((token) => token.hidden).length;
 
           return (
             <div
@@ -536,6 +598,14 @@ export function SentenceList({
                 <span className="sentence-meta">
                   {wholeDeleted ? <span className="removed-tag">已删除</span> : null}
                   {touched ? <span className="revised-tag">已修改</span> : null}
+                  {hiddenCount > 0 ? (
+                    <span
+                      className="hidden-tag"
+                      title={`${hiddenCount} 个词只在字幕里隐去，音频还在`}
+                    >
+                      已隐去 {hiddenCount}
+                    </span>
+                  ) : null}
                   {tooFast ? (
                     <span className="warn" title={`每秒 ${cps.toFixed(1)} 字，超出阅读速度`}>
                       语速过快
@@ -559,6 +629,7 @@ export function SentenceList({
                         isSelected(token.idx) ? "selected" : "",
                         token.derived ? "derived" : "",
                         token.revised ? "revised" : "",
+                        token.hidden ? "hidden-word" : "",
                         state === "deleted" ? "cut" : "",
                         state === "partial" ? "partly-cut" : "",
                       ]
@@ -568,7 +639,7 @@ export function SentenceList({
                       tabIndex={0}
                       title={`${formatTime(token.start_ms)} – ${formatTime(token.end_ms)}${
                         token.derived ? "（时间为插值估算）" : ""
-                      }`}
+                      }${token.hidden ? "（字幕里已隐去，音频仍在）" : ""}`}
                       onMouseDown={(event) => {
                         event.preventDefault();
                         handleWordDown(token.idx, event);
@@ -607,22 +678,38 @@ export function SentenceList({
                   setCorrecting(null);
                   onDeleteWords();
                 }}
-                title="把选中的词从音频里剪掉"
+                title="把选中的词从音频里剪掉（Del）"
               >
                 ✂ 删除
               </button>
               <button
                 type="button"
                 className="bubble-fix"
-                disabled={busy || !single || selectedWord === null}
-                onClick={() => setCorrecting(selectedWord ? selectedWord.text : "")}
+                disabled={busy}
+                onClick={() => setCorrecting(selectedText)}
                 title={
-                  single
-                    ? "改写这个词（时间不变）"
-                    : "一次只能修正一个词：改多个词会移动它们之间的时间点"
+                  range.to - range.from === 1
+                    ? "改写这个词，时间不变（Enter）"
+                    : `把选中的 ${range.to - range.from} 个词合并成一个修正后的词，时间范围不变（Enter）`
                 }
               >
                 ✎ 修正
+              </button>
+              <button
+                type="button"
+                className="bubble-hide"
+                disabled={busy}
+                onClick={() => {
+                  setCorrecting(null);
+                  onHideWords(!allHidden);
+                }}
+                title={
+                  allHidden
+                    ? "把这些词放回字幕，音频本来就没动（Backspace）"
+                    : "只在字幕里去掉这些词，音频不剪（Backspace）"
+                }
+              >
+                {allHidden ? "◇ 恢复" : "◌ 隐去"}
               </button>
             </>
           ) : (

@@ -998,3 +998,52 @@ H1 = 一个观点型标题 + 两段散文（第一段讲这件事为什么值得
 680 后端用例（+29）、139 前端用例（+6）、`ruff` / `mypy --strict` / `tsc` /
 `vite build` 全绿。
 
+## 字幕区三件事：隐去、快捷键、多词修正（2026-11-09）
+
+**要的是什么**：口水词要能从字幕里去掉，但**不能剪音频**——剪了会在句子里留一个
+可听见的空洞。原来的两个操作都做不到：`deletion` 同时删音频和文字，`revised` 改文字
+但保留它。
+
+| 改动 | 之前 | 之后 |
+|---|---|---|
+| 隐去 | 无 | `token.hidden`，音频、时间、编号全不动，只从字幕/文稿里跳过 |
+| 快捷键 | 无 | `Del` 删除 / `Enter` 修正 / `Backspace` 隐去 |
+| 多词修正 | 禁用（"一次只能修正一个词"） | 拖选 N 个词合并成 1 个，外边界不变 |
+
+**为什么隐去不做成「带标记的 deletion」**：`deletion` 行进 EDL，进 EDL 的东西最终会
+到渲染器。单独的布尔字段从结构上就不可能漏进音频路径——这不是靠代码自律，是靠
+数据流。测试 `test_hiding_does_not_move_any_timestamp` 和
+`test_subtitle_text_omits_hidden_words_but_keeps_the_timing` 守住这两点。
+
+**为什么修正会取消隐去**：改写一个词是"这个字应该说成什么"的决定，改完还藏着
+等于把这个决定丢了。
+
+**多词修正暴露的一个真 bug**：第一次在真实转写稿上合并 3 个词，服务端 500，
+`UNIQUE constraint failed: token.version_id, token.idx`。根因是重排编号的写法：
+收缩 3 个 token 时第 5 行想拿第 2 行的编号，而第 2 行还在；旧实现"从后往前逐个改"
+只在恰好按这个顺序发 UPDATE 时才对，而顺序不由这段代码控制。改成**两段式**：
+先把整个尾部挪到所有存活编号之上（`+1_000_000`），再落回最终位置，两步都与顺序无关。
+`test_multi_word_correction_renumbers_without_colliding` 复现了这个场景。
+
+**另一个真 bug（迁移）**：加 `token.hidden` 之后，`test_running_the_migration_twice_
+does_not_duplicate_tokens` 开始报 `CircularDependencyError`。原因是
+`batch_alter_table` 从**当前** schema 重建表——重放 `7b4f2c9a1d63`（加 `revised`）时
+那一列已经在表里了，于是列排序的 pair list 出现环。修法：两个迁移都加
+`PRAGMA table_info` 幂等守卫，和 `4e18c2a9f7b1_deletion_batch_id` 一直以来的写法一致。
+`7b4f2c9a1d63` 之前只是**侥幸**能重放，这个测试补上了「重放后表结构不变」的断言。
+
+**顺手修的**：句首 meta 区的标签没有 gap，`已修改` 和 `已隐去 1` 挤成
+`已修改已隐去 1`，读起来像一个长标签。
+
+**验证**：真机走查四项——气泡三个按钮都在且标题带快捷键；三个键都真的触发对应操作
+（`afterBackspace.hidden` 多了刚选中的词，`afterDelete.cut` 有了刚删的词）；
+Shift+点选 3 个词后 Enter，输入框预填「小广她」，提交「送別」后变成一个词且后续
+文本不前移。700 后端用例（+21）、136 前端用例、ruff / mypy --strict / tsc /
+vite build 全绿。
+
+**走查污染了真实项目，已还原**：走查会真的改 `data/app.db`。删掉的删除区间已恢复、
+6 个 hidden 标记已清除、3→1 的文本合并已用项目存档
+（`data/projects/prj_1m6v2m8anfpyqq3w8qt/播客-费那奇MV.project`）恢复——逐 token
+比对文本差异为 0，13 条走查产生的 `edit_op` 已删除。以后的走查脚本应该跑在临时
+项目上，或者写明「会修改真实数据」。
+

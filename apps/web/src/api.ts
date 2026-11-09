@@ -85,6 +85,8 @@ export interface Token {
   derived: boolean;
   /** A human rewrote this word; rendered blue. */
   revised: boolean;
+  /** A human hid this word from the text only; the audio still plays. */
+  hidden: boolean;
 }
 
 export interface SpeakerInfo {
@@ -237,6 +239,22 @@ export const api = {
           token_end: tokenEnd,
           proposed,
         }),
+      },
+    ),
+
+  /**
+   * Hide words from the text only — the audio is untouched.
+   *
+   * The filler-word operation: cutting «嗯» out of the render leaves an audible
+   * gap, while leaving it in the subtitle looks sloppy. One endpoint for both
+   * directions so a toggle cannot drift out of sync with the server.
+   */
+  hideWords: (versionId: string, tokenStart: number, tokenEnd: number, hidden = true) =>
+    request<{ token_start: number; token_end: number; changed: number; hidden: boolean }>(
+      `/api/versions/${versionId}/hide`,
+      {
+        method: "POST",
+        body: JSON.stringify({ token_start: tokenStart, token_end: tokenEnd, hidden }),
       },
     ),
 

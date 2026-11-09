@@ -157,6 +157,12 @@ class Token(Base):
     #: edits renumber ``idx``), and the editor colours *what was written* versus
     #: *what was observed*, which stays true even after an undo.
     revised: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: True once a human hid this word **from the text output only** — it stays
+    #: in the audio. This is the answer to filler words («嗯», «那个»): cutting
+    #: their audio makes the speech sound chopped, but leaving them in the
+    #: subtitles looks sloppy. A third state is needed because neither existing
+    #: one is right: ``deletion`` removes sound, ``revised`` rewrites text.
+    hidden: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class Sentence(Base):

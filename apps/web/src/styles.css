@@ -196,6 +196,12 @@ button.ghost:hover:not(:disabled) {
   margin-bottom: 4px;
 }
 
+.sentence-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .sentence-time {
   background: transparent;
   color: var(--muted);
@@ -293,6 +299,26 @@ button.ghost:hover:not(:disabled) {
   font-weight: 400;
 }
 
+/* Hidden from the text, still in the audio: neither "deleted" (which claims the
+   sound is gone) nor "revised" (which implies the word now says something else).
+   Dotted strike-through plus a muted colour reads as "present but omitted", and
+   unlike the solid red of a deletion it does not suggest a cut. */
+.token.hidden-word {
+  color: var(--muted);
+  text-decoration: line-through;
+  text-decoration-style: dotted;
+  text-decoration-thickness: 1px;
+  opacity: 0.75;
+}
+
+.token.hidden-word::after {
+  content: "◌";
+  font-size: 0.58em;
+  vertical-align: super;
+  margin-left: 1px;
+  opacity: 0.8;
+}
+
 /* Selection wins over both states: while the bubble is open, what is selected
    has to be unmistakable, and a blue-on-blue word would not be. */
 .token.cut.selected,
@@ -325,6 +351,12 @@ button.ghost:hover:not(:disabled) {
 .word-bubble .bubble-cut {
   background: var(--danger);
   border-color: var(--danger);
+}
+
+/* Softer than delete and quieter than correct: hiding a filler word is the least
+   destructive of the three, and it sits between them in the bubble. */
+.word-bubble .bubble-hide {
+  border-style: dashed;
 }
 
 .bubble-form {
@@ -495,6 +527,14 @@ button.ghost:hover:not(:disabled) {
   color: var(--accent);
   font-size: 0.76rem;
   border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 0 0.25rem;
+}
+
+.hidden-tag {
+  color: var(--muted);
+  font-size: 0.76rem;
+  border: 1px dashed var(--muted);
   border-radius: 3px;
   padding: 0 0.25rem;
 }

@@ -257,6 +257,30 @@ def edit_text(
     )
 
 
+class HideIn(BaseModel):
+    token_start: int
+    token_end: int
+    #: ``true`` hides, ``false`` un-hides — one endpoint for both directions so
+    #: the toggle cannot drift out of sync.
+    hidden: bool = True
+
+
+@router.post("/versions/{version_id}/hide")
+def hide_words(
+    version_id: str,
+    payload: HideIn,
+    session: Session = Depends(_session_dependency),
+) -> dict[str, object]:
+    """Hide words from the text without touching the audio."""
+    return edit_service.apply_hide(
+        session,
+        version_id,
+        token_start=payload.token_start,
+        token_end=payload.token_end,
+        hidden=payload.hidden,
+    )
+
+
 @router.get("/versions/{version_id}/history")
 def history(version_id: str, session: Session = Depends(_session_dependency)) -> list[dict[str, object]]:
     """Operation log for the history panel, newest first."""

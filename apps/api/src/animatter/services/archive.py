@@ -90,6 +90,7 @@ def _dump_tokens(version_id: str, session: Session) -> list[dict[str, Any]]:
             "kind": row.kind,
             "src_word_idx": row.src_word_idx,
             "revised": row.revised,
+            "hidden": row.hidden,
         }
         for row in rows
     ]
@@ -338,6 +339,7 @@ def load_project(
                 kind=str(token.get("kind", "char")),
                 src_word_idx=int(token.get("src_word_idx", -1)),
                 revised=bool(token.get("revised", False)),
+                hidden=bool(token.get("hidden", False)),
             )
         )
 

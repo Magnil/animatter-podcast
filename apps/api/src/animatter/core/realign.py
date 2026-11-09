@@ -121,6 +121,10 @@ def _reinterpolate(tokens: list[TokenSpan], span: TokenRange, new_text: str) -> 
                 derived=True,
                 # This text is now what a person wrote, not what the ASR heard.
                 revised=True,
+                # Rewriting a word un-hides it: the user has just decided what
+                # this word should say, so keeping it out of the subtitles would
+                # discard that decision.
+                hidden=False,
             )
         )
 

@@ -348,17 +348,7 @@ def _replace_token_window(
     session.flush()
 
     if delta != 0:
-        tail = list(
-            session.scalars(
-                select(Token)
-                .where(Token.version_id == version.id, Token.idx >= token_range.end)
-                .order_by(Token.idx)
-            )
-        )
-        # Shift from the end so intermediate collisions cannot happen.
-        for row in reversed(tail):
-            row.idx += delta
-        session.flush()
+        _shift_token_indices(session, version.id, at_token=token_range.end, delta=delta)
 
     new_count = token_range.length + delta
     for token in rewritten[token_range.start : token_range.start + new_count]:
@@ -374,6 +364,7 @@ def _replace_token_window(
                 punc_after=token.punc_after,
                 derived=token.derived,
                 revised=token.revised,
+                hidden=token.hidden,
             )
         )
 
@@ -384,6 +375,34 @@ def _replace_token_window(
         version.token_count += delta
     session.flush()
 
+
+#: Temporary gap used while renumbering. Large enough that no renumbered row can
+#: land on a live one, small enough to stay comfortable in SQLite's INTEGER.
+_RENUMBER_GAP = 1_000_000
+
+
+def _shift_token_indices(session: Session, version_id: str, *, at_token: int, delta: int) -> None:
+    """Move every token at or after ``at_token`` by ``delta``, never colliding.
+
+    ``token`` has a UNIQUE ``(version_id, idx)``, so the rows cannot simply be
+    given their new numbers one at a time: shrinking by 2 makes row 5 want index
+    3 while row 3 still holds it, and the order in which the unit of work emits
+    those UPDATEs is not something this function controls.
+
+    The fix is a two-phase move: park the whole tail above every live index, then
+    bring it down to the final position. Both phases are order-independent, which
+    is the property that makes them safe — the previous "shift from the end"
+    loop only looked safe because it happened to be the order SQLAlchemy chose,
+    and a multi-word correction (which shrinks by more than one) hit the unique
+    constraint on a real transcript.
+    """
+    session.query(Token).filter(Token.idx >= at_token, Token.version_id == version_id).update(
+        {Token.idx: Token.idx + _RENUMBER_GAP}, synchronize_session=False
+    )
+    session.query(Token).filter(
+        Token.idx >= at_token + _RENUMBER_GAP, Token.version_id == version_id
+    ).update({Token.idx: Token.idx - _RENUMBER_GAP + delta}, synchronize_session=False)
+    session.flush()
 
 def _shift_sentences(session: Session, version_id: str, *, at_token: int, delta: int) -> None:
     from animatter.core.realign import shift_ranges_after
@@ -397,6 +416,65 @@ def _shift_sentences(session: Session, version_id: str, *, at_token: int, delta:
         row.token_end = end
         row.updated_at = utcnow_iso()
     session.flush()
+
+
+# --- hiding words from the text (not from the audio) ---------------------
+
+
+def apply_hide(
+    session: Session,
+    version_id: str,
+    *,
+    token_start: int,
+    token_end: int,
+    hidden: bool = True,
+) -> dict[str, object]:
+    """Mark a token range hidden — gone from the subtitles, still audible.
+
+    This is the operation for filler words. Deleting «嗯» removes half a second of
+    audio and leaves an audible gap; the user wanted it out of the *subtitle*, not
+    out of the *speech*. So the token keeps its timing, its text and its place in
+    the timeline — it is simply skipped when the transcript is rendered for
+    output.
+
+    Deliberately not modelled as a deletion with a flag: ``deletion`` rows feed
+    the EDL, and anything in the EDL eventually reaches the renderer. A separate
+    boolean on the token cannot leak into the audio path by construction.
+    """
+    version = _version_or_raise(session, version_id)
+    tokens = transcribe_service.load_tokens(session, version_id)
+    if not 0 <= token_start < token_end <= len(tokens):
+        raise EditError(
+            "token_range_invalid",
+            f"选区 {token_start}–{token_end} 超出范围（共 {len(tokens)} 个 token）",
+            "重新选择要隐去的文字。",
+        )
+
+    # Only the words that actually change are recorded, so undoing a hide that
+    # covered an already-hidden word does not un-hide it.
+    changed = [i for i in range(token_start, token_end) if tokens[i].hidden != hidden]
+    if not changed:
+        return {"token_start": token_start, "token_end": token_end, "changed": 0, "hidden": hidden}
+
+    session.query(Token).filter(
+        Token.version_id == version.id,
+        Token.idx.in_(changed),
+    ).update({Token.hidden: hidden}, synchronize_session=False)
+    session.flush()
+
+    _record(
+        session,
+        version,
+        op_type="hide",
+        payload={
+            "token_start": token_start,
+            "token_end": token_end,
+            "indices": changed,
+            "hidden": hidden,
+            "text": "".join(tokens[i].text for i in range(token_start, token_end)),
+        },
+    )
+    return {"token_start": token_start, "token_end": token_end, "changed": len(changed), "hidden": hidden}
 
 
 # --- boundary dragging --------------------------------------------------
@@ -495,6 +573,7 @@ _OP_LABELS: dict[str, str] = {
     "boundary_time": "拖动边界时间",
     "retoken_text": "应用校对修正",
     "cleanup": "一键清理",
+    "hide": "隐去文字",
 }
 
 #: Human-facing names for the cleanup categories, shared with the dialog.
@@ -539,6 +618,9 @@ def describe_op(op: EditOp) -> dict[str, object]:
             if count
         ]
         detail = " · ".join(parts) if parts else f"{payload.get('deletions', 0)} 处"
+    elif op.op_type == "hide":
+        verb = "隐去" if payload.get("hidden", True) else "恢复"
+        detail = f"{verb}「{payload.get('text', '')}」"
 
     return {
         "id": op.id,
@@ -548,9 +630,10 @@ def describe_op(op: EditOp) -> dict[str, object]:
         "detail": detail,
         "created_at": op.created_at,
         "undone": op.undone,
-        # Boundary ops restore a stored snapshot; cleanup ops flip a known set
-        # of deletion rows back on. Both are exact, so both are undoable.
-        "undoable": op.op_type in {"boundary", "cleanup"} and not op.undone,
+        # Boundary and hide ops restore a recorded state; cleanup ops flip a
+        # known set of deletion rows back on. All three are exact, so all three
+        # are undoable.
+        "undoable": op.op_type in {"boundary", "cleanup", "hide"} and not op.undone,
     }
 
 
@@ -578,7 +661,7 @@ def undo_op(session: Session, version_id: str, op_id: str | None = None) -> dict
         raise EditError("nothing_to_undo", "没有可撤销的操作")
     if op.undone:
         raise EditError("already_undone", "该操作已经撤销过了")
-    if op.op_type not in {"boundary", "cleanup"}:
+    if op.op_type not in {"boundary", "cleanup", "hide"}:
         raise EditError(
             "undo_unsupported",
             f"「{_OP_LABELS.get(op.op_type, op.op_type)}」不支持直接撤销",
@@ -598,6 +681,22 @@ def undo_op(session: Session, version_id: str, op_id: str | None = None) -> dict
         )
 
     payload = json.loads(op.payload_json)
+
+    if op.op_type == "hide":
+        # Restore exactly the indices the operation flipped, not the whole
+        # recorded range: a word inside that range that was already hidden for a
+        # different reason must stay hidden.
+        indices = [int(v) for v in payload.get("indices") or []]
+        was_hidden = bool(payload.get("hidden", True))
+        if indices:
+            session.query(Token).filter(
+                Token.version_id == version_id,
+                Token.idx.in_(indices),
+            ).update({Token.hidden: not was_hidden}, synchronize_session=False)
+        op.undone = True
+        session.flush()
+        log.info("edit.undo_hide", op_id=op.id, restored=len(indices))
+        return {"undone": op.id, "op_type": op.op_type}
 
     if op.op_type == "cleanup":
         from animatter.models import Deletion as DeletionRow

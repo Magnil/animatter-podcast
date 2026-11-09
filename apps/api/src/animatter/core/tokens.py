@@ -63,6 +63,9 @@ class TokenSpan:
     #: ``True`` once a human rewrote this token. Defaulted so every constructor
     #: that predates the flag keeps working and means "untouched".
     revised: bool = False
+    #: ``True`` once a human hid this word from the *text* while leaving its
+    #: audio in place. Defaulted for the same reason as ``revised``.
+    hidden: bool = False
 
 
 def _is_cjk(text: str) -> bool:
@@ -135,6 +138,7 @@ def expand_words(words: list[WordSpan], *, start_idx: int = 0) -> list[TokenSpan
                     punc_after=previous.punc_after + word.punctuation,
                     derived=previous.derived,
                     revised=previous.revised,
+                    hidden=previous.hidden,
                 )
             continue
 

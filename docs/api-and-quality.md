@@ -28,6 +28,9 @@ GET    /api/versions/{vid}/transcript?from=&to=        句子分页
 PATCH  /api/versions/{vid}/sentences/{sid}             改文本
 POST   /api/versions/{vid}/boundaries                  重划句边界
        body: {action:'new_sentence'|'to_prev'|'to_next', from:int, to:int}
+POST   /api/versions/{vid}/hide                        隐去文字（不动音频）
+       body: {token_start:int, token_end:int, hidden:bool=true}
+       一个端点两个方向：`hidden:false` 是恢复，省得两个端点各存一半状态
 POST   /api/versions/{vid}/undo  |  /redo
 
 POST   /api/versions/{vid}/deletions                   删除（token 或 range）

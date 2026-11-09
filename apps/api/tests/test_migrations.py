@@ -184,10 +184,25 @@ def test_migration_marks_tokens_as_words_and_updates_the_count(char_db: Path) ->
 
 
 def test_running_the_migration_twice_does_not_duplicate_tokens(char_db: Path) -> None:
-    """A failed-then-retried deploy must not append a second copy."""
+    """A failed-then-retried deploy must not append a second copy.
+
+    Also asserts the ``token`` table's shape is unchanged by the replay. Two
+    separate migrations add a boolean to it (``revised``, then ``hidden``), and
+    adding the second one made this replay fail with ``CircularDependencyError``:
+    ``batch_alter_table`` rebuilds the table from the *current* schema, so by the
+    time it re-added ``revised`` the column was already there and its column
+    ordering developed a cycle. Both migrations now guard on
+    ``PRAGMA table_info``, the way ``deletion_batch_id`` always did.
+
+    The rewind point is ``CHAR_REVISION`` rather than the initial schema: earlier
+    revisions create tables without guards, so replaying them is a different (and
+    larger) promise than "this deploy can be retried".
+    """
+    columns_before = _token_columns(char_db)
     cfg = _config(char_db)
     command.upgrade(cfg, "head")
     first = _read(char_db)
+    columns_head = _token_columns(char_db)
 
     con = _connect(char_db)
     try:
@@ -198,6 +213,19 @@ def test_running_the_migration_twice_does_not_duplicate_tokens(char_db: Path) ->
     command.upgrade(cfg, "head")
 
     assert _read(char_db) == first
+    assert _token_columns(char_db) == columns_head
+    # Both flags must actually be there, or the replay "passing" would just mean
+    # the migrations silently did nothing.
+    assert {"revised", "hidden"} <= set(columns_head), columns_head
+    assert columns_before != columns_head  # the upgrade really added a column
+
+
+def _token_columns(db_path: Path) -> list[str]:
+    con = _connect(db_path)
+    try:
+        return [str(row[1]) for row in con.execute("PRAGMA table_info(token)")]
+    finally:
+        con.close()
 
 
 def test_single_character_words_are_not_glued_together(tmp_path: Path) -> None:

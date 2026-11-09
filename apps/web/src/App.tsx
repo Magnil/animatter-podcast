@@ -504,6 +504,28 @@ function Desk({
     });
   }, [boot.version.id, onReload, onSelectionChange, onSentenceSelectionChange, run, selectionRange]);
 
+  /**
+   * Hide the selected words from the text, leaving the audio alone.
+   *
+   * `hidden` is a toggle, not a one-way switch: the same button un-hides, which
+   * is the only way back short of the history panel. A selection that mixes
+   * hidden and visible words becomes hidden — "make these disappear" is the
+   * request, and a mixed outcome would look like the click did nothing.
+   */
+  const hideRange = useCallback(
+    async (hidden: boolean) => {
+      const range = selectionRange();
+      if (!range) return;
+      await run(hidden ? "隐去" : "恢复文字", async () => {
+        await api.hideWords(boot.version.id, range.from, range.to, hidden);
+        await onReload();
+        onSelectionChange(null);
+        onSentenceSelectionChange(new Set());
+      });
+    },
+    [boot.version.id, onReload, onSelectionChange, onSentenceSelectionChange, run, selectionRange],
+  );
+
   const undoDeletion = useCallback(async () => {
     const rows = await api.deletions(boot.version.id);
     const last = rows[rows.length - 1];
@@ -1058,6 +1080,7 @@ function Desk({
               onSeek={playback.seek}
               onDeleteWords={() => void deleteRange()}
               onCorrectWord={(proposed) => void applyTextEdit(proposed)}
+              onHideWords={(hidden) => void hideRange(hidden)}
               onBoundary={(action) => void applyBoundary(action)}
               onAssignSpeaker={(localId, ords) => void assignSpeaker(localId, ords)}
               onCreateSpeaker={(ords) => void createSpeaker(ords)}

@@ -107,7 +107,12 @@ def _sentences(session: Session, version_id: str, time_map: TimeMap | None) -> l
         slice_tokens = tokens[row.token_start : row.token_end]
         if not slice_tokens:
             continue
-        text = "".join(token.text + token.punc_after for token in slice_tokens).strip()
+        # Hidden filler words are dropped from the text handed to the model, so a
+        # ShowNotes summary cannot quote a word the published subtitle omits.
+        # Timing still comes from the full slice: the audio is unchanged.
+        text = "".join(
+            token.text + token.punc_after for token in slice_tokens if not token.hidden
+        ).strip()
         if not text:
             continue
         start = slice_tokens[0].start_ms

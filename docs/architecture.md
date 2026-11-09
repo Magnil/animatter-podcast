@@ -140,7 +140,9 @@ token(id INTEGER PK AUTOINCREMENT,
       kind TEXT,                                 -- 'char' | 'word' | 'punct'
       src_word_idx INT,                          -- 来源于第几个 ASR word
       punc_after TEXT,                           -- 该 token 后的标点
-      derived INT)                               -- 1 = 时间由插值估算
+      derived INT,                               -- 1 = 时间由插值估算
+      revised INT DEFAULT 0,                     -- 1 = 人改过文字（蓝字）
+      hidden INT DEFAULT 0)                      -- 1 = 只在字幕里隐去，音频还在
 
 -- 句：**唯一可变**的结构，用 token 区间表达
 sentence(id TEXT PK, version_id TEXT,
