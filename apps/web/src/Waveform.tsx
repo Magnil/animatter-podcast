@@ -604,7 +604,7 @@ export function Waveform({
         onPointerLeave={() => setHovered(null)}
         role="slider"
         tabIndex={0}
-        aria-label="音频波形：点击跳转，拖动圆点调整句边界，滚轮缩放"
+        aria-label="音频波形：点击跳转，拖动圆点调整句边界，滚轮缩放（放大缩小只能用滚轮和下方按钮）"
         aria-valuemin={0}
         aria-valuemax={durationMs}
         aria-valuenow={Math.round(positionMs)}
