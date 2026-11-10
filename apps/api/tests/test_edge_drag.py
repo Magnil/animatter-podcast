@@ -119,6 +119,58 @@ def test_move_end_backward_keeps_minimum_duration() -> None:
     assert outcome.clamped is True
 
 
+# --- the last token in the file -----------------------------------------
+
+
+def test_move_last_end_forward_extends_into_the_tail() -> None:
+    # Regression: the last token's upper bound used to be its own current end,
+    # so the final sentence's end could only be dragged *earlier*. Dragging it
+    # later was clamped, and the reason blamed a neighbouring word that does not
+    # exist. Extending the tail is the standard fix for a clipped last syllable,
+    # so this was the one direction that mattered.
+    tokens = toks(("一", 0, 400), ("二", 800, 1200))
+    updated, outcome = adjust_token_edge(tokens, 1, "end", 1500, duration_ms=3695928)
+    assert updated.end_ms == 1500
+    assert outcome.clamped is False
+
+
+def test_move_last_end_stops_at_the_end_of_the_file() -> None:
+    tokens = toks(("一", 0, 400))
+    updated, outcome = adjust_token_edge(tokens, 0, "end", 999_999, duration_ms=5000)
+    assert updated.end_ms == 5000
+    assert outcome.clamped is True
+    # The message must not blame an adjacent word: there is none after the last.
+    assert "相邻" not in outcome.reason
+    assert "文件结尾" in outcome.reason
+
+
+def test_move_last_end_without_a_known_duration_is_unbounded_forward() -> None:
+    # `None` means "the caller does not know the duration". Guessing a cap would
+    # be worse than leaving it open: a wrong cap silently truncates a drag.
+    tokens = toks(("一", 0, 400))
+    updated, outcome = adjust_token_edge(tokens, 0, "end", 90_000)
+    assert updated.end_ms == 90_000
+    assert outcome.clamped is False
+
+
+def test_move_last_end_backward_still_keeps_minimum_duration() -> None:
+    tokens = toks(("一", 1000, 1400))
+    updated, outcome = adjust_token_edge(tokens, 0, "end", 0, duration_ms=5000)
+    assert updated.end_ms == 1000 + MIN_TOKEN_MS
+    assert outcome.clamped is True
+    assert "不能早于" in outcome.reason
+
+
+def test_non_last_end_forward_is_still_bounded_by_the_next_word() -> None:
+    # The fix must not open up the ordinary case: an interior token still cannot
+    # grow into the next word.
+    tokens = toks(("一", 0, 400), ("二", 800, 1200), ("三", 1600, 2000))
+    updated, outcome = adjust_token_edge(tokens, 1, "end", 1900, duration_ms=9999)
+    assert updated.end_ms == 1600
+    assert outcome.clamped is True
+    assert "相邻" in outcome.reason
+
+
 # --- guard rails --------------------------------------------------------
 
 

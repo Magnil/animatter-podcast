@@ -251,29 +251,44 @@ class EdgeAdjustment:
     reason: str = ""
 
 
-def clamp_edge(new_ms: int, low: int, high: int) -> EdgeAdjustment:
+def clamp_edge(new_ms: int, low: int, high: int, *, above_reason: str = "") -> EdgeAdjustment:
     """Clamp a dragged boundary into ``[low, high]``.
 
     ``low``/``high`` come from the adjacent tokens, so a drag can never cause an
     overlap or reorder the stream — it can only consume silence between words.
+
+    ``above_reason`` overrides the message for the upper bound. The default
+    blames the neighbouring word, which is only true when there *is* one.
     """
     if high < low:
         low, high = high, low
     if new_ms < low:
         return EdgeAdjustment(applied_ms=low, clamped=True, reason=f"不能早于 {low}ms（会与相邻字重叠）")
     if new_ms > high:
-        return EdgeAdjustment(applied_ms=high, clamped=True, reason=f"不能晚于 {high}ms（会与相邻字重叠）")
+        return EdgeAdjustment(
+            applied_ms=high, clamped=True, reason=above_reason or f"不能晚于 {high}ms（会与相邻字重叠）"
+        )
     return EdgeAdjustment(applied_ms=new_ms, clamped=False)
 
 
 def adjust_token_edge(
-    tokens: list[TokenSpan], index: int, edge: str, new_ms: int
+    tokens: list[TokenSpan],
+    index: int,
+    edge: str,
+    new_ms: int,
+    *,
+    duration_ms: int | None = None,
 ) -> tuple[TokenSpan, EdgeAdjustment]:
     """Move one token's ``start`` or ``end`` to ``new_ms``, clamped to neighbours.
 
     Only the addressed token changes. Every other token keeps its exact timing,
     which is the whole point: a fix to a sentence boundary must not nudge the
     words inside it.
+
+    ``duration_ms`` bounds *forward* drags of the **last** token, whose only
+    neighbour would otherwise be the end of the file. It defaults to ``None``
+    ("unknown"), which leaves the tail unbounded — a caller that knows the
+    duration should pass it.
     """
     if edge not in {"start", "end"}:
         raise RealignError(f"未知的边界方向 {edge!r}")
@@ -292,8 +307,24 @@ def adjust_token_edge(
         return replace(token, start_ms=outcome.applied_ms), outcome
 
     low = token.start_ms + MIN_TOKEN_MS
-    high = tokens[index + 1].start_ms if index + 1 < len(tokens) else max(low, token.end_ms)
-    outcome = clamp_edge(new_ms, low, high)
+    if index + 1 < len(tokens):
+        high = tokens[index + 1].start_ms
+        above_reason = ""
+    else:
+        # The last token has no following word to collide with. Before this
+        # branch existed the bound was the token's *own* current end, so the end
+        # of the last sentence could only be dragged **earlier** — dragging it
+        # later was silently clamped, with a message blaming a neighbouring word
+        # that does not exist. The tail of a recording is exactly where a
+        # clipped final syllable gets fixed, so that was the one direction
+        # users needed.
+        if duration_ms is None:
+            high = max(low, new_ms)
+            above_reason = ""
+        else:
+            high = max(low, duration_ms)
+            above_reason = f"不能晚于文件结尾 {duration_ms}ms"
+    outcome = clamp_edge(new_ms, low, high, above_reason=above_reason)
     if outcome.applied_ms == token.end_ms:
         return token, outcome
     return replace(token, end_ms=outcome.applied_ms), outcome

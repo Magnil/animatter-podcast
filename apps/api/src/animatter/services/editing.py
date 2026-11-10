@@ -515,7 +515,9 @@ def adjust_boundary_edge(
         raise EditError("token_not_found", f"token {token_index} 不存在", "刷新转录后重试。")
 
     try:
-        updated, outcome = adjust_token_edge(tokens, token_index, edge, new_ms)
+        updated, outcome = adjust_token_edge(
+            tokens, token_index, edge, new_ms, duration_ms=version.duration_ms or None
+        )
     except RealignError as exc:
         raise EditError("edge_adjust_failed", str(exc)) from exc
 
