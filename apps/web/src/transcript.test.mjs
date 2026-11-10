@@ -15,6 +15,7 @@ import {
   selectionRange,
   selectionState,
   speakerConflict,
+  rowOfToken,
   tokenAt,
   tokenRangeOfSentences,
   wordState,
@@ -344,4 +345,25 @@ test("tokenAt reports a miss in the pause between two words", () => {
 
 test("tokenAt is empty for an empty transcript", () => {
   assert.equal(tokenAt([], 0), -1);
+});
+
+test("rowOfToken maps a word to its sentence", () => {
+  const rows = [
+    { token_start: 0, token_end: 7 },
+    { token_start: 7, token_end: 12 },
+  ];
+  assert.equal(rowOfToken(rows, 0), 0);
+  assert.equal(rowOfToken(rows, 6), 0);
+  // Half-open on the sentence side: 7 is the *next* sentence's first word.
+  assert.equal(rowOfToken(rows, 7), 1);
+  assert.equal(rowOfToken(rows, 11), 1);
+});
+
+test("rowOfToken reports a miss outside every sentence", () => {
+  // A stale selection can outlive a reload that shortened the transcript. It must
+  // not throw and must not claim the nearest row.
+  const rows = [{ token_start: 0, token_end: 7 }];
+  assert.equal(rowOfToken(rows, 7), -1);
+  assert.equal(rowOfToken(rows, 999), -1);
+  assert.equal(rowOfToken([], 0), -1);
 });

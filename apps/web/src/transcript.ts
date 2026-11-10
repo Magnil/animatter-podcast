@@ -159,6 +159,25 @@ export function findActiveSentence(sentences: SentenceLike[], positionMs: number
 }
 
 /**
+ * Index of the row whose token range contains `tokenIndex`, or -1.
+ *
+ * Half-open on the sentence side too: a sentence covering `[40, 47)` owns 40
+ * through 46, and the token at 47 belongs to the next sentence. Off by one here
+ * scrolls to the neighbouring row, which looks like "it scrolled to the wrong
+ * sentence" rather than like an arithmetic error.
+ */
+export function rowOfToken(
+  rows: { token_start: number; token_end: number }[],
+  tokenIndex: number,
+): number {
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
+    if (row && tokenIndex >= row.token_start && tokenIndex < row.token_end) return index;
+  }
+  return -1;
+}
+
+/**
  * Index of the word covering `ms`, or -1 when the moment falls in silence.
  *
  * Half-open, like every other interval here: a word ending at 1000 and the next

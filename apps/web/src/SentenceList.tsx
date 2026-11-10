@@ -30,6 +30,7 @@ import { charsPerSecond, formatTime } from "./format";
 import { audibleStart } from "./navigation";
 import {
   bubbleCenter,
+  rowOfToken,
   selectionRange,
   selectionState,
   speakerConflict,
@@ -225,7 +226,18 @@ export function SentenceList({
     if (performance.now() - userScrolledAt.current < FOLLOW_GRACE_MS) return;
     revealOrd(activeOrd);
   }, [activeOrd, revealOrd]);
-  const range = selectionRange(selection);
+  /**
+   * The selection as a range, memoised.
+   *
+   * Identity matters here, not just the values. This used to be a bare
+   * `selectionRange(selection)` call, which builds a fresh object on every
+   * render, so the reveal effect below — which depends on it — ran after *every*
+   * render. Scrolling re-renders the list (`setScrollTop`), the effect woke up,
+   * found the selected word no longer on screen, and scrolled it back. The
+   * transcript became unscrollable after a click on the waveform: every attempt
+   * to move was undone on the next frame.
+   */
+  const range = useMemo(() => selectionRange(selection), [selection]);
 
   /**
    * Bring a word that was selected elsewhere into view.
@@ -235,23 +247,26 @@ export function SentenceList({
    * reader had scrolled to, and a highlight off screen is not a highlight — the
    * user asked 「同时选中对应的词高亮」 and would see nothing happen.
    *
-   * `rowVisible` is what keeps this from fighting the user: a click inside the
-   * sentence already on screen changes the selection every time, and scrolling
-   * then would move the word out from under the pointer that just picked it.
+   * Two things keep this from fighting the user:
+   *
+   * * It runs when the **selection** changes, not on every render (see the
+   *   memo above). This is the actual fix for the scroll lock — the guard has to
+   *   be in the dependency list, because by the time the effect body runs it
+   *   cannot tell "the user scrolled away" from "the selection moved".
+   * * `rowVisible` stops it from scrolling a word that is already on screen: a
+   *   click inside the visible row changes the selection every time, and
+   *   scrolling then would move the word out from under the pointer that just
+   *   picked it.
    */
   useEffect(() => {
     if (!range) return;
-    const token = tokens[range.from];
-    if (!token) return;
-    const row = sentences.findIndex(
-      (sentence) => range.from >= sentence.token_start && range.from < sentence.token_end,
-    );
+    const row = rowOfToken(sentences, range.from);
     if (row < 0) return;
     const element = listRef.current;
     if (!element) return;
     if (rowVisible(row, heights.current, element.scrollTop, element.clientHeight)) return;
     revealOrd(sentences[row]?.ord ?? row);
-  }, [range, revealOrd, sentences, tokens]);
+  }, [range, revealOrd, sentences]);
 
   const isSelected = useCallback(
     (idx: number): boolean => range !== null && idx >= range.from && idx < range.to,
