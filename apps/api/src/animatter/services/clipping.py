@@ -55,6 +55,37 @@ def get_version(session: Session, version_id: str) -> TranscriptVersion:
     return version
 
 
+def get_active_version(session: Session, project_id: str) -> TranscriptVersion:
+    """The project's active transcript version.
+
+    Needed by routes that are addressed by ``project_id`` (the video timeline stores
+    blocks per project, but every length comes from *a* transcript). Falls back to
+    the newest version when nothing is flagged active, because a project that has a
+    transcript but a stale ``is_active`` flag should still open.
+    """
+    version = session.scalars(
+        select(TranscriptVersion)
+        .where(TranscriptVersion.project_id == project_id, TranscriptVersion.is_active.is_(True))
+        .order_by(TranscriptVersion.version.desc())
+    ).first()
+    if version is not None:
+        return version
+
+    latest = session.scalars(
+        select(TranscriptVersion)
+        .where(TranscriptVersion.project_id == project_id)
+        .order_by(TranscriptVersion.version.desc())
+    ).first()
+    if latest is None:
+        raise AppError(
+            "version_not_found",
+            "这个项目还没有转写结果",
+            hint="先完成一次转写，再剪视频。",
+            status=404,
+        )
+    return latest
+
+
 def list_deletions(session: Session, version_id: str) -> list[DeletionRow]:
     return list(
         session.scalars(

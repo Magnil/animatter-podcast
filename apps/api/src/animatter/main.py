@@ -34,12 +34,14 @@ from animatter.routers import (
     speakers,
     subtitles,
     transcribe,
+    video,
 )
 from animatter.routers import (
     script as script_router,
 )
 from animatter.routers import settings as settings_router
 from animatter.services import renders as renders_service
+from animatter.services import video_render as video_render_service
 
 VERSION = "0.1.0"
 
@@ -71,6 +73,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # A render queued by the previous process cannot finish: its thread died with
     # it. Mark those rows failed now, or the UI polls a job that never completes.
     renders_service.fail_orphaned(app.state.db)
+    video_render_service.fail_orphaned(app.state.db)
     log.info("app.ready", version=VERSION, data_dir=str(settings.data_dir), db=str(settings.db_path))
     try:
         yield
@@ -127,6 +130,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(labels.router)
     app.include_router(script_router.router)
     app.include_router(align.router)
+    app.include_router(video.router)
     return app
 
 
