@@ -15,6 +15,7 @@ import {
   DEFAULT_ROW_HEIGHT,
   estimateRowHeight,
   planWindow,
+  rowVisible,
   scrollOffsetFor,
   sumHeights,
 } from "./virtualList.ts";
@@ -124,4 +125,45 @@ test("the window never exceeds the row count", () => {
   assert.equal(plan.start, 0);
   assert.equal(plan.end, 3);
   assert.equal(plan.paddingBottom, 0);
+});
+
+test("rowVisible is true for a row fully on screen", () => {
+  const heights = uniform(100, 50);
+  // Rows 0..9 occupy 0..500; row 4 is 200..250.
+  assert.equal(rowVisible(4, heights, 0, 500), true);
+  assert.equal(rowVisible(4, heights, 200, 500), true);
+});
+
+test("rowVisible is false for a row scrolled past", () => {
+  const heights = uniform(100, 50);
+  // Scrolled to 1000, row 4 (200..250) is above the viewport.
+  assert.equal(rowVisible(4, heights, 1000, 500), false);
+  // Row 40 (2000..2050) is below it.
+  assert.equal(rowVisible(40, heights, 0, 500), false);
+});
+
+test("rowVisible is false for a partly visible row", () => {
+  // Half a row showing is not "in view": the word highlight could be in the
+  // hidden half, which is exactly what the caller is trying to prevent.
+  const heights = uniform(100, 50);
+  assert.equal(rowVisible(4, heights, 225, 500), false);
+});
+
+test("rowVisible accepts a row taller than the viewport that fills it", () => {
+  // A 900 px row can never be fully inside a 400 px viewport. A strict test
+  // would scroll the list on every word clicked in such a row, and tall rows are
+  // ordinary in this pane — so the test inverts for them.
+  const heights = new Map([[3, 900]]);
+  const above = sumHeights(0, 3, heights);
+  assert.equal(rowVisible(3, heights, above, 400), true);
+  assert.equal(rowVisible(3, heights, above + 300, 400), true);
+  // Scrolled so the row is gone entirely: not visible any more.
+  assert.equal(rowVisible(3, heights, above + 900, 400), false);
+});
+
+test("rowVisible is false for a missing row or an unmeasured viewport", () => {
+  assert.equal(rowVisible(-1, new Map(), 0, 500), false);
+  // Before the first ResizeObserver callback the viewport reads 0; treating that
+  // as "nothing is visible" keeps the reveal path from scrolling on mount.
+  assert.equal(rowVisible(0, uniform(10, 50), 0, 0), false);
 });

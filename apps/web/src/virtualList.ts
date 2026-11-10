@@ -170,3 +170,35 @@ export function scrollOffsetFor(
   // words the user just asked to see.
   return Math.max(0, above - Math.max(0, viewportHeight - height) / 2);
 }
+
+/**
+ * Whether row `index` can already be seen inside the scroller.
+ *
+ * The reason this is not "call `scrollOffsetFor` and compare": that function
+ * centres the row, so using it as a visibility test scrolls every time. Clicking
+ * a word in the sentence you are already reading must not move the list; a
+ * selection that arrived from the waveform, hundreds of rows away, must bring it
+ * back. Only a predicate can tell those two apart.
+ *
+ * Rows taller than the viewport are the case that makes or breaks it. Such a row
+ * can never be *fully* visible, so a strict containment test would scroll on
+ * every word clicked anywhere in it — and tall rows are ordinary at this pane
+ * width. For them the test inverts to "does this row already fill the screen",
+ * which is both reachable and what the caller means.
+ */
+export function rowVisible(
+  index: number,
+  heights: Map<number, number>,
+  scrollTop: number,
+  viewportHeight: number,
+): boolean {
+  if (index < 0 || viewportHeight <= 0) return false;
+  const fallback = estimateRowHeight(heights);
+  const above = sumHeights(0, index, heights, fallback);
+  const height = rowHeight(index, heights, fallback);
+  const bottom = above + height;
+  if (height > viewportHeight) {
+    return above <= scrollTop + 1 && bottom >= scrollTop + viewportHeight - 1;
+  }
+  return above >= scrollTop - 1 && bottom <= scrollTop + viewportHeight + 1;
+}
