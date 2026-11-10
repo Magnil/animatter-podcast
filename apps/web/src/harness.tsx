@@ -72,6 +72,9 @@ function Harness(): React.JSX.Element {
     scene === "multi" ? new Set([0, 1]) : new Set(),
   );
   const [noted, setNoted] = useState("");
+  // Only the harness tracks this: the real app reads it from usePlayback. Scene
+  // "playing" starts hot so the ⏸ button can be screenshot in its enabled state.
+  const [playing, setPlaying] = useState(scene === "playing");
 
   useEffect(() => {
     // Drive the real handler so the bubble gets a real DOM rect; synthesising

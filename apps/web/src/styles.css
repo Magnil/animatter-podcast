@@ -241,8 +241,19 @@ button.ghost:hover:not(:disabled) {
   display: flex;
   flex-wrap: wrap;
   gap: 0;
-  font-size: 1.05rem;
-  line-height: 2;
+  /* Two steps down the type scale from 1.05rem (≈15.75px → 13.5px), and the
+   * leading from 2 to 1.5.
+   *
+   * Why: at 1.05rem/2 the transcript fit ~6 sentences per screen at 1440×900,
+   * so reviewing an hour of audio meant paging constantly. The work here is
+   * reading along, and reading density beats generous leading — 1.5 still
+   * leaves room for the selection bubble to sit under a word without touching
+   * the line below (the bubble is absolutely positioned; it needs that gap).
+   *
+   * 0.9rem is the floor: the tap target is the whole word, and CJK glyphs get
+   * hard to tell apart (日/目, 末/未) when they shrink further. */
+  font-size: 0.9rem;
+  line-height: 1.5;
 }
 
 .token {
