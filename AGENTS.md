@@ -48,6 +48,7 @@
 | 前端布局、波形、虚拟列表、交互 | [`docs/frontend.md`](docs/frontend.md) | §7 |
 | 接口形状、错误码、测试分层、崩溃恢复、密钥、成本 | [`docs/api-and-quality.md`](docs/api-and-quality.md) | §8–§12 |
 | 已经拍板的决策、容易被漏掉的坑 | [`docs/decisions.md`](docs/decisions.md) | §14 §15 |
+| 视频剪辑：模板编译、素材框、头像亮暗、渲染管线 | [`docs/video.md`](docs/video.md) | §19 |
 | 做到哪了、还差什么 | [`docs/milestones.md`](docs/milestones.md) | §13 |
 | **某个东西当初为什么这么做** | [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | 按日期 |
 | 手头排队的活 | [`todolist.md`](todolist.md) | — |
