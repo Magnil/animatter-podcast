@@ -60,22 +60,25 @@ class TemplateView:
             "canvas_h": self.row.canvas_h,
             "box_rect": json.loads(self.row.box_rect or "{}"),
             "box_fit_default": self.row.box_fit_default,
-            "background_url": asset_url(self.row.background_path, self.row.status),
-            "overlay_url": asset_url(self.row.overlay_path, self.row.status),
+            "background_url": asset_url(self.row.project_id, self.row.background_path, self.row.status),
+            "overlay_url": asset_url(self.row.project_id, self.row.overlay_path, self.row.status),
             "slots": self.slots,
             "compiled_at": self.row.compiled_at,
         }
 
 
-def asset_url(path: str, status: str) -> str:
+def asset_url(project_id: str, path: str, status: str) -> str:
     """Turn a stored path into an API URL, or ``""`` when there is nothing to serve.
 
-    Only the *file name* appears in the URL, so an absolute filesystem path never
-    reaches the browser.
+    The project id is part of the URL because the route is project-scoped, and only the
+    *file name* appears in it — an absolute filesystem path never reaches the browser.
+    Forgetting the id here produced a URL that 404'd while looking perfectly valid,
+    which is exactly why the router test fetches the URL the response hands back
+    instead of building one itself.
     """
     if status != "ready" or not path:
         return ""
-    return f"/api/video/template/asset/{Path(path).name}"
+    return f"/api/projects/{project_id}/video/template/asset/{Path(path).name}"
 
 
 def video_dir(settings: Settings, project_id: str) -> Path:

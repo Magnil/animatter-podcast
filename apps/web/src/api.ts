@@ -825,6 +825,86 @@ export const api = {
         body: JSON.stringify({ sentence_ords: sentenceOrds, local_id: localId }),
       },
     ),
+
+  // --- video -------------------------------------------------------------
+
+  /** `null` means "this project has no template yet", which is a normal state. */
+  videoTemplate: (projectId: string) =>
+    request<VideoTemplate | null>(`/api/projects/${projectId}/video/template`),
+
+  importVideoTemplate: (projectId: string, path: string) =>
+    request<VideoTemplate>(`/api/projects/${projectId}/video/template`, {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    }),
+
+  recompileVideoTemplate: (projectId: string) =>
+    request<VideoTemplate>(`/api/projects/${projectId}/video/template/recompile`, {
+      method: "POST",
+    }),
+
+  updateVideoTemplate: (projectId: string, boxFitDefault: string) =>
+    request<VideoTemplate>(`/api/projects/${projectId}/video/template`, {
+      method: "PATCH",
+      body: JSON.stringify({ box_fit_default: boxFitDefault }),
+    }),
+
+  videoTimeline: (versionId: string) =>
+    request<VideoTimeline>(`/api/versions/${versionId}/video/timeline`),
+
+  addVideoItem: (
+    versionId: string,
+    body: {
+      kind?: string;
+      start_ms: number;
+      end_ms: number;
+      fit?: string;
+      snap?: boolean;
+      asset_id?: string;
+      gallery_json?: string;
+    },
+  ) =>
+    request<VideoItem>(`/api/versions/${versionId}/video/items`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  patchVideoItem: (
+    itemId: string,
+    body: {
+      start_ms?: number;
+      end_ms?: number;
+      fit?: string;
+      snap?: boolean;
+    },
+  ) =>
+    request<VideoItem>(`/api/video/items/${itemId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
+  deleteVideoItem: (itemId: string) =>
+    request<void>(`/api/video/items/${itemId}`, { method: "DELETE" }),
+
+  /** One composited frame at `atMs` on the **output** timeline. */
+  videoPreview: (versionId: string, atMs: number) =>
+    request<{ url: string; at_ms: number }>(
+      `/api/versions/${versionId}/video/preview?at_ms=${Math.max(0, Math.round(atMs))}`,
+    ),
+
+  previewUrl: (projectId: string, name: string) =>
+    `/api/video/preview/file/${encodeURIComponent(name)}?project_id=${encodeURIComponent(projectId)}`,
+
+  exportVideo: (
+    versionId: string,
+    options: { burn_subtitles?: boolean; font_name?: string; font_size?: number } = {},
+  ) =>
+    request<VideoExport>(`/api/versions/${versionId}/video/export`, {
+      method: "POST",
+      body: JSON.stringify(options),
+    }),
+
+  videoExport: (exportId: string) => request<VideoExport>(`/api/video/exports/${exportId}`),
 };
 
 export const mediaIdFromVersion = (versionId: string): string => versionId;
@@ -903,4 +983,84 @@ export interface HistoryEntry {
   created_at: string;
   undone: boolean;
   undoable: boolean;
+}
+
+// --- video (AGENTS.md §19) ----------------------------------------------
+
+export interface VideoRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface VideoAvatarSlot {
+  name: string;
+  rect: VideoRect;
+  photo: VideoRect;
+  /** The PSD's own name plate text. Flattened into the background as artwork. */
+  label: string;
+  lit_path: string;
+  dim_path: string;
+}
+
+export interface VideoTextSlot {
+  name: string;
+  rect: VideoRect;
+  text: string;
+}
+
+export interface VideoTemplate {
+  id: string;
+  status: "pending" | "compiling" | "ready" | "failed";
+  error: string;
+  canvas_w: number;
+  canvas_h: number;
+  box_rect: VideoRect;
+  box_fit_default: string;
+  background_url: string;
+  overlay_url: string;
+  slots: {
+    avatars?: VideoAvatarSlot[];
+    texts?: VideoTextSlot[];
+    notes?: string[];
+  };
+  compiled_at: string | null;
+}
+
+export interface VideoItem {
+  id: string;
+  kind: "media" | "gallery" | "slide";
+  /** Original-timeline edges, snapped to a sentence start. */
+  start_ms: number;
+  end_ms: number;
+  /** Length of the block's own edges — **not** what it plays for. */
+  duration_ms: number;
+  /** Length after the audio cuts are applied: the block plays continuously this long. */
+  output_ms: number;
+  z: number;
+  fit: string;
+  motion: string;
+  asset_id: string | null;
+  deck_id: string | null;
+  slide_id: string | null;
+  gallery_json: string;
+  orphaned: boolean;
+}
+
+export interface VideoTimeline {
+  grid: { boundaries: number[]; targets: number[]; duration_ms: number };
+  items: VideoItem[];
+  original_duration_ms: number;
+  output_duration_ms: number;
+  removed_ms: number;
+}
+
+export interface VideoExport {
+  id: string;
+  status: "queued" | "running" | "done" | "failed";
+  progress: number;
+  duration_ms: number;
+  url: string;
+  error: string | null;
 }

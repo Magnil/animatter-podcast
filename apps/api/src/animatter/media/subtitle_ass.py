@@ -44,6 +44,25 @@ _CJK_FONT_CANDIDATES: Final[tuple[str, ...]] = (
     "Source Han Sans SC",
 )
 
+#: Family name → the file names Windows ships it under. Substring matching alone is
+#: not enough: 「Microsoft YaHei」 is ``msyh.ttc``, and ``"microsoftyahei" in "msyh"`` is
+#: false — so the guard rejected a font that *was* installed and told the user to
+#: install it, which is worse than saying nothing. This table exists because the
+#: mapping is not derivable; the fallback below still handles anything not listed.
+_FONT_FILES: Final[dict[str, tuple[str, ...]]] = {
+    "microsoftyahei": ("msyh", "msyhbd"),
+    "microsoftyaheiui": ("msyh", "msyhbd"),
+    "simhei": ("simhei",),
+    "simsun": ("simsun", "simsunb"),
+    "simkai": ("simkai",),
+    "fangsong": ("simfang",),
+    "pingfangsc": ("pingfang",),
+    "notosanscjksc": ("notosanscjksc", "notosanscjk"),
+    "sourcehansanssc": ("sourcehansanssc", "sourcehansans"),
+    "microsoftjhenghei": ("msjh", "msjhbd"),
+    "microsoftyaheiui-light": ("msyhl",),
+}
+
 #: Where Windows keeps its fonts. Checked rather than assumed so the error message
 #: can say what was looked for.
 _FONT_DIRS: Final[tuple[Path, ...]] = (
@@ -178,17 +197,26 @@ def write_ass(path: Path, cues: list[AssCue], *, style: SubtitleStyle, title: st
 def find_font(name: str) -> Path | None:
     """Locate a font file by family name, or ``None``.
 
-    A cheap substring match over the platform font directory. It is not a font
-    database, and it does not need to be: its only job is to answer "will libass
-    find something for this family, or will it silently substitute?".
+    Two passes, because neither alone is right:
+
+    1. the known family → file-name table (「Microsoft YaHei」 is ``msyh.ttc``, and no
+       amount of substring matching derives that);
+    2. a substring match, for any font not in the table.
+
+    Its only job is to answer "will libass find something for this family, or will it
+    silently substitute?" — it is not a font database.
     """
-    stem = name.lower().replace(" ", "")
-    for directory in _FONT_DIRS:
-        if not directory.is_dir():
-            continue
-        for candidate in directory.iterdir():
-            if candidate.suffix.lower() not in {".ttf", ".ttc", ".otf"}:
-                continue
+    key = name.lower().replace(" ", "").replace("-", "")
+    stems = _FONT_FILES.get(key, (key,))
+    files = [
+        candidate
+        for directory in _FONT_DIRS
+        if directory.is_dir()
+        for candidate in directory.iterdir()
+        if candidate.suffix.lower() in {".ttf", ".ttc", ".otf"}
+    ]
+    for stem in stems:
+        for candidate in files:
             if stem in candidate.stem.lower().replace(" ", ""):
                 return candidate
     return None

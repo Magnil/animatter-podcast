@@ -1793,3 +1793,106 @@ button.small,
   font-size: 0.7rem;
   white-space: nowrap;
 }
+
+/* --- video area (docs/frontend.md 搂7.7) ------------------------------------
+   Sits above the waveform, collapsed by default. The preview box keeps a 16:9
+   aspect so the layout does not jump when the first still arrives 鈥?a panel that
+   grows by 400px the moment you click 鐢熸垚闈欏抚 pushes the waveform off-screen. */
+.video-panel {
+  gap: 8px;
+}
+
+.video-preview-box {
+  aspect-ratio: 16 / 9;
+  width: 100%;
+  max-height: 260px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+}
+
+.video-preview-box img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.video-ready {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.video-box-info {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.video-box-info summary {
+  cursor: pointer;
+  font-size: 0.82rem;
+}
+
+.video-box-info ul {
+  margin: 6px 0;
+  padding-left: 18px;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+/* An orphaned block is not an error state 鈥?it is a block whose audio the user
+   deleted. Red would say "you broke something"; the muted strike-through says
+   "this has no sound any more". */
+.video-item.is-orphan .video-item-len {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+
+.video-items ul,
+.video-orphans ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.video-item,
+.video-orphans li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+}
+
+.video-item-when {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.video-item-len {
+  font-variant-numeric: tabular-nums;
+}
+
+/* A download that looks like a button: the export finish state has to be
+   clickable without inventing a second button style. */
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 0.82rem;
+}
+
+.button-link:hover {
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+}

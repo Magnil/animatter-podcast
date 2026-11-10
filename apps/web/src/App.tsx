@@ -31,6 +31,7 @@ import { MenuBar, type Menu } from "./MenuBar";
 import { SentenceList, findActiveSentence, tokenRangeOfSentences, type TokenSelection } from "./SentenceList";
 import { SettingsDialog, type SettingsSection } from "./SettingsDialog";
 import { Waveform, type EdgeHandle, type Marker } from "./Waveform";
+import { VideoPanel } from "./VideoPanel";
 import {
   audibleStart,
   audibleStop,
@@ -241,6 +242,10 @@ function Desk({
   // "save, then load it back" needs no copying and no guesswork.
   const [lastArchive, setLastArchive] = useState<{ path: string; filename: string } | null>(null);
   const [showSubtitles, setShowSubtitles] = useState(false);
+  // The video area sits above the waveform and is collapsed by default: most sessions
+  // are audio-only, and a feature nobody switched on must not cost vertical space on
+  // every edit (docs/frontend.md §7.7).
+  const [showVideo, setShowVideo] = useState(false);
   // Which generation the 导出 menu asked for. Kept as state rather than two
   // booleans so opening the panel means "generate this", not "open a dialog".
   const [scriptFormat, setScriptFormat] = useState<ScriptFormat>("shownotes");
@@ -976,6 +981,14 @@ function Desk({
               void onReload();
             },
           },
+          "separator",
+          {
+            id: "video",
+            label: "显示视频区",
+            hint: "时间轴上方，默认收起",
+            checked: showVideo,
+            onSelect: () => setShowVideo((value) => !value),
+          },
         ],
       },
       {
@@ -1083,6 +1096,7 @@ function Desk({
       setSettingsOpen,
       setSettingsSection,
       settings,
+      showVideo,
     ],
   );
   /**
@@ -1250,6 +1264,16 @@ function Desk({
               </span>
             ) : null}
           </div>
+
+          {showVideo ? (
+            <VideoPanel
+              projectId={boot.projectId}
+              versionId={boot.version.id}
+              positionMs={playback.positionMs}
+              hasDeletions={(edl?.deletions.length ?? 0) > 0}
+              onNotice={setNotice}
+            />
+          ) : null}
 
           <Waveform
             projectId={boot.projectId}

@@ -175,6 +175,30 @@ def test_find_font_is_case_and_space_insensitive() -> None:
     assert find_font(family.replace(" ", "")) is not None
 
 
+def test_find_font_maps_known_windows_family_names() -> None:
+    """「Microsoft YaHei」 is ``msyh.ttc``; substring matching cannot derive that.
+
+    The first version of this guard only did a substring match, so it reported a
+    perfectly installed font as missing and told the user to install it — a worse
+    failure than staying quiet, because the advice is wrong.
+    """
+    if find_font("SimHei") is None:
+        pytest.skip("这台机器上没有中文 Windows 字体")
+    # Either the table resolves it or the machine genuinely lacks it; what must not
+    # happen is "installed but reported missing".
+    yahei = find_font("Microsoft YaHei")
+    if yahei is None:
+        pytest.skip("这台机器上没有微软雅黑")
+    assert yahei.is_file()
+    assert "msyh" in yahei.stem.lower()
+
+
+def test_ensure_font_accepts_microsoft_yahei_when_installed() -> None:
+    if find_font("Microsoft YaHei") is None:
+        pytest.skip("这台机器上没有微软雅黑")
+    ensure_font(SubtitleStyle())  # the default style is Microsoft YaHei
+
+
 def test_find_font_returns_none_for_nonsense() -> None:
     assert find_font("zzzz-not-a-font-zzzz") is None
 
