@@ -8,6 +8,7 @@
 
 import { useState } from "react";
 import type { HotwordItem } from "./api";
+import { CollapsiblePanel } from "./CollapsiblePanel";
 import { HotwordEditor, describeHotwords, type HotwordTab } from "./HotwordEditor";
 
 interface Props {
@@ -30,11 +31,11 @@ export function HotwordPanel({
   const [tab, setTab] = useState<HotwordTab>("episode");
 
   return (
-    <div className="panel hotword-panel">
-      <div className="panel-head">
-        <h3>热词</h3>
-        <span className="muted small">{describeHotwords(globalHotwords, episodeHotwords)}</span>
-      </div>
+    <CollapsiblePanel
+      title="热词"
+      summary={describeHotwords(globalHotwords, episodeHotwords)}
+      className="hotword-panel"
+    >
       <HotwordEditor
         projectId={projectId}
         mediaId={mediaId}
@@ -46,6 +47,6 @@ export function HotwordPanel({
         onNotice={onNotice}
         allowOutline
       />
-    </div>
+    </CollapsiblePanel>
   );
 }

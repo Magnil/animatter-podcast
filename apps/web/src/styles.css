@@ -178,7 +178,8 @@ button.ghost:hover:not(:disabled) {
 }
 
 .sentence-list {
-  padding-top: 8px;
+  padding-top: 2px;
+  padding-bottom: 4px;
 }
 
 .sentence {
@@ -798,6 +799,34 @@ button.danger {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+
+/* Summary, head controls and the 收起/展开 toggle share the right end. Wrapping
+   is allowed: 热词's summary line ("本次会带入 31 个热词（全局 2 · 本期 29）") is
+   long, and forcing it onto one row squeezed the toggle off the panel. */
+.panel-head-tools {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* Collapsed: the panel is its title row and nothing else.
+   The padding is trimmed rather than the row being squeezed with a negative
+   margin — a header that overlaps its own border looks like a layout bug, and
+   the row still reads as one row at 6px. */
+.collapsible-panel.is-collapsed {
+  padding: 6px 10px;
+}
+
+/* A collapsed panel must not reserve the flex height its body used to need.
+   Without this, 操作记录 keeps its 26vh even with nothing in it, and collapsing
+   frees nothing — the whole point of the button. */
+.sidebar .collapsible-panel.is-collapsed {
+  flex: 0 0 auto;
+  max-height: none;
 }
 
 .panel-head h3 {

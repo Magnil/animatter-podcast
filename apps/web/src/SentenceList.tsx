@@ -16,8 +16,12 @@
  *   word a human rewrote is blue + pale blue. Both survive a reload because they
  *   are properties of the token, not of the session.
  * * **Sentence structure lives one click away.** 另起一句 / 并入上句 / 并入下句 sit
- *   in a rail at the left-middle of this pane, so the operation is next to the
- *   text it acts on instead of in a bar across the room.
+ *   in the pane's title row, so the operation is next to the text it acts on
+ *   instead of in a bar across the room. The row is titled 字幕 and the buttons
+ *   sit at its right end: the title says what the column *is*, the buttons say
+ *   what you can do to it, and the subtitle text below needs no further label.
+ *   There is deliberately no 收起 here — this pane is the work, not reference
+ *   material, so folding it away is the one thing nobody wants.
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";

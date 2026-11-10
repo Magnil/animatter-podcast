@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api, type HistoryEntry } from "./api";
+import { CollapsiblePanel } from "./CollapsiblePanel";
 
 interface Props {
   versionId: string;
@@ -52,14 +53,15 @@ export function HistoryPanel({ versionId, revision, onUndone, onNotice }: Props)
   };
 
   return (
-    <div className="panel history-panel">
-      <div className="panel-head">
-        <h3>操作记录</h3>
+    <CollapsiblePanel
+      title="操作记录"
+      className="history-panel"
+      actions={
         <button type="button" className="ghost small" onClick={() => void reload()} disabled={busy}>
           刷新
         </button>
-      </div>
-
+      }
+    >
       {error ? <p className="error-text">{error}</p> : null}
 
       {entries.length === 0 ? (
@@ -93,7 +95,7 @@ export function HistoryPanel({ versionId, revision, onUndone, onNotice }: Props)
           ))}
         </ol>
       )}
-    </div>
+    </CollapsiblePanel>
   );
 }
 
