@@ -361,7 +361,7 @@ def test_counts_are_zero_on_a_fresh_version(
     client: TestClient, session: Session, seeded: dict[str, str]
 ) -> None:
     counts = client.get(f"/api/versions/{seeded['version']}/cleanup/counts").json()["counts"]
-    assert counts == {"filler": 0, "disfluency": 0, "silence": 0}
+    assert counts == {"filler": 0, "disfluency": 0, "silence": 0, "hidden_filler": 0}
 
 
 # --- settings do not retroactively rewrite ------------------------------

@@ -36,6 +36,12 @@ class DeletionIn(BaseModel):
     end_ms: int | None = None
 
 
+class RestoreWordsIn(BaseModel):
+    """Which words to bring back from the deletion set."""
+
+    token_ids: list[int]
+
+
 class DeletionOut(BaseModel):
     id: str
     start_ms: int
@@ -93,6 +99,22 @@ def add_deletion(
             "没有指定要删除的内容",
             hint="传 token_ids（字级删除）或 start_ms/end_ms（波形框选）。",
         )
+    return [
+        DeletionOut(id=row.id, start_ms=row.start_ms, end_ms=row.end_ms, source=row.source) for row in rows
+    ]
+
+
+@router.post("/versions/{version_id}/deletions/restore", response_model=list[DeletionOut])
+def restore_token_deletion(
+    version_id: str, payload: RestoreWordsIn, session: Session = Depends(_session_dependency)
+) -> list[DeletionOut]:
+    """Take back the deletion of these words, leaving the rest of each cut cut.
+
+    Word-scoped rather than row-scoped: the editor's 「还」 button is pressed on a
+    word, and a sentence delete covers dozens of them. Restoring the row would
+    bring back audio the user never pointed at.
+    """
+    rows = clipping_service.restore_token_deletion(session, version_id, payload.token_ids)
     return [
         DeletionOut(id=row.id, start_ms=row.start_ms, end_ms=row.end_ms, source=row.source) for row in rows
     ]

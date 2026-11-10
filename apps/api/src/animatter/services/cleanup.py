@@ -106,6 +106,19 @@ def _deleted_token_ids(session: Session, version_id: str) -> set[int]:
     return gone
 
 
+def _hidden_token_ids(session: Session, version_id: str) -> set[int]:
+    """Token indices already hidden from the text (batch or by hand).
+
+    The filler finder skips these: a word the user hid on purpose must not come
+    back as a proposal to *delete* its audio, which is the opposite of what they
+    asked for.
+    """
+    rows = session.scalars(
+        select(Token).where(Token.version_id == version_id, Token.hidden.is_(True))
+    ).all()
+    return {row.idx for row in rows}
+
+
 def _tokens(session: Session, version_id: str) -> list[tuple[int, str, int, int]]:
     rows = session.scalars(select(Token).where(Token.version_id == version_id).order_by(Token.idx)).all()
     return [(row.idx, row.text, row.start_ms, row.end_ms) for row in rows]
@@ -179,6 +192,7 @@ def plan(
             min_disfluency_ms=min_disfluency_ms or int(stored["cleanup_min_disfluency_ms"]),
             sentence_of=_sentence_of(session, version_id),
             deleted=_deleted_token_ids(session, version_id),
+            hidden=_hidden_token_ids(session, version_id),
         )
     )
 
@@ -241,6 +255,7 @@ def apply(
             min_disfluency_ms=min_disfluency_ms or int(stored["cleanup_min_disfluency_ms"]),
             sentence_of=_sentence_of(session, version_id),
             deleted=deleted,
+            hidden=_hidden_token_ids(session, version_id),
         )
     )
 
@@ -335,11 +350,155 @@ def _counts_by_source(rows: list[DeletionRow]) -> dict[str, int]:
     return counts
 
 
+def hide_fillers(
+    session: Session,
+    settings: Settings,
+    version_id: str,
+    *,
+    min_silence_ms: int | None = None,
+    silence_pad_ms: int | None = None,
+    min_disfluency_ms: int | None = None,
+) -> dict[str, object]:
+    """Batch-hide the filler words instead of cutting them.
+
+    The one-click counterpart of pressing Backspace on every «嗯». It exists
+    because the honest answer to filler words is usually *not* to delete them:
+    cutting 0.4 s out of the middle of a sentence leaves an audible hole, and
+    what the user actually wanted was clean subtitles.
+
+    Written as one ``hide`` edit op, so it is one line in the history and one
+    undo — 400 words must not become 400 entries.
+
+    Deliberately *not* a ``cleanup`` op: that type means "deletion rows were
+    created", and undo is implemented as marking those rows removed. Reusing it
+    here would make undo silently do nothing.
+    """
+    version = _version_or_raise(session, version_id)
+    media = _media_or_raise(session, version)
+    stored = settings_store.load(session)
+
+    fillers = frozenset(parse_word_list(str(stored["cleanup_fillers"])))
+    result = build_plan(
+        PlanRequest(
+            tokens=_tokens(session, version_id),
+            duration_ms=media.duration_ms,
+            silences=load_silence_ranges(session, settings, version, media),
+            fillers=fillers,
+            min_silence_ms=min_silence_ms or int(stored["cleanup_min_silence_ms"]),
+            silence_pad_ms=(
+                silence_pad_ms if silence_pad_ms is not None else int(stored["cleanup_silence_pad_ms"])
+            ),
+            min_disfluency_ms=min_disfluency_ms or int(stored["cleanup_min_disfluency_ms"]),
+            sentence_of=_sentence_of(session, version_id),
+            deleted=_deleted_token_ids(session, version_id),
+            hidden=_hidden_token_ids(session, version_id),
+        )
+    )
+
+    indices: list[int] = []
+    for item in result.fillers:
+        indices.extend(item.token_indices)
+    indices.sort()
+    if not indices:
+        raise AppError(
+            "cleanup_nothing_to_do",
+            "没有可隐去的口癖词",
+            hint="换个词表试试，或者这些词已经被隐去 / 删除了。",
+        )
+
+    tokens = {row.idx: row for row in session.scalars(
+        select(Token).where(Token.version_id == version_id, Token.idx.in_(indices))
+    ).all()}
+    changed = [idx for idx in indices if idx in tokens]
+    session.query(Token).filter(
+        Token.version_id == version_id,
+        Token.idx.in_(changed),
+    ).update(
+        # The source mark is what makes these eligible for "还原已隐去口癖词"
+        # while leaving hand-hidden words alone.
+        {Token.hidden: True, Token.hide_source: "filler"},
+        synchronize_session=False,
+    )
+    session.flush()
+
+    # Report in the units the dialog promised. It counts *places* — adjacent
+    # fillers («嗯嗯») are one row, one grey band — so the answer must be the same
+    # 173, not the 183 raw words. Two different numbers for one click reads as a
+    # bug even when both are individually correct, and the duration differs too
+    # (a merged band covers the gap between the two words).
+    spans = len(result.fillers)
+    span_ms = sum(item.duration_ms for item in result.fillers)
+    op = EditOp(
+        id=new_id("edt"),
+        project_id=version.project_id,
+        version_id=version_id,
+        seq=_next_seq(session, version_id),
+        op_type="hide",
+        payload_json=json.dumps(
+            {
+                "token_start": changed[0],
+                "token_end": changed[-1] + 1,
+                "indices": changed,
+                "hidden": True,
+                "hide_source": "filler",
+                "spans": spans,
+                "text": "".join(tokens[idx].text for idx in changed),
+                "batch": True,
+            },
+            ensure_ascii=False,
+        ),
+        created_at=utcnow_iso(),
+    )
+    session.add(op)
+    session.flush()
+
+    log.info("cleanup.hid_fillers", version=version_id, spans=spans, words=len(changed))
+    return {
+        "op_id": op.id,
+        # ``hidden`` is in *places*, matching what the dialog counted and what the
+        # grey bands on the waveform show. ``words`` is the raw token count, which
+        # is larger whenever adjacent fillers merged.
+        "hidden": spans,
+        "words": len(changed),
+        "span_ms": span_ms,
+        "counts": {"filler": spans},
+        "kinds": ["filler"],
+    }
+
+
 def _next_seq(session: Session, version_id: str) -> int:
     last = session.scalars(
         select(EditOp).where(EditOp.version_id == version_id).order_by(EditOp.seq.desc())
     ).first()
     return (last.seq if last is not None else 0) + 1
+
+
+def _hidden_filler_runs(session: Session, version_id: str) -> list[list[Token]]:
+    """Batch-hidden filler words, grouped into contiguous runs.
+
+    A *run* is what the user sees as one grey band and what the dialog counted as
+    one 「处」. Counting raw tokens instead made the confirmation read «已隐去 173
+    处» and the menu immediately afterwards say «还原已隐去口癖词（183）» — two
+    numbers for the same click, which reads as a bug even when both are right.
+    """
+    rows = list(
+        session.scalars(
+            select(Token)
+            .where(
+                Token.version_id == version_id,
+                Token.hidden.is_(True),
+                Token.hide_source == "filler",
+            )
+            .order_by(Token.idx)
+        )
+    )
+    runs: list[list[Token]] = []
+    for row in rows:
+        if runs and row.idx == runs[-1][-1].idx + 1:
+            runs[-1].append(row)
+        else:
+            runs.append([row])
+    return runs
 
 
 def restore(
@@ -353,8 +512,26 @@ def restore(
 
     Both paths are soft deletes, so the audio is recoverable either way and the
     history stays honest about what happened.
+
+    ``source='hidden_filler'`` is the other half of the same idea: it un-hides the
+    words the batch cleanup hid, and **only** those. Hand-hidden words keep their
+    ``hide_source=''`` mark and are restored one at a time from the history panel,
+    because a bulk "take it back" must not discard decisions the user made while
+    reading.
     """
     _version_or_raise(session, version_id)
+
+    if source == "hidden_filler":
+        runs = _hidden_filler_runs(session, version_id)
+        for run in runs:
+            for token in run:
+                token.hidden = False
+                token.hide_source = ""
+        session.flush()
+        # 「处」, matching the count that was shown when they were hidden.
+        log.info("cleanup.restored_hidden", version=version_id, places=len(runs))
+        return {"restored": len(runs), "source": source, "batch": None}
+
     stmt = select(DeletionRow).where(
         DeletionRow.version_id == version_id, DeletionRow.removed.is_(False)
     )
@@ -380,7 +557,12 @@ def restore(
 
 
 def counts_by_kind(session: Session, version_id: str) -> dict[str, int]:
-    """Currently-applied deletions per kind — what "还原口癖词 (12)" shows."""
+    """Currently-applied deletions per kind — what "还原已删除口癖词 (12)" shows.
+
+    Plus ``hidden_filler``: how many words the batch cleanup hid. It is not a
+    deletion count, but it is the same question from the menu's point of view —
+    "is there anything of this kind to take back".
+    """
     rows = session.scalars(
         select(DeletionRow).where(DeletionRow.version_id == version_id, DeletionRow.removed.is_(False))
     ).all()
@@ -388,6 +570,10 @@ def counts_by_kind(session: Session, version_id: str) -> dict[str, int]:
     for row in rows:
         if row.source in counts:
             counts[row.source] += 1
+    # In 「处」, not tokens: a run of adjacent fillers is one band on the waveform
+    # and one row in the plan list. Anything else and the menu count disagrees
+    # with the confirmation the user just read.
+    counts["hidden_filler"] = len(_hidden_filler_runs(session, version_id))
     return counts
 
 

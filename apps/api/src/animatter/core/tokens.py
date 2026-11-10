@@ -66,6 +66,9 @@ class TokenSpan:
     #: ``True`` once a human hid this word from the *text* while leaving its
     #: audio in place. Defaulted for the same reason as ``revised``.
     hidden: bool = False
+    #: Who hid it: ``''`` (by hand) or ``'filler'`` (batch cleanup). Only the
+    #: batch ones are eligible for "还原已隐去口癖词".
+    hide_source: str = ""
 
 
 def _is_cjk(text: str) -> bool:
@@ -139,6 +142,7 @@ def expand_words(words: list[WordSpan], *, start_idx: int = 0) -> list[TokenSpan
                     derived=previous.derived,
                     revised=previous.revised,
                     hidden=previous.hidden,
+                    hide_source=previous.hide_source,
                 )
             continue
 

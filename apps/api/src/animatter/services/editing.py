@@ -365,6 +365,7 @@ def _replace_token_window(
                 derived=token.derived,
                 revised=token.revised,
                 hidden=token.hidden,
+                hide_source=token.hide_source,
             )
         )
 
@@ -428,6 +429,7 @@ def apply_hide(
     token_start: int,
     token_end: int,
     hidden: bool = True,
+    hide_source: str = "",
 ) -> dict[str, object]:
     """Mark a token range hidden — gone from the subtitles, still audible.
 
@@ -459,7 +461,10 @@ def apply_hide(
     session.query(Token).filter(
         Token.version_id == version.id,
         Token.idx.in_(changed),
-    ).update({Token.hidden: hidden}, synchronize_session=False)
+    ).update(
+        {Token.hidden: hidden, Token.hide_source: hide_source if hidden else ""},
+        synchronize_session=False,
+    )
     session.flush()
 
     _record(
@@ -471,6 +476,9 @@ def apply_hide(
             "token_end": token_end,
             "indices": changed,
             "hidden": hidden,
+            # Recorded so undoing a bulk hide and redoing it keeps the mark that
+            # makes the words eligible for "还原已隐去口癖词" again.
+            "hide_source": hide_source,
             "text": "".join(tokens[i].text for i in range(token_start, token_end)),
         },
     )
@@ -621,6 +629,17 @@ def describe_op(op: EditOp) -> dict[str, object]:
     elif op.op_type == "hide":
         verb = "隐去" if payload.get("hidden", True) else "恢复"
         detail = f"{verb}「{payload.get('text', '')}」"
+        if payload.get("hide_source") == "filler":
+            # Batch hide reads differently from one word: the word list would be
+            # unreadable at this length, so it says what the operation was.
+            # ``spans`` is the count the user was shown; falling back to the raw
+            # token count keeps older rows (written before the field existed)
+            # readable instead of claiming "0 个".
+            spans = payload.get("spans")
+            if not isinstance(spans, int):
+                indices = payload.get("indices")
+                spans = len(indices) if isinstance(indices, list) else 0
+            detail = f"批量{verb}口癖词 {spans} 处"
 
     return {
         "id": op.id,
@@ -692,7 +711,16 @@ def undo_op(session: Session, version_id: str, op_id: str | None = None) -> dict
             session.query(Token).filter(
                 Token.version_id == version_id,
                 Token.idx.in_(indices),
-            ).update({Token.hidden: not was_hidden}, synchronize_session=False)
+            ).update(
+                # Undoing a hide clears the mark too, and undoing an *un*hide puts
+                # it back — with the source the op recorded, so a batch hide that
+                # was undone and redone stays bulk-restorable.
+                {
+                    Token.hidden: not was_hidden,
+                    Token.hide_source: str(payload.get("hide_source") or "") if not was_hidden else "",
+                },
+                synchronize_session=False,
+            )
         op.undone = True
         session.flush()
         log.info("edit.undo_hide", op_id=op.id, restored=len(indices))

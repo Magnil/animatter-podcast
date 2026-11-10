@@ -134,6 +134,69 @@ def add_token_deletion(session: Session, version_id: str, token_ids: list[int]) 
     return rows
 
 
+def restore_token_deletion(session: Session, version_id: str, token_ids: list[int]) -> list[DeletionRow]:
+    """Take back the deletion of the given tokens — the 「还」 button.
+
+    Restores exactly the tokens asked for, not every deletion that happens to
+    overlap them. A deletion row can cover more than one word (a sentence delete,
+    a waveform range), and undoing the whole row because one of its words was
+    clicked would resurrect audio the user did not point at.
+
+    When a row covers more than the requested words, it is replaced by what is
+    left: the requested tokens become keepable again, the rest stays deleted. That
+    is a *narrowing* of a soft delete, so the original row is marked removed and
+    the remainder is written as a fresh row — the history then shows one taken
+    back and one still in effect, which is the truth.
+    """
+    from animatter.services import transcribe as transcribe_service
+
+    if not token_ids:
+        raise AppError("deletion_empty", "没有选中任何字")
+
+    tokens = transcribe_service.load_tokens(session, version_id)
+    wanted = sorted({index for index in token_ids if 0 <= index < len(tokens)})
+    if not wanted:
+        raise AppError("deletion_empty", "选中的位置不在转录范围内")
+
+    rows = list_deletions(session, version_id)
+    restored: list[DeletionRow] = []
+
+    for row in rows:
+        covered = {int(value) for value in json.loads(row.token_ids_json or "[]")}
+        hit = covered & set(wanted)
+        if not hit:
+            continue
+
+        row.removed = True
+        restored.append(row)
+        # What is left of this cut: the same span minus the words being taken
+        # back. Words are the unit; a row with no token ids is a waveform range
+        # and cannot be split by word, so it is restored whole.
+        remaining = [idx for idx in sorted(covered) if idx not in hit]
+        if not remaining:
+            continue
+
+        runs: list[list[int]] = [[remaining[0]]]
+        for index in remaining[1:]:
+            if index == runs[-1][-1] + 1:
+                runs[-1].append(index)
+            else:
+                runs.append([index])
+        for run in runs:
+            add_deletion(
+                session,
+                version_id,
+                start_ms=tokens[run[0]].start_ms,
+                end_ms=tokens[run[-1]].end_ms,
+                source=row.source,
+                token_ids=run,
+            )
+
+    session.flush()
+    log.info("deletion.restored", version=version_id, rows=len(restored), words=len(wanted))
+    return restored
+
+
 def remove_deletion(session: Session, deletion_id: str) -> None:
     row = session.get(DeletionRow, deletion_id)
     if row is None:

@@ -71,6 +71,17 @@ class ApplyOut(BaseModel):
     kinds: list[str]
 
 
+class HideFillersOut(BaseModel):
+    op_id: str
+    #: Places hidden (adjacent fillers merged), matching the dialog's count.
+    hidden: int
+    #: Raw tokens hidden; larger than `hidden` when words merged into one band.
+    words: int
+    span_ms: int
+    counts: dict[str, int]
+    kinds: list[str]
+
+
 class RestoreOut(BaseModel):
     restored: int
     source: str | None
@@ -135,11 +146,41 @@ def apply_cleanup(
     return ApplyOut(**outcome)  # type: ignore[arg-type]
 
 
+@router.post("/versions/{version_id}/cleanup/hide-fillers", response_model=HideFillersOut, status_code=201)
+def hide_fillers(
+    version_id: str,
+    request: Request,
+    session: Session = Depends(_session_dependency),
+    min_silence_ms: int | None = Query(default=None, ge=100, le=3000),
+    silence_pad_ms: int | None = Query(default=None, ge=0, le=300),
+    min_disfluency_ms: int | None = Query(default=None, ge=100, le=3000),
+) -> HideFillersOut:
+    """Batch-hide filler words: out of the subtitles, audio untouched.
+
+    A separate endpoint rather than a flag on ``POST /cleanup``: the two write
+    different row types (``token.hidden`` versus ``deletion``), and a boolean that
+    switches which table a request touches is how the audio path gets confused.
+    """
+    settings: Settings = request.app.state.settings
+    outcome = cleanup_service.hide_fillers(
+        session,
+        settings,
+        version_id,
+        min_silence_ms=min_silence_ms,
+        silence_pad_ms=silence_pad_ms,
+        min_disfluency_ms=min_disfluency_ms,
+    )
+    return HideFillersOut(**outcome)  # type: ignore[arg-type]
+
+
 @router.post("/versions/{version_id}/cleanup/restore", response_model=RestoreOut)
 def restore_cleanup(
     version_id: str,
     session: Session = Depends(_session_dependency),
-    source: str | None = Query(default=None, description="按类别还原：filler / disfluency / silence"),
+    source: str | None = Query(
+        default=None,
+        description="按类别还原：filler / disfluency / silence / hidden_filler",
+    ),
     batch: str | None = Query(default=None, description="按批次还原（一次清理）"),
 ) -> RestoreOut:
     outcome = cleanup_service.restore(session, version_id, source=source, batch=batch)

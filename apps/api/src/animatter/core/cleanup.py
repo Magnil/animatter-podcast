@@ -143,6 +143,7 @@ def find_filler_cuts(
     fillers: frozenset[str] | set[str],
     sentence_of: dict[int, int] | None = None,
     deleted: set[int] | None = None,
+    hidden: set[int] | None = None,
 ) -> list[CleanupItem]:
     """Filler tokens, with adjacent ones already collapsed into one cut.
 
@@ -150,12 +151,18 @@ def find_filler_cuts(
     around it. Swallowing would make every 嗯 cut 0.4 s of real breathing room,
     and the user asked to remove the sound, not the silence — silence has its
     own switch with its own threshold.
+
+    ``hidden`` is the second way a filler can already be handled: batch-hiding it
+    took it out of the text without touching the audio. Proposing it again would
+    double-count the same word and, worse, offer to delete audio the user had
+    explicitly chosen to keep.
     """
     skip = deleted or set()
+    already_hidden = hidden or set()
     located = [
         FillerMatch(token_index=idx, text=text, start_ms=start_ms, end_ms=end_ms)
         for idx, text, start_ms, end_ms in tokens
-        if idx not in skip and end_ms > start_ms and is_filler(text, fillers)
+        if idx not in skip and idx not in already_hidden and end_ms > start_ms and is_filler(text, fillers)
     ]
     if not located:
         return []
@@ -329,6 +336,8 @@ class PlanRequest:
     min_disfluency_ms: int = DEFAULT_MIN_DISFLUENCY_MS
     sentence_of: dict[int, int] | None = None
     deleted: set[int] | None = None
+    #: Indices already hidden from the text; the filler finder skips them.
+    hidden: set[int] | None = None
 
 
 def build_plan(request: PlanRequest) -> CleanupPlan:
@@ -340,6 +349,7 @@ def build_plan(request: PlanRequest) -> CleanupPlan:
                 fillers=request.fillers,
                 sentence_of=request.sentence_of,
                 deleted=request.deleted,
+                hidden=request.hidden,
             )
         ),
         disfluencies=tuple(

@@ -417,6 +417,7 @@ def load_tokens(session: Session, version_id: str) -> list[TokenSpan]:
             derived=row.derived,
             revised=row.revised,
             hidden=row.hidden,
+            hide_source=row.hide_source,
         )
         for row in rows
     ]

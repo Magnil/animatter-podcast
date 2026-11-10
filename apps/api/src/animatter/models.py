@@ -163,6 +163,11 @@ class Token(Base):
     #: subtitles looks sloppy. A third state is needed because neither existing
     #: one is right: ``deletion`` removes sound, ``revised`` rewrites text.
     hidden: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: Who hid it: ``''`` for a hand-picked word (Backspace in the editor),
+    #: ``'filler'`` for the batch cleanup. Restore-by-category only ever touches
+    #: the batch ones — a bulk "take back the hiding" must not also undo the words
+    #: the user hid deliberately while reading.
+    hide_source: Mapped[str] = mapped_column(String(16), default="")
 
 
 class Sentence(Base):

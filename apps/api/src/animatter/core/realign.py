@@ -123,8 +123,10 @@ def _reinterpolate(tokens: list[TokenSpan], span: TokenRange, new_text: str) -> 
                 revised=True,
                 # Rewriting a word un-hides it: the user has just decided what
                 # this word should say, so keeping it out of the subtitles would
-                # discard that decision.
+                # discard that decision. It also drops the batch mark, so a later
+                # "还原已隐去口癖词" cannot resurrect the old hiding either.
                 hidden=False,
+                hide_source="",
             )
         )
 

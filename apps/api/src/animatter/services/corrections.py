@@ -129,6 +129,7 @@ def apply_candidate(session: Session, candidate_id: str) -> CorrectionCandidate:
                 derived=token.derived,
                 revised=token.revised,
                 hidden=token.hidden,
+                hide_source=token.hide_source,
             )
         )
     session.flush()
