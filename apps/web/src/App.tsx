@@ -519,6 +519,25 @@ function Desk({
   }, [boot.version.id, onReload, onSelectionChange, onSentenceSelectionChange, run, selectionRange]);
 
   /**
+   * Take the selected words back out of the deletion set — the bubble's 「还」.
+   *
+   * Word-scoped, not row-scoped. A sentence delete covers dozens of words in one
+   * deletion row; restoring the row because one word in it was clicked would
+   * bring back audio the user never pointed at.
+   */
+  const restoreRange = useCallback(async () => {
+    const range = selectionRange();
+    if (!range) return;
+    const ids = Array.from({ length: range.to - range.from }, (_, i) => range.from + i);
+    await run("还原", async () => {
+      await api.restoreWords(boot.version.id, ids);
+      await onReload();
+      onSelectionChange(null);
+      onSentenceSelectionChange(new Set());
+    });
+  }, [boot.version.id, onReload, onSelectionChange, onSentenceSelectionChange, run, selectionRange]);
+
+  /**
    * Hide the selected words from the text, leaving the audio alone.
    *
    * `hidden` is a toggle, not a one-way switch: the same button un-hides, which
@@ -1150,8 +1169,11 @@ function Desk({
               onSelectionChange={onSelectionChange}
               onSentenceSelectionChange={onSentenceSelectionChange}
               onPlaySentence={playSentence}
+              playing={playback.playing}
+              onPause={playback.pause}
               onSeek={playback.seek}
               onDeleteWords={() => void deleteRange()}
+              onRestoreWords={() => void restoreRange()}
               onCorrectWord={(proposed) => void applyTextEdit(proposed)}
               onHideWords={(hidden) => void hideRange(hidden)}
               onBoundary={(action) => void applyBoundary(action)}

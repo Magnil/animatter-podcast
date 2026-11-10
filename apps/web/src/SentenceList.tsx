@@ -26,6 +26,7 @@ import { charsPerSecond, formatTime } from "./format";
 import {
   bubbleCenter,
   selectionRange,
+  selectionState,
   speakerConflict,
   tokenRangeOfSentences,
   wordState,
@@ -45,9 +46,20 @@ interface Props {
   onSelectionChange: (selection: TokenRange | null) => void;
   onSentenceSelectionChange: (selection: Set<number>) => void;
   onPlaySentence: (sentence: Sentence) => void;
+  /**
+   * Whether audio is playing right now.
+   *
+   * Needed so each row's ⏸ can be live: stopping meant travelling to the
+   * transport strip on the far right, which is the other side of the screen
+   * from the sentence you are listening to.
+   */
+  playing: boolean;
+  onPause: () => void;
   onSeek: (ms: number) => void;
   /** Cut the selected words out of the audio. */
   onDeleteWords: () => void;
+  /** Take the selected words back out of the deletion set. */
+  onRestoreWords: () => void;
   /** Rewrite the selection's text as one word. */
   onCorrectWord: (proposed: string) => void;
   /** Hide the selected words from the text without touching the audio. */
@@ -81,8 +93,11 @@ export function SentenceList({
   onSelectionChange,
   onSentenceSelectionChange,
   onPlaySentence,
+  playing,
+  onPause,
   onSeek,
   onDeleteWords,
+  onRestoreWords,
   onCorrectWord,
   onHideWords,
   onBoundary,
@@ -223,12 +238,15 @@ export function SentenceList({
       .join("");
   }, [range, tokens]);
 
-  /** Every word in the selection already hidden → the button un-hides. */
-  const allHidden = useMemo(() => {
-    if (!range) return false;
-    const picked = tokens.slice(range.from, range.to);
-    return picked.length > 0 && picked.every((token) => token.hidden);
-  }, [range, tokens]);
+  /**
+   * What the two buttons may do for this selection.
+   *
+   * ``allHidden`` is still needed on its own by the keyboard handler below (it
+   * toggles), but the bubble asks the fuller question: whether the selection is
+   * deleted, whether any of it is, and the same two for hidden.
+   */
+  const sel = useMemo(() => selectionState(tokens, range, deletedRanges), [tokens, range, deletedRanges]);
+  const allHidden = sel.allHidden;
 
   const rangeOfSentence = useCallback(
     (sentence: Sentence): TokenRange => ({ from: sentence.token_start, to: sentence.token_end }),
@@ -347,7 +365,11 @@ export function SentenceList({
       if (event.key === "Delete") {
         event.preventDefault();
         setCorrecting(null);
-        onDeleteWords();
+        // Mirrors the 删/还 button exactly. A key that did something the button
+        // refuses would be a second, undocumented rule — and the one the user is
+        // most likely to hit by muscle memory.
+        if (sel.allDeleted) onRestoreWords();
+        else if (!sel.anyHidden) onDeleteWords();
       } else if (event.key === "Enter") {
         // Multi-word selections are corrected as one word (see selectedText).
         event.preventDefault();
@@ -356,6 +378,11 @@ export function SentenceList({
         // Backspace, not Delete, hides: the two keys sit next to each other and
         // "remove the text but keep the sound" is the softer of the two, which
         // is the softer of the two keys.
+        //
+        // Refused when the selection is deleted: there is no audio left to keep,
+        // and letting the key through would create a hidden word with nothing
+        // underneath it.
+        if (sel.allDeleted) return;
         event.preventDefault();
         setCorrecting(null);
         onHideWords(!allHidden);
@@ -363,7 +390,7 @@ export function SentenceList({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [allHidden, busy, onDeleteWords, onHideWords, range, selectedText]);
+  }, [allHidden, busy, onDeleteWords, onHideWords, onRestoreWords, range, sel, selectedText]);
 
   // A new target invalidates any open editor; keeping it open would apply the
   // typed text to a different word than the one it was opened on.
@@ -618,8 +645,29 @@ export function SentenceList({
                     </span>
                   ) : null}
                 </span>
-                <button type="button" className="ghost sentence-play" onClick={() => onPlaySentence(sentence)}>
+                {/* Play and pause for this sentence, adjacent, because the
+                    transport strip is on the far right of the window — the one
+                    place your eyes are not when you are reading along. ⏸ stops
+                    whatever is playing, not just this row: the element has one
+                    playhead, so pretending otherwise would be a lie. */}
+                <button
+                  type="button"
+                  className="ghost sentence-play"
+                  aria-label={`播放第 ${sentence.ord + 1} 句`}
+                  title="从这一句开始播放"
+                  onClick={() => onPlaySentence(sentence)}
+                >
                   ▶
+                </button>
+                <button
+                  type="button"
+                  className="ghost sentence-play"
+                  aria-label="暂停播放"
+                  title={playing ? "暂停" : "当前没有播放"}
+                  disabled={!playing}
+                  onClick={onPause}
+                >
+                  ⏸
                 </button>
               </div>
 
@@ -676,18 +724,33 @@ export function SentenceList({
         <div className="word-bubble" style={bubbleStyle} role="toolbar" aria-label="选中文字的操作">
           {correcting === null ? (
             <>
+              {/* 删 ↔ 还. The button says what it will do, and the two cannot both
+                  apply to one word: a deleted word has no audio left to hide, and
+                  a hidden word's audio was explicitly kept. Hence the cross-disable
+                  below — a control that offers an impossible action is worse than
+                  one that greys out with a reason. */}
               <button
                 type="button"
-                className="bubble-cut"
-                disabled={busy}
-                aria-label="删除"
+                className={sel.allDeleted ? "bubble-restore" : "bubble-cut"}
+                // Deleted and hidden are mutually exclusive, so 「还」 is the
+                // priority when the whole selection is gone: restoring is the only
+                // thing that can still be done to it.
+                disabled={busy || (!sel.allDeleted && sel.anyHidden)}
+                aria-label={sel.allDeleted ? "还原" : "删除"}
                 onClick={() => {
                   setCorrecting(null);
-                  onDeleteWords();
+                  if (sel.allDeleted) onRestoreWords();
+                  else onDeleteWords();
                 }}
-                title="把选中的词从音频中「删除」（DEL）"
+                title={
+                  sel.allDeleted
+                    ? "把这些词从删除里「还原」回来，音频恢复播放（DEL）"
+                    : sel.anyHidden
+                      ? "这些词已经隐去了：音频本来就没删，先用「显」放回字幕"
+                      : "把选中的词从音频中「删除」（DEL）"
+                }
               >
-                删
+                {sel.allDeleted ? "还" : "删"}
               </button>
               <button
                 type="button"
@@ -706,16 +769,22 @@ export function SentenceList({
               <button
                 type="button"
                 className="bubble-hide"
-                disabled={busy}
+                // Hidden and deleted are mutually exclusive: hiding a word whose
+                // audio is gone would claim something Reachable that is not, and
+                // the round trip (delete → hide → restore) would leave a hidden
+                // word with no audio underneath it.
+                disabled={busy || (!sel.allHidden && sel.anyDeleted)}
                 aria-label={allHidden ? "取消隐去" : "隐去"}
                 onClick={() => {
                   setCorrecting(null);
                   onHideWords(!allHidden);
                 }}
                 title={
-                  allHidden
-                    ? "把这些词放回字幕，音频本来就没动（Backspace）"
-                    : "只在字幕中「隐去」这些词而音频不变（Backspace）"
+                  sel.anyDeleted && !sel.allHidden
+                    ? "这些词已经删除了：音频没了，隐去无从谈起，先用「还」还原"
+                    : allHidden
+                      ? "把这些词放回字幕，音频本来就没动（Backspace）"
+                      : "只在字幕中「隐去」这些词而音频不变（Backspace）"
                 }
               >
                 {/* 显 rather than 隐 when every selected word is already hidden:

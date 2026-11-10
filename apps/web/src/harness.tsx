@@ -124,8 +124,14 @@ function Harness(): React.JSX.Element {
         onSelectionChange={setSelection}
         onSentenceSelectionChange={setSentenceSelection}
         onPlaySentence={() => setNoted("play")}
+        playing={playing}
+        onPause={() => {
+          setPlaying(false);
+          setNoted("pause");
+        }}
         onSeek={() => undefined}
         onDeleteWords={() => setNoted("delete")}
+        onRestoreWords={() => setNoted("restore")}
         onCorrectWord={(proposed) => setNoted(`correct:${proposed}`)}
         onHideWords={(hidden) => setNoted(`hide:${hidden}`)}
         onBoundary={(action) => setNoted(`boundary:${action}`)}

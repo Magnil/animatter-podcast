@@ -13,6 +13,7 @@ import {
   hiddenSpans,
   isSingleWord,
   selectionRange,
+  selectionState,
   speakerConflict,
   tokenRangeOfSentences,
   wordState,
@@ -243,4 +244,75 @@ test('hiddenSpans ignores zero-length hidden tokens', () => {
 
 test('hiddenSpans returns nothing when nothing is hidden', () => {
   assert.deepEqual(hiddenSpans(words), []);
+});
+
+// --- selectionState: what the bubble may offer ---------------------------
+//
+// The two buttons are mutually exclusive in the domain, and the UI has to say
+// so. These cases are the ones the product decision names: after deleting, 「隐」
+// must not be pressable; after hiding, 「删」 must not be.
+
+test('selectionState on a plain selection', () => {
+  const state = selectionState(words, { from: 0, to: 2 }, []);
+  assert.equal(state.allDeleted, false);
+  assert.equal(state.anyDeleted, false);
+  assert.equal(state.allHidden, false);
+  assert.equal(state.anyHidden, false);
+});
+
+test('selectionState sees a fully deleted selection', () => {
+  // The whole 0-1300 ms span is cut, so every selected word is gone.
+  const state = selectionState(words, { from: 0, to: 3 }, [{ start_ms: 0, end_ms: 1300 }]);
+  assert.equal(state.allDeleted, true);
+  assert.equal(state.anyDeleted, true);
+});
+
+test('selectionState separates all-deleted from any-deleted', () => {
+  // Only the first word is cut: 「还」 would be wrong (there is still something
+  // to delete), but 「隐」 is already a lie (one word has no audio left).
+  const state = selectionState(words, { from: 0, to: 3 }, [{ start_ms: 0, end_ms: 400 }]);
+  assert.equal(state.allDeleted, false);
+  assert.equal(state.anyDeleted, true);
+});
+
+test('selectionState sees a fully hidden selection', () => {
+  const hidden = [
+    { idx: 0, start_ms: 0, end_ms: 400, hidden: true },
+    { idx: 1, start_ms: 400, end_ms: 900, hidden: true },
+    { idx: 2, start_ms: 900, end_ms: 1300 },
+  ];
+  const state = selectionState(hidden, { from: 0, to: 2 }, []);
+  assert.equal(state.allHidden, true);
+  assert.equal(state.anyHidden, true);
+  assert.equal(state.anyDeleted, false);
+});
+
+test('selectionState flags a partly hidden selection', () => {
+  const hidden = [
+    { idx: 0, start_ms: 0, end_ms: 400, hidden: true },
+    { idx: 1, start_ms: 400, end_ms: 900 },
+  ];
+  const state = selectionState(hidden, { from: 0, to: 2 }, []);
+  assert.equal(state.allHidden, false);
+  assert.equal(state.anyHidden, true);
+});
+
+test('selectionState is empty for no selection', () => {
+  assert.deepEqual(selectionState(words, null, []), {
+    allDeleted: false,
+    anyDeleted: false,
+    allHidden: false,
+    anyHidden: false,
+  });
+});
+
+test('selectionState is empty for a collapsed selection', () => {
+  assert.equal(selectionState(words, { from: 2, to: 2 }, []).anyDeleted, false);
+});
+
+test('selectionState clamps a range that runs past the end', () => {
+  // A stale range must not throw and must not report a phantom state.
+  const state = selectionState(words, { from: 2, to: 99 }, []);
+  assert.equal(state.anyHidden, false);
+  assert.equal(state.allDeleted, false);
 });

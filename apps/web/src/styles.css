@@ -22,6 +22,10 @@
   /* Pale wash behind a deleted word. Opaque-ish on purpose: a struck-through
      word still has to be readable. */
   --danger-soft: rgba(220, 38, 38, 0.2);
+  /* 还原 — green, and only ever on the bubble's 「还」 button. Green reads as
+     "this gives something back"; using red there would make the undo look like
+     another delete. */
+  --okay: #15803d;
   --warn: #b45309;
   --tok-hover: #f1f5f9;
 
@@ -46,6 +50,8 @@
     --accent-soft: rgba(96, 165, 250, 0.18);
     --revised-soft: rgba(96, 165, 250, 0.36);
     --danger-soft: rgba(248, 113, 113, 0.26);
+    /* Lighter than light-mode #15803d, which is invisible on #111827. */
+    --okay: #4ade80;
     --tok-hover: #1e293b;
     color-scheme: dark;
   }
@@ -216,6 +222,20 @@ button.ghost:hover:not(:disabled) {
   padding: 0.1rem 0.45rem;
 }
 
+/* ▶ and ⏸ are one unit: a fixed width so the pair does not shift when the row's
+   other badges change length, and the glyphs stay aligned down the column. */
+.sentence-play {
+  min-width: 1.5em;
+  text-align: center;
+}
+
+/* A disabled ⏸ at 0.4 opacity is nearly invisible, and its absence is what tells
+   you nothing is playing — so keep it visible but flat rather than ghosted. */
+.sentence-head .sentence-play:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 .tokens {
   display: flex;
   flex-wrap: wrap;
@@ -353,6 +373,7 @@ button.ghost:hover:not(:disabled) {
    control look broken. A single character each fits on one line at any zoom, and
    the meaning is in the tooltip — one hover away, and never in the way. */
 .word-bubble .bubble-cut,
+.word-bubble .bubble-restore,
 .word-bubble .bubble-fix,
 .word-bubble .bubble-hide {
   flex: 1;
@@ -365,6 +386,15 @@ button.ghost:hover:not(:disabled) {
 .word-bubble .bubble-cut {
   background: var(--danger);
   border-color: var(--danger);
+}
+
+/* 还 — the same slot as 删, deliberately the opposite colour. The two never
+   appear at once (a word is either deleted or not), so the colour is carrying
+   "which direction this button goes", not "which of two buttons is this". Red
+   would make restoring look like another delete. */
+.word-bubble .bubble-restore {
+  background: var(--okay);
+  border-color: var(--okay);
 }
 
 /* Softer than delete and quieter than correct: hiding a filler word is the least

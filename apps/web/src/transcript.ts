@@ -82,6 +82,53 @@ export function clamp(value: number, min: number, max: number): number {
 }
 
 /**
+ * What the bubble should offer for the current selection.
+ *
+ * Deleting and hiding are mutually exclusive — a word's audio is either cut or
+ * it is not, and hiding something with no audio left is meaningless. So the two
+ * buttons have to consult each other: once the selection is deleted, 「隐」 can
+ * only mislead, and once it is hidden, 「删」 would cut audio the user explicitly
+ * chose to keep.
+ *
+ * Both ``all*`` and ``any*`` are returned because the two questions are
+ * different. Which *label* a button gets is about the whole selection (「删」
+ * becomes 「还」 only when there is nothing left to delete); whether it can be
+ * *pressed* is about any word (one deleted word in the selection already makes
+ * hiding a lie).
+ */
+export interface SelectionState {
+  allDeleted: boolean;
+  anyDeleted: boolean;
+  allHidden: boolean;
+  anyHidden: boolean;
+}
+
+export function selectionState(
+  tokens: TokenLike[],
+  range: TokenRange | null,
+  spans: Span[],
+): SelectionState {
+  const empty: SelectionState = {
+    allDeleted: false,
+    anyDeleted: false,
+    allHidden: false,
+    anyHidden: false,
+  };
+  if (!range || range.to <= range.from) return empty;
+  const picked = tokens.slice(Math.max(0, range.from), Math.min(range.to, tokens.length));
+  if (picked.length === 0) return empty;
+
+  const deleted = picked.filter((token) => wordState(token, spans) === "deleted").length;
+  const hidden = picked.filter((token) => token.hidden === true).length;
+  return {
+    allDeleted: deleted === picked.length,
+    anyDeleted: deleted > 0,
+    allHidden: hidden === picked.length,
+    anyHidden: hidden > 0,
+  };
+}
+
+/**
  * Horizontal **centre** for the floating bubble, kept inside the viewport.
  *
  * The bubble is positioned with ``left`` + ``translateX(-50%)``, so the value

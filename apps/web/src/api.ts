@@ -290,6 +290,20 @@ export const api = {
   removeDeletion: (deletionId: string) =>
     request<void>(`/api/deletions/${deletionId}`, { method: "DELETE" }),
 
+  /**
+   * Take back the deletion of specific words — the editor's 「还」 button.
+   *
+   * Separate from `removeDeletion`, which drops a whole deletion row and is what
+   * the 「恢复删除」 transport button uses. This one is word-scoped: a row that
+   * covers a whole sentence must not disappear because one word in it was
+   * clicked.
+   */
+  restoreWords: (versionId: string, tokenIds: number[]) =>
+    request<{ id: string; start_ms: number; end_ms: number; source: string }[]>(
+      `/api/versions/${versionId}/deletions/restore`,
+      { method: "POST", body: JSON.stringify({ token_ids: tokenIds }) },
+    ),
+
   edl: (versionId: string, snap = true) =>
     request<{
       original_duration_ms: number;
