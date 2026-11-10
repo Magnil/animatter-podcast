@@ -15,6 +15,7 @@ import {
   selectionRange,
   selectionState,
   speakerConflict,
+  tokenAt,
   tokenRangeOfSentences,
   wordState,
 } from "./transcript.ts";
@@ -315,4 +316,32 @@ test('selectionState clamps a range that runs past the end', () => {
   const state = selectionState(words, { from: 2, to: 99 }, []);
   assert.equal(state.anyHidden, false);
   assert.equal(state.allDeleted, false);
+});
+
+test("tokenAt finds the word covering an instant", () => {
+  assert.equal(tokenAt(words, 0), 0);
+  assert.equal(tokenAt(words, 399), 0);
+  assert.equal(tokenAt(words, 400), 1);
+  assert.equal(tokenAt(words, 1299), 2);
+});
+
+test("tokenAt treats the end of the file as past the last word", () => {
+  // Half-open: a playhead sitting exactly on the final `end_ms` is not inside
+  // anything, and must not report the last word as still playing.
+  assert.equal(tokenAt(words, 1300), -1);
+});
+
+test("tokenAt reports a miss in the pause between two words", () => {
+  // The case that makes this honest: with a gap, claiming the nearest word
+  // would highlight audio that is not being heard, and the next 删除选中 would
+  // act on it.
+  const gapped = [
+    { idx: 0, start_ms: 0, end_ms: 400 },
+    { idx: 1, start_ms: 600, end_ms: 900 },
+  ];
+  assert.equal(tokenAt(gapped, 500), -1);
+});
+
+test("tokenAt is empty for an empty transcript", () => {
+  assert.equal(tokenAt([], 0), -1);
 });

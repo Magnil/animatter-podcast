@@ -56,7 +56,16 @@ export interface Playback {
   playing: boolean;
   play: () => void;
   pause: () => void;
-  seek: (ms: number) => void;
+  /**
+   * Move the playhead, snapping forward out of any deletion.
+   *
+   * Returns where it actually landed. Callers that need to know what the
+   * playhead is pointing *at* (the transcript's "which sentence / which word"
+   * pointer) must use the return value, not the argument: a request to land
+   * inside a deleted span is moved to the end of that span, and reporting the
+   * requested position would highlight a sentence the playhead never reached.
+   */
+  seek: (ms: number) => number;
   playRange: (fromMs: number, untilMs: number) => void;
 }
 
@@ -304,14 +313,18 @@ export function usePlayback(
   }, [playing]);
 
   const seek = useCallback(
-    (ms: number) => {
+    (ms: number): number => {
       const audio = audioRef.current;
-      if (!audio) return;
+      // Before the element exists nothing can move; report the request rather
+      // than 0, so a caller pointing the transcript at it lands where the user
+      // clicked instead of at the top of the file.
+      if (!audio) return Math.max(0, ms);
       const clamped = Math.max(0, Math.min(durationMs || audio.duration * 1000, ms));
       // Landing inside a deletion is never useful: snap to the next audible spot.
       const audible = nextAudible(deletedRef.current, clamped);
       audio.currentTime = audible / 1000;
       setPositionMs(audible);
+      return audible;
     },
     [durationMs],
   );

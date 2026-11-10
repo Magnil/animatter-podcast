@@ -158,6 +158,22 @@ export function findActiveSentence(sentences: SentenceLike[], positionMs: number
   return -1;
 }
 
+/**
+ * Index of the word covering `ms`, or -1 when the moment falls in silence.
+ *
+ * Half-open, like every other interval here: a word ending at 1000 and the next
+ * starting at 1000 do not overlap, and the playhead landing exactly on 1000
+ * belongs to the second one.
+ *
+ * A miss is a real answer and must stay one. Words are routinely separated by
+ * 100–200 ms of silence; claiming the nearest word would highlight a word that
+ * is not being heard, and then 「删除选中」 would remove audio the user never
+ * pointed at.
+ */
+export function tokenAt(tokens: TokenLike[], ms: number): number {
+  return tokens.findIndex((token) => ms >= token.start_ms && ms < token.end_ms);
+}
+
 /** Token range covered by a set of selected sentences. */
 export function tokenRangeOfSentences(
   sentences: { ord: number; token_start: number; token_end: number }[],
