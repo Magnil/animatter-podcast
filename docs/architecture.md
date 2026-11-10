@@ -43,8 +43,10 @@
 
 ### 3.3 依赖红线
 
-- 禁止：`dashscope`、`pydub`（会隐式调 ffmpeg 且慢）、`librosa`、`moviepy`。
-- 允许：`httpx`、`tenacity`、`numpy`、`srt`（或自写 SRT 序列化）、`python-docx`。
+- 禁止：`dashscope`、`pydub`（会隐式调 ffmpeg 且慢）、`librosa`、`moviepy`
+  （实测 22.3 ms/帧，1 小时成片要 40 分钟，比直接拼 ffmpeg 慢一个量级）。
+- 允许：`httpx`、`tenacity`、`numpy`、`srt`（或自写 SRT 序列化）、`python-docx`、
+  `psd-tools`（**只解析** PSD，用来编译模板；它写不了文字层）、`Pillow`。
 - 前端禁止引入完整编辑器框架（ProseMirror/Slate）做字幕编辑——用**自研虚拟列表**，见 §7.6。
 
 ---
@@ -71,12 +73,20 @@
 │  qwen.py     │ silence.py   │ sentence.py   句边界重划                 │
 │  paraformer  │ render.py    │ edl.py        删除集→保留集→映射         │
 │ llm/         │ probe.py     │ subtitle.py   CPS/断行/序列化            │
-│ storage/     │              │ script.py     文稿结构                    │
-│  temp_oss.py │              │                                          │
+│ storage/     │ template.py  │ script.py     文稿结构                    │
+│  temp_oss.py │ video.py     │ video_anchor.py 句子边界吸附网格          │
+│              │              │                                          │
+│  ↑ template.py 编译 PSD → 背景/框/槽位；video.py 拼 filtergraph      │
+│    video_anchor.py 纯函数：句子起点网格、吸附、跨锚点检查（§19.3）      │
+├──────────────┴──────────────┴──────────────┴───────────────────────────┤
+│  services/  用例编排（事务边界在这一层）                                 │
+│   TranscribeService · EditService · RenderService · ScriptService      │
+│   VideoTemplateService · VideoRenderService（视频导出 + 静帧预览）       │
 ├──────────────┴──────────────┴──────────────┴───────────────────────────┤
 │  jobs/  进程内 asyncio 队列 + jobs 表（可重启恢复）                      │
 ├────────────────────────────────────────────────────────────────────────┤
 │  store/  SQLite(WAL) + data/projects/<id>/ 文件树                       │
+│         data/projects/<id>/video/ ← 模板编译产物、静帧预览、视频导出      │
 └────────────────────────────────────────────────────────────────────────┘
                                 │
                     ┌───────────▼───────────┐
@@ -84,6 +94,10 @@
                     │ 临时OSS · ASR · Qwen  │
                     └───────────────────────┘
 ```
+
+**视频管线的一条跨服务边**：视频导出**不重新编码音频**，最后一步是从已经渲染好的成片音频
+`-c copy` 混流（实测 0.24 s / 60 s）。所以它依赖 `RenderService` 的产物，而不是自己算一遍
+EDL 音频——否则一条 105 分钟的片子要多烧十几分钟 CPU。见 §19.5。
 
 **分层铁律**
 
