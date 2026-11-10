@@ -78,13 +78,13 @@ docs/                    本文件拆出来的设计文档
 
 ```powershell
 # 后端：在 apps/api 下跑
-..\..\.venv\Scripts\python.exe -m pytest -q            # 700 passed, 1 skipped, 3 deselected
+..\..\.venv\Scripts\python.exe -m pytest -q            # 725 passed, 1 skipped, 3 deselected
 ..\..\.venv\Scripts\python.exe -m ruff check src tests
 ..\..\.venv\Scripts\python.exe -m mypy --strict src    # 74 files
 
 # 前端：在 apps/web 下跑
 npx tsc --noEmit
-npm test                                               # node --test，142 passed
+npm test                                               # node --test，157 passed
 npx vite build
 
 # 启动（仓库根）
@@ -95,4 +95,6 @@ npx vite build
 
 ## 界面走查
 
-`node scripts/cdp.mjs <url> <out.png> [script.js]`（仓库根）。脚本默认导出接收 `{ evaluate, click, shot, wait, mouse, send, out }`，**必须显式 `await shot(out)`**，否则不会产生 PNG。现有脚本见 `scripts/check-*.mjs`。
+`node scripts/cdp.mjs <url> <out.png> [script.js]`（仓库根）。脚本默认导出接收 `{ evaluate, click, shot, wait, mouse, send, out }`，**必须显式 `await shot(out)`**，否则不会产生 PNG。现有脚本见 `scripts/check-*.mjs`。截图会自建父目录，所以 `.tmp/` 被清空之后走查脚本仍然能直接跑。
+
+**点播放类走查必须用 `mouse()`，不能用 `element.click()`**：合成点击没有 user activation，`play()` 会以 `NotAllowedError` 被拒，把真正的解码错误盖掉——「03:35.180 点播放没反应」就是因此一直复现不出来。

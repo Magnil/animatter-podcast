@@ -14,9 +14,9 @@
  * `{ evaluate, click, shot, wait }` and runs inside the page context.
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const CHROME = "C:/Program Files/Google/Chrome/Application/chrome.exe";
 const PORT = 9333;
@@ -119,9 +119,17 @@ async function click(selector) {
   await sleep(150);
 }
 
-/** Screenshot the viewport. */
+/**
+ * Screenshot the viewport.
+ *
+ * Creates the parent directory: 13 walkthrough scripts write into `.tmp/shots`,
+ * and `.tmp` is gitignored scratch space that gets swept. Without this, a fresh
+ * clone (or a cleanup) turns every one of those scripts into an ENOENT crash
+ * that looks like a broken walkthrough rather than a missing directory.
+ */
 async function shot(path) {
   const { data } = await send("Page.captureScreenshot", { format: "png" });
+  mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, Buffer.from(data, "base64"));
 }
 
