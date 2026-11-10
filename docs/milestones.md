@@ -22,7 +22,41 @@
 | **M5b ✅** | 文稿生成：ShowNotes / 对话稿 / 文章稿，Markdown 导出 | ✅ `routers/script.py` + `core/script.py`；**只出 `.md`**，DOCX 未做 |
 | **§ 工作台** | 菜单栏、三栏布局、设置、存档、操作记录 | ✅ 见「工作台（2026-11-05）」 |
 | **§ 时间轴对齐** | 整条时间轴整体偏移，可撤销 | ✅ 见 CHANGELOG「时间轴对齐（2026-11-09）」 |
+| **§ 视频 P1 ✅** | 视频剪辑第一步：PSD 模板编译、句子边界锚点、静帧预览、导出 mp4 | ✅ 见下方「视频 P1（2026-11-11）」 |
 | M6 | 稳定性：崩溃恢复、错误提示、成本面板、打包 | 断电重开不丢编辑 |
+
+### 视频 P1 交付清单（2026-11-11）
+
+设计见 `docs/video.md` §19，完成状态表见 §19.10。
+
+```
+会话边界：视频剪辑从这一轮起有实现，不再是提案。
+
+分享日 4 个 commit（cf6e532 文档 → 1a/1b/1d → 1c）之后，这一轮补完接线与真机验证：
+  a4fe971  feat(video): 锚点跟随两条会移动网格的编辑（边界编辑、整片平移）
+  d421b80  feat(web): 1c 视频区界面——模板确认、静帧预览、导出
+  ae41524  fix(video): 长字幕必须自己断行，libass 不会替我们断
+
+apps/api/src/animatter/
+  core/video_anchor.py       句子边界网格 + 吸附 + 重吸附（previous 网格决定谁该动）
+  services/video.py          块的增删改查；orphaned 与成片时长都在读时算
+  services/video_anchors.py  两个会移动网格的入口（边界编辑、整片平移）
+  media/template.py          PSD → 背景/框/头像亮暗图（58 层 6.3s）
+  media/video.py             filtergraph（写文件传，避开 Windows 32,767 上限）
+  media/subtitle_ass.py      ASS + CJK 断行 + 字体存在性断言
+  services/video_templates.py  导入/编译/取产物
+  services/video_render.py   静帧 + 导出
+  routers/video.py           11 条路由
+  alembic c4e1a7b3f9d2        video_template / video_asset / deck / slide / video_item
+
+apps/web/src/
+  VideoPanel.tsx       视频区（默认收起；静帧、字号/留白滑块、孤儿块、导出进度）
+  videoTimeline.ts     纯函数：块布局、吸附、画廊时长、摘要（26 条单测）
+```
+
+**故意的边界**：素材块只能通过 API 建，界面上没有拖拽和素材库——那是 P2。
+所以 P1 导出的成片只有背景 + 字幕，框内是空的。
+
 
 ### 进度一览（2026-11-09 订正）
 
@@ -31,8 +65,12 @@ M0 ✅ 骨架          M1 ✅ 转写闭环       M2a ✅ 热词库
 M2b ✅ LLM 校对     M2c ⏸  影子测试(推迟)  M3 ✅ 校正台 UI
 M4 ✅ 剪辑+时间轴   M5a ✅ 字幕导出       M5b ✅ 文稿(md)
 M6 ⬜ 稳定性
-工作台 ✅   时间轴对齐 ✅
+工作台 ✅   时间轴对齐 ✅   视频 P1 ✅（2026-11-11）
 ```
+
+**验证规模（2026-11-11）**：后端 859 用例通过 / 1 skipped / 3 deselected，`mypy --strict` 83 个源文件零错误，
+`ruff` 干净；前端 201 条 `node --test` 用例，`tsc --noEmit` 与 `vite build` 干净；真实 PSD 模板在真机上
+编译、渲染静帧、走查界面都跑过（截图见 `.tmp/shots/`，未入库）。
 
 > 这张表 2026-11-05 之后四天没更新，期间一直把 M5b 记成「待做」，而它已经落地
 > （`c3226fb` feat: ShowNotes and 文稿 generation）。**里程碑是自报状态，不是从代码推断的，

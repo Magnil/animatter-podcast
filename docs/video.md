@@ -299,12 +299,24 @@ long`——看起来像路径 bug，不是图大小 bug。
 实测 600 秒 / 1200 段 → **3.7 秒**生成。这样不论多少段，filtergraph 里永远只有 N 个头像位
 （这版 4 个）。
 
-**字幕烧入用 libass，但有两个必踩的坑**（都实测过）：
+**字幕烧入用 libass，但有三个必踩的坑**（都实测过）：
 
 1. **ASS 不写 `PlayResX/PlayResY` 会被当成 384×288**，1080p 下字号放大 5.6 倍，糊满屏。
    必须显式写 `PlayResX: 1920 / PlayResY: 1080`。
 2. **字体名写错/没装，libass 静默替换，日志里一个字都没有。** 必须用 `fontsdir=` 指向
    项目内置的字体目录，并在开渲染前断言字体文件存在。
+3. **libass 不会给中文断行。** `WrapStyle: 0` 只在**空格**处断；中文没有空格，于是一整句
+   被画成一行任它溢出画布——88px 时第一个字和最后一个字都被裁掉，**而且不报错**。
+   52px 时溢出量小，看起来只是「有点宽」，所以这个坑一直到真机渲染大字号才暴露。
+
+   **必须自己断行。** CJK 一字一个 em，ASS 的字号单位就是 PlayRes 单位，所以每行容量是
+   除法而不是测量：`chars_per_line = (play_w - margin_l - margin_r) // font_size`。实测
+   1920 宽、左右各 120、52px → `1680 // 52 = 32` 字，与真实渲染逐字对得上。断行优先在
+   标点后（「，」后断开远比句中断开自然），没标点就按宽度硬断，**绝不为了放下而丢字**。
+   写成 `\N` 拼进 `Dialogue`，并在每一行上分别做转义。
+
+   顺带解释了 `margin_v` 的语义：它是**字幕块底边**到画面底边的距离，两行字幕从底部往上
+   堆，所以调大就是整块往上抬——不是「行间距」。
 
 ## 19.6 演示稿：自己的模型，不碰 pptx 渲染
 
@@ -521,6 +533,19 @@ dim PNG 和 lit PNG 轮流出现（`§19.5` 的明暗轨），ffmpeg 不需要�
 **P1 内部再拆**（因为它是最大的一块）：
 1a 数据模型 + 迁移 → 1b 模板编译与确认界面 → 1c 视频时间轴组件 → 1d 渲染管线 + 静帧预览 → 1e 导出。
 
+**P1 完成状态**（2026-11-11，四个 gate 全绿：pytest 859 / ruff / mypy 83 / tsc + npm test 201）：
+
+| 子项 | 落在哪 | 状态 |
+|---|---|---|
+| 1a 数据模型 + 边界网格 + 锚点维护 | `models.py`、迁移 `c4e1a7b3f9d2`、`core/video_anchor.py`、`services/video.py`、`services/video_anchors.py` | ✅ |
+| 1b 模板编译 + 资源 API | `media/template.py`、`services/video_templates.py`、`routers/video.py` | ✅ 实测 6.3s / 58 层，产物 `background/background_bare/overlay/avatar*_{lit,dim}` |
+| 1c 视频区界面 | `apps/web/src/VideoPanel.tsx`、`videoTimeline.ts` | ✅ 默认收起；静帧、字号/留白、孤儿块、导出 |
+| 1d 渲染管线 + 静帧 | `media/video.py`、`media/subtitle_ass.py`、`services/video_render.py` | ✅ 静帧 ≈200ms；实测 60s 素材 14.19s |
+| 1e 导出 | `POST /video/export`、`GET /video/exports/{id}/file` | ✅ 走后台任务 + 进度轮询 |
+
+**还没做**（P2 起）：素材库、拖拽、画廊/演示稿的框内轨、头像明暗轨、`.pptx` 导入导出。
+1c 里的素材块只能通过 API 建，界面上还没有「拖进来」这条路——这是 P2 的第一件事。
+
 **建议第一刀切在 P1。** 它已经能产出「一条有背景、有字幕、能上传」的视频，是这个功能的
 八成价值；素材框和头像是在这个骨架上加层，演示稿是最后的锦上添花。
 
@@ -551,6 +576,15 @@ dim PNG 和 lit PNG 轮流出现（`§19.5` 的明暗轨），ffmpeg 不需要�
    `orphaned` 并在 UI 上给「删掉它 / 挪到别处」两个动作，见 §19.3。
 8. **跨锚点的删除不拦，只重吸附。** 实测跨界删除后两侧块仍然首尾相接、渲染正常，所以
    拿视频去否决音频剪辑是错的。但 `merge` 要拦——它是主动删网格点。
+9. **中文长句在 libass 里不会自动折行。** 见 §19.5 第 3 条。它的可怕之处是**完全静默**：
+   52px 时只是「有点宽」，88px 时首尾字直接被裁掉，画面看起来像字体 bug。必须自己算
+   `chars_per_line` 并写 `\N`。
+10. **`find_font` 用子串匹配会谎报字体缺失。** 「Microsoft YaHei」的文件名是 `msyh.ttc`，
+    `"microsoftyahei" in "msyh"` 是 `False`——于是明明装了，却报「找不到字体，请先安装」，
+    比不检查更糟，因为给的是错建议。必须有一张 family → 文件名的表，子串匹配只作兜底。
+11. **模板资源的 URL 必须带 project_id。** 路由是 `/{project_id}/video/template/asset/{name}`，
+    但第一版生成的 URL 漏了 project 段：形状完全合法、响应里也看不出问题，只是取的时候 404。
+    测试必须**取响应里返回的那个 URL**，而不是自己拼一个。
 
 ## 19.12 需要你拍板的四件事
 
