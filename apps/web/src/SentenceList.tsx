@@ -472,43 +472,49 @@ export function SentenceList({
 
   return (
     <div className="transcript-pane">
-      <div className="sentence-rail" role="toolbar" aria-label="句子边界">
-        <span className="rail-title">句边界</span>        <button
-          type="button"
-          className="ghost"
-          disabled={!canSplit || busy}
-          onClick={() => onBoundary("new_sentence")}
-          title="把选中的词变成独立的一句"
-        >
-          另起一句
-        </button>
-        <button
-          type="button"
-          className="ghost"
-          disabled={!canJoin || busy || joinUpConflict !== null}
-          onClick={() => onBoundary("to_prev")}
-          title={joinUpConflict ?? "把选区并入上一句"}
-        >
-          并入上句
-        </button>
-        <button
-          type="button"
-          className="ghost"
-          disabled={!canJoin || busy || joinDownConflict !== null}
-          onClick={() => onBoundary("to_next")}
-          title={joinDownConflict ?? "把选区并入下一句"}
-        >
-          并入下句
-        </button>
-        <button
-          type="button"
-          className="ghost"
-          disabled={!canMerge || busy || mergeConflict !== null}
-          onClick={() => onBoundary("merge")}
-          title={mergeConflict ?? "把选区涉及的所有句子合并成一句"}
-        >
-          合并句子
-        </button>
+      <div className="sentence-rail" role="toolbar" aria-label="字幕与句子边界">
+        {/* The title names the pane, the buttons name the operations. 句边界 was
+            the old title and it read as "this whole column is about boundaries",
+            which is wrong — boundaries are one of four things you do here. */}
+        <span className="rail-title">字幕</span>
+        <span className="rail-actions">
+          <button
+            type="button"
+            className="ghost"
+            disabled={!canSplit || busy}
+            onClick={() => onBoundary("new_sentence")}
+            title="把选中的词变成独立的一句"
+          >
+            另起一句
+          </button>
+          <button
+            type="button"
+            className="ghost"
+            disabled={!canJoin || busy || joinUpConflict !== null}
+            onClick={() => onBoundary("to_prev")}
+            title={joinUpConflict ?? "把选区并入上一句"}
+          >
+            并入上句
+          </button>
+          <button
+            type="button"
+            className="ghost"
+            disabled={!canJoin || busy || joinDownConflict !== null}
+            onClick={() => onBoundary("to_next")}
+            title={joinDownConflict ?? "把选区并入下一句"}
+          >
+            并入下句
+          </button>
+          <button
+            type="button"
+            className="ghost"
+            disabled={!canMerge || busy || mergeConflict !== null}
+            onClick={() => onBoundary("merge")}
+            title={mergeConflict ?? "把选区涉及的所有句子合并成一句"}
+          >
+            合并句子
+          </button>
+        </span>
         {/* Always rendered, even when there is nothing to say.
  
             Two heights are what made this rail feel jumpy: the word-count

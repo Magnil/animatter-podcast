@@ -425,11 +425,26 @@ button.ghost:hover:not(:disabled) {
 
 /* --- sentence boundary rail --- */
 
+/* The transcript is a panel like the other two in the sidebar.
+ *
+ * It used to be a bare column: no border, no radius, no background. Next to
+ * 热词 and 操作记录 — both bordered rounded cards — it read as "content spilling
+ * out of the layout" rather than as the third section. The transcript is the
+ * one people look at all day, so it should be the *most* clearly framed, not
+ * the only unframed thing on screen.
+ *
+ * Padding lives on the rail and the rows, not here: the list has to reach the
+ * panel's edges so its scrollbar sits against the border and its rows can own
+ * the full-width hover/selected background. */
 .transcript-pane {
   display: flex;
   flex-direction: column;
   min-height: 0;
   flex: 1;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface, var(--panel));
+  overflow: hidden;
 }
 
 .sentence-rail {
@@ -437,13 +452,18 @@ button.ghost:hover:not(:disabled) {
   align-items: center;
   gap: 4px;
   flex-wrap: wrap;
-  padding: 6px 2px 8px;
-  border-bottom: 1px solid var(--border);
+  /* Same inset as .panel, so 字幕 lines up with 热词 and 操作记录. */
+  padding: 8px 10px 6px;
   position: sticky;
   top: 0;
-  background: var(--panel);
+  /* Opaque, so a sticky rail cannot let rows scroll through it. */
+  background: var(--surface, var(--panel));
   z-index: 5;
 }
+
+/* No rule under the rail: none of the other panel heads has one, and the
+   divider was the single thing making this row look like a toolbar bolted on
+   top of a box instead of the box's own title. */
 
 .sentence-rail .ghost {
   font-size: 0.76rem;
@@ -451,9 +471,26 @@ button.ghost:hover:not(:disabled) {
 }
 
 .rail-title {
-  font-size: 0.72rem;
+  /* Identical to .panel-head h3 on purpose: 字幕 is the third panel's title, and
+     it looked louder than the other two only because it was painted in the body
+     colour while they were muted. Same size, same weight, same grey. */
+  font-size: 0.82rem;
+  font-weight: 600;
   color: var(--muted);
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
+  /* Never let the title wrap: a two-line 字幕 would make the rail 3 rows tall. */
+  white-space: nowrap;
+}
+
+/* The buttons sit at the right end of the rail. `margin-left: auto` rather than
+   `justify-content: space-between` on the rail itself, because the rail wraps:
+   with space-between, a wrapped second row would spread the buttons apart. */
+.rail-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-left: auto;
 }
 
 /* --- speaker name + menu --- */
