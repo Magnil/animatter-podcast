@@ -27,6 +27,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Sentence, SpeakerInfo, Token } from "./api";
 import { charsPerSecond, formatTime } from "./format";
+import { audibleStart } from "./navigation";
 import {
   bubbleCenter,
   selectionRange,
@@ -36,7 +37,7 @@ import {
   wordState,
   type TokenRange,
 } from "./transcript";
-import { FOLLOW_GRACE_MS, planWindow, scrollOffsetFor } from "./virtualList";
+import { FOLLOW_GRACE_MS, planWindow, rowVisible, scrollOffsetFor } from "./virtualList";
 
 export type TokenSelection = TokenRange;
 
@@ -114,7 +115,14 @@ export function SentenceList({
   const dragAnchor = useRef<number | null>(null);
   const sentenceAnchor = useRef<number | null>(null);
 
-  const [anchor, setAnchor] = useState<{ left: number; top: number; bottom: number } | null>(null);
+  const [anchor, setAnchor] = useState<{
+    left: number;
+    top: number;
+    bottom: number;
+    /** The range this bubble was opened on. */
+    from: number;
+    to: number;
+  } | null>(null);
   const [correcting, setCorrecting] = useState<string | null>(null);
   const [menuOrd, setMenuOrd] = useState<number | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -217,8 +225,33 @@ export function SentenceList({
     if (performance.now() - userScrolledAt.current < FOLLOW_GRACE_MS) return;
     revealOrd(activeOrd);
   }, [activeOrd, revealOrd]);
-
   const range = selectionRange(selection);
+
+  /**
+   * Bring a word that was selected elsewhere into view.
+   *
+   * A selection now has two sources: clicking a word here, and clicking the
+   * waveform. The second can point at a word thousands of rows from wherever the
+   * reader had scrolled to, and a highlight off screen is not a highlight — the
+   * user asked 「同时选中对应的词高亮」 and would see nothing happen.
+   *
+   * `rowVisible` is what keeps this from fighting the user: a click inside the
+   * sentence already on screen changes the selection every time, and scrolling
+   * then would move the word out from under the pointer that just picked it.
+   */
+  useEffect(() => {
+    if (!range) return;
+    const token = tokens[range.from];
+    if (!token) return;
+    const row = sentences.findIndex(
+      (sentence) => range.from >= sentence.token_start && range.from < sentence.token_end,
+    );
+    if (row < 0) return;
+    const element = listRef.current;
+    if (!element) return;
+    if (rowVisible(row, heights.current, element.scrollTop, element.clientHeight)) return;
+    revealOrd(sentences[row]?.ord ?? row);
+  }, [range, revealOrd, sentences, tokens]);
 
   const isSelected = useCallback(
     (idx: number): boolean => range !== null && idx >= range.from && idx < range.to,
@@ -266,16 +299,60 @@ export function SentenceList({
   );
 
   /** Anchor the bubble on the word the pointer just touched. */
-  const pointAt = (target: HTMLElement): void => {
+  const pointAt = (target: HTMLElement, from: number, to: number): void => {
     const rect = target.getBoundingClientRect();
-    setAnchor({ left: rect.left + rect.width / 2, top: rect.top, bottom: rect.bottom });
+    setAnchor({ left: rect.left + rect.width / 2, top: rect.top, bottom: rect.bottom, from, to });
   };
+
+  /**
+   * Keep the bubble on its word when the list moves underneath it.
+   *
+   * The anchor is a *screen* position captured at click time, and this list now
+   * moves on its own: picking a word seeks the audio, the playhead crosses into
+   * a new sentence, and the follow effect scrolls. Measured with
+   * `scripts/check-bubble-anchor.mjs`: after one such scroll the bubble sat
+   * 104 px below the word it was acting on, and on a taller scroll it landed on
+   * top of the 操作记录 panel.
+   *
+   * Re-measuring beats computing an offset: the row may have been re-wrapped,
+   * unmounted and remounted by the window, or the whole pane resized. The
+   * element is the truth. Nothing to do when it is not mounted — the bubble is
+   * then hidden anyway, and the next scroll brings both back together.
+   */
+  useLayoutEffect(() => {
+    if (!anchor) return;
+    const element = listRef.current?.querySelector<HTMLElement>(`[data-token="${anchor.from}"]`);
+    if (!element) return;
+    const rect = element.getBoundingClientRect();
+    const left = rect.left + rect.width / 2;
+    if (
+      Math.abs(left - anchor.left) < 0.5 &&
+      Math.abs(rect.top - anchor.top) < 0.5 &&
+      Math.abs(rect.bottom - anchor.bottom) < 0.5
+    ) {
+      return;
+    }
+    setAnchor({ ...anchor, left, top: rect.top, bottom: rect.bottom });
+  }, [anchor, scrollTop, viewportHeight]);
 
   const selectWords = (from: number, to: number, target: HTMLElement): void => {
     const low = Math.min(from, to);
     const high = Math.max(from, to);
     onSelectionChange({ from: low, to: high });
-    pointAt(target);
+    pointAt(target, low, high);
+  };
+
+  /**
+   * Move the audio to the word the user just picked.
+   *
+   * Only on the initial press, not while dragging: dragging across words would
+   * then fire a seek per word crossed, and the playhead would stutter through
+   * the sentence faster than anyone can read it. The gesture says "start here";
+   * extending the selection afterwards is not a new starting point.
+   */
+  const seekToWord = (idx: number): void => {
+    const token = tokens[idx];
+    if (token) onSeek(token.start_ms);
   };
 
   const handleWordDown = (idx: number, event: React.MouseEvent<HTMLElement>): void => {
@@ -287,15 +364,37 @@ export function SentenceList({
 
     if (event.shiftKey && range) {
       selectWords(range.from, idx + 1, event.currentTarget);
+      // The *clicked* word, not the anchor: Shift extends a selection towards a
+      // word the user pointed at, and that word is the one they want to hear.
+      seekToWord(idx);
       return;
     }
     dragAnchor.current = idx;
     selectWords(idx, idx + 1, event.currentTarget);
+    seekToWord(idx);
   };
 
   const handleWordEnter = (idx: number, event: React.MouseEvent<HTMLElement>): void => {
     if (dragAnchor.current === null) return;
     selectWords(dragAnchor.current, idx + 1, event.currentTarget);
+  };
+
+  /**
+   * Move the audio to where a sentence actually starts.
+   *
+   * `audibleStart` rather than `start_ms`: a sentence whose opening words were
+   * deleted begins, audibly, at the first surviving word, and seeking to the raw
+   * `start_ms` would land inside a cut span — where `seek` snaps forward anyway,
+   * but only after a round trip that can overshoot if the deletion is long.
+   *
+   * Ticking the box means "act on this sentence", so the audio has to be there.
+   * It is the same gesture as the time button next to it, and it deliberately
+   * does **not** zoom: the waveform window is the user's, and a click that
+   * silently changes scale makes the next click land somewhere unexpected.
+   */
+  const seekToSentence = (sentence: Sentence): void => {
+    const start = audibleStart(deletedRanges, sentence);
+    if (start !== null) onSeek(start);
   };
 
   /** Sentence checkbox: click = one, Shift = range, Ctrl/Cmd = toggle. */
@@ -309,15 +408,24 @@ export function SentenceList({
       const next = new Set<number>();
       for (let i = start; i <= end; i += 1) next.add(i);
       onSentenceSelectionChange(next);
+      const sentence = sentences.find((item) => item.ord === ord);
+      if (sentence) seekToSentence(sentence);
       return;
     }
 
     if (event.ctrlKey || event.metaKey) {
       const next = new Set(sentenceSelection);
-      if (next.has(ord)) next.delete(ord);
-      else next.add(ord);
+      const added = !next.has(ord);
+      if (added) next.add(ord);
+      else next.delete(ord);
       sentenceAnchor.current = ord;
       onSentenceSelectionChange(next);
+      // Only when the sentence joins the selection: unticking a box is a
+      // retraction, and moving the audio for it would be noise.
+      if (added) {
+        const sentence = sentences.find((item) => item.ord === ord);
+        if (sentence) seekToSentence(sentence);
+      }
       return;
     }
 
@@ -326,6 +434,8 @@ export function SentenceList({
     // obvious *which* text belongs to the sentence — hence a token selection
     // covering it in addition to the checkbox state.
     onSentenceSelectionChange(new Set([ord]));
+    const sentence = sentences.find((item) => item.ord === ord);
+    if (sentence) seekToSentence(sentence);
   };
 
   useEffect(() => {
@@ -411,6 +521,11 @@ export function SentenceList({
    */
   const bubbleStyle = useMemo((): React.CSSProperties | null => {
     if (!anchor || !range) return null;
+    // The anchor is a screen position captured when the bubble opened. If the
+    // selection has since been replaced from somewhere else (a click on the
+    // waveform, a keyboard action), that position now points at a *different*
+    // word — a bubble floating over one word and acting on another.
+    if (anchor.from !== range.from || anchor.to !== range.to) return null;
     const viewportWidth = typeof window === "undefined" ? 0 : window.innerWidth;
     const viewportHeight = typeof window === "undefined" ? 0 : window.innerHeight;
     const natural = correcting === null ? BUBBLE_WIDTH : BUBBLE_WIDTH_FORM;

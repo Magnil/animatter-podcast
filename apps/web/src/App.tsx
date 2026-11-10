@@ -19,7 +19,7 @@ import {
   type Version,
 } from "./api";
 import { loadAllSentences } from "./transcriptLoad";
-import { hiddenSpans as hiddenWordSpans } from "./transcript";
+import { hiddenSpans as hiddenWordSpans, tokenAt } from "./transcript";
 import { isTerminal, percentOf, pollDelayMs, renderEta } from "./renderProgress";
 import { HistoryPanel } from "./HistoryPanel";
 import { NewProjectDialog } from "./NewProjectDialog";
@@ -466,6 +466,45 @@ function Desk({
     if (targetStart === null) return;
     playback.seek(targetStart);
   }, [boot.sentences, currentSentence, deletedSpans, playback]);
+
+  /**
+   * A click on the waveform: move the playhead, and point the transcript at it.
+   *
+   * The two halves of the screen have to agree about *when* it is. Before this,
+   * clicking the timeline moved the audio and left the word selection wherever
+   * it happened to be — so 「删除选中」 acted on a word the user had clicked
+   * twenty seconds of audio ago, which is the worst possible combination: a
+   * destructive action aimed by a stale pointer.
+   *
+   * Three things this deliberately does not do:
+   *
+   * * **It does not tick the sentence checkbox.** Ticking it would make
+   *   「删除选中」 and the boundary buttons act on the whole sentence, silently
+   *   escalating a "show me where I am" click into a sentence-sized operation.
+   *   The active sentence is already marked by the playhead and the `.active`
+   *   highlight; that is the right amount of signal.
+   * * **It does not fall back to the nearest word.** A click in the 100–200 ms
+   *   pause between two words clears the selection instead, because the honest
+   *   answer is "no word is playing here".
+   * * **It does not seek to the click time when that time is deleted.** `seek`
+   *   snaps forward out of deletions, and the return value is used for the
+   *   lookup — otherwise clicking inside a cut span would highlight the words
+   *   that were removed rather than the audio that actually plays.
+   *
+   * It *does* clear any ticked sentences, because that is not a new rule: word
+   * selection and sentence selection are exclusive everywhere else, and leaving
+   * a sentence ticked here would mean the highlight shows one word while
+   * 「删除选中」 acts on a whole sentence the user cannot see is still selected.
+   */
+  const seekAndPoint = useCallback(
+    (ms: number) => {
+      const landed = playback.seek(ms);
+      const index = tokenAt(boot.tokens, landed);
+      onSentenceSelectionChange(new Set());
+      onSelectionChange(index < 0 ? null : { from: index, to: index + 1 });
+    },
+    [boot.tokens, onSelectionChange, onSentenceSelectionChange, playback],
+  );
 
   /** Token range covered by the current selection, whichever kind it is. */
   const selectionRange = useCallback((): { from: number; to: number } | null => {
@@ -1233,7 +1272,7 @@ function Desk({
               if (sentence) playSentence(sentence);
             }}
             onEdgeCommit={(handle, ms) => void commitEdge(handle, ms)}
-            onSeek={playback.seek}
+            onSeek={seekAndPoint}
           />
 
           <div className="transport">
