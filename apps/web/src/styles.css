@@ -1897,6 +1897,205 @@ button.small,
   background: color-mix(in oklab, var(--accent) 12%, transparent);
 }
 
+/* --- asset library (P2) ---------------------------------------------------
+   A horizontal strip, not a sidebar: it is used in short bursts (import, drag,
+   forget), and a permanent column would compete with the transcript for width. */
+.asset-library {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.asset-import {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.asset-list {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  margin: 0;
+  padding: 0 0 4px;
+  list-style: none;
+}
+
+.asset-item {
+  flex: 0 0 auto;
+  width: 148px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px;
+  background: var(--surface, var(--panel));
+  cursor: grab;
+}
+
+.asset-item.is-dragging {
+  opacity: 0.5;
+  cursor: grabbing;
+}
+
+/* A broken asset is drawn, not hidden: "the file is gone" is information the user
+   needs before an export fails on it. */
+.asset-item.is-broken {
+  border-color: var(--danger, #dc2626);
+  cursor: not-allowed;
+}
+
+.asset-thumb {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  border-radius: 4px;
+  background: var(--panel) center / cover no-repeat;
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8rem;
+}
+
+.asset-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+
+.asset-name {
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- the video track (P2) ------------------------------------------------
+   Blocks are drawn at their ORIGINAL width. Drawing the output width would leave a
+   gap between two blocks that share a boundary as soon as one loses audio to a cut,
+   and a gap reads as "no video here" while the block plays straight through. */
+.video-track-wrap {
+  width: 100%;
+}
+
+.video-track {
+  position: relative;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: color-mix(in oklab, var(--panel) 92%, var(--border));
+  overflow: hidden;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.video-track.wants-drop {
+  border-color: var(--accent);
+  border-style: dashed;
+}
+
+.video-block {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  border-radius: 4px;
+  background: color-mix(in oklab, var(--accent) 30%, var(--panel));
+  border: 1px solid var(--accent);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px;
+  font-size: 0.7rem;
+  cursor: grab;
+  user-select: none;
+}
+
+.video-block.is-dragged {
+  opacity: 0.6;
+}
+
+.video-block.is-orphan {
+  border-color: var(--danger, #dc2626);
+  background: color-mix(in oklab, var(--danger, #dc2626) 18%, var(--panel));
+}
+
+/* The kept share of the block, drawn as a filled bar along its bottom edge. A number
+   ("8.0s of 10.0s") is easy to skip; a bar is not. */
+.video-block-kept {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 3px;
+  background: var(--accent);
+}
+
+.video-block-kind,
+.video-block-time {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.video-block-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
+  opacity: 0.9;
+}
+
+.video-block-handle.start {
+  left: 0;
+}
+
+.video-block-handle.end {
+  right: 0;
+}
+
+.video-ghost {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  border: 1px dashed var(--accent);
+  border-radius: 4px;
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+  pointer-events: none;
+}
+
+.video-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--danger, #dc2626);
+  pointer-events: none;
+}
+
+.video-item.is-selected {
+  outline: 1px solid var(--accent);
+  border-radius: 4px;
+}
+
+.video-selected {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.field.inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
 /* Two sliders under the still. Kept inline in the panel (not a dialog) because
    the loop is "nudge the number, look at the frame" — a modal would hide the
    very thing being adjusted. */

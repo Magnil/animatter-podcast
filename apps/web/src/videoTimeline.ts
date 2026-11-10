@@ -139,11 +139,98 @@ export function orphanedBlocks<T extends { orphaned: boolean; start_ms: number }
 }
 
 /**
+ * Where a new block should land when something is dropped, and how big it should be.
+ *
+ * Two rules, both learned from how people actually drop things:
+ *
+ * 1. **Snap the start, then choose the end.** A drop lands at a sentence start, and the
+ *    block then runs to the *next* boundary rather than a fixed default length. A fixed
+ *    5 s default ignores the material: a 2-sentence aside is 3 s and the next topic is
+ *    40 s, so any constant is wrong most of the time.
+ * 2. **Never overlap an existing block.** Dropping onto an occupied stretch would create
+ *    a block that mostly does not play (the chain trims overlaps), which looks like the
+ *    drop failed. Landing in the gap after the occupying block is the honest answer, and
+ *    it is also what the user meant by dropping there.
+ *
+ * Returns `null` when there is no room after `atMs` — the caller tells the user rather
+ * than creating a zero-length block.
+ */
+export function dropRange(
+  atMs: number,
+  targets: number[],
+  durationMs: number,
+  existing: { start_ms: number; end_ms: number }[],
+): { start_ms: number; end_ms: number } | null {
+  const sorted = [...existing].sort((a, b) => a.start_ms - b.start_ms);
+  let start = snapEdge(atMs, targets);
+  // Slide past anything the drop landed inside.
+  for (const block of sorted) {
+    if (start >= block.start_ms && start < block.end_ms) start = block.end_ms;
+  }
+  const nextTarget = targets.filter((point) => point > start).sort((a, b) => a - b)[0];
+  const occupied = sorted.filter((block) => block.start_ms >= start);
+  const ceiling = occupied.length > 0 ? (occupied[0]?.start_ms ?? durationMs) : durationMs;
+  const end = Math.min(nextTarget ?? durationMs, ceiling, durationMs);
+  if (end - start < MIN_BLOCK_MS) return null;
+  return { start_ms: start, end_ms: end };
+}
+
+/**
+ * Shortest block worth creating. Below this the picture is a flash, and the server
+ * refuses blocks under one millisecond anyway — saying so here gives a message instead of
+ * a 400.
+ */
+export const MIN_BLOCK_MS = 200;
+
+/** Which block sits at `ms`, topmost last so a later block wins the hit test. */
+export function blockAt<T extends { start_ms: number; end_ms: number }>(ms: number, blocks: T[]): T | null {
+  let found: T | null = null;
+  for (const block of blocks) {
+    if (block.start_ms <= ms && ms < block.end_ms) found = block;
+  }
+  return found;
+}
+
+/** Drag a whole block by `deltaMs`, then snap its start and keep its length. */
+export function moveBlock(
+  block: { start_ms: number; end_ms: number },
+  deltaMs: number,
+  targets: number[],
+  durationMs: number,
+): { start_ms: number; end_ms: number } {
+  const length = block.end_ms - block.start_ms;
+  const snapped = snapEdge(block.start_ms + deltaMs, targets);
+  const start = Math.max(0, Math.min(snapped, Math.max(0, durationMs - length)));
+  return { start_ms: start, end_ms: start + length };
+}
+
+/** Resize one edge, refusing to invert the block. */
+export function resizeBlock(
+  block: { start_ms: number; end_ms: number },
+  edge: "start" | "end",
+  ms: number,
+  targets: number[],
+): { start_ms: number; end_ms: number } {
+  const snapped = snapEdge(ms, targets);
+  if (edge === "start") {
+    return { start_ms: Math.min(snapped, block.end_ms - MIN_BLOCK_MS), end_ms: block.end_ms };
+  }
+  return { start_ms: block.start_ms, end_ms: Math.max(snapped, block.start_ms + MIN_BLOCK_MS) };
+}
+
+/** The view window needed to show a block, keeping the current span if it fits. */
+export function viewAround(ms: number, view: View, total: number): View {
+  const span = Math.max(MIN_BLOCK_MS, view.to - view.from);
+  const from = Math.max(0, Math.min(ms - span / 2, Math.max(0, total - span)));
+  return { from, to: from + span };
+}
+
+/**
  * What the collapsed summary line says.
  *
- * Deliberately counts *blocks*, not seconds: "视频：模板已套用 · 4 个素材块" answers
- * "is this project using video?" at a glance, which is the only question a collapsed
- * panel has to answer.
+ * Deliberately counts *blocks*, not seconds: "视频：模板已套用 · 4 个素材块" answers "is this
+ * project using video?" at a glance, which is the only question a collapsed panel has to
+ * answer.
  */
 export function summaryLine(
   templateStatus: string | null,

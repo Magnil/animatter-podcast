@@ -16,14 +16,20 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  blockAt,
+  dropRange,
   galleryCaption,
   galleryDwellMs,
   layoutBlock,
   lengthCaption,
+  MIN_BLOCK_MS,
+  moveBlock,
   msToX,
   orphanedBlocks,
+  resizeBlock,
   snapEdge,
   summaryLine,
+  viewAround,
   xToMs,
 } from "./videoTimeline.ts";
 
@@ -205,4 +211,119 @@ test("summaryLine covers every template state", () => {
 
 test("summaryLine surfaces orphans so a collapsed panel is not a lie", () => {
   assert.equal(summaryLine("ready", 4, 1), "模板已套用 · 4 个素材块（1 个待处理）");
+});
+
+// --- dropping a new block ----------------------------------------------
+
+const TARGETS = [0, 4000, 9000, 20000];
+
+test("dropRange snaps the start and runs to the next boundary", () => {
+  const range = dropRange(3900, TARGETS, 30000, []);
+  assert.deepEqual(range, { start_ms: 4000, end_ms: 9000 });
+});
+
+test("dropRange never produces a fixed default length", () => {
+  // A 5 s constant would be wrong for both of these: the tiles are 4 s and 11 s.
+  assert.equal(dropRange(100, TARGETS, 30000, []).end_ms, 4000);
+  assert.equal(dropRange(4100, TARGETS, 30000, []).end_ms, 9000);
+});
+
+test("dropRange slides past a block it landed inside", () => {
+  const occupied = [{ start_ms: 0, end_ms: 8000 }];
+  const range = dropRange(2000, TARGETS, 30000, occupied);
+  assert.equal(range.start_ms, 8000);
+});
+
+test("dropRange stops at the next block instead of overlapping it", () => {
+  const occupied = [{ start_ms: 9000, end_ms: 12000 }];
+  const range = dropRange(4100, TARGETS, 30000, occupied);
+  assert.deepEqual(range, { start_ms: 4000, end_ms: 9000 });
+});
+
+test("dropRange refuses when there is no room", () => {
+  const occupied = [{ start_ms: 0, end_ms: 30000 }];
+  assert.equal(dropRange(1000, TARGETS, 30000, occupied), null);
+});
+
+test("dropRange refuses a sliver at the end of the file", () => {
+  assert.equal(dropRange(29950, TARGETS, 30000, []), null);
+});
+
+test("dropRange measures the sliver limit, not a magic number", () => {
+  const range = dropRange(30000 - MIN_BLOCK_MS, TARGETS, 30000, []);
+  assert.deepEqual(range, { start_ms: 30000 - MIN_BLOCK_MS, end_ms: 30000 });
+});
+
+// --- moving and resizing ----------------------------------------------
+
+test("moveBlock keeps the length and snaps the start", () => {
+  // 100 ms is inside the 120 ms snap radius, so the block settles back on its boundary.
+  const nudged = moveBlock({ start_ms: 4000, end_ms: 8000 }, 100, TARGETS, 30000);
+  assert.deepEqual(nudged, { start_ms: 4000, end_ms: 8000 });
+  // 4000 + 5000 = 9000 is a boundary, so the length is preserved exactly.
+  const further = moveBlock({ start_ms: 4000, end_ms: 8000 }, 5000, TARGETS, 30000);
+  assert.deepEqual(further, { start_ms: 9000, end_ms: 13000 });
+  // A drag that ends between boundaries keeps its length and is not rounded anywhere:
+  // re-seating it would silently rewrite the offset the user dragged to.
+  const free = moveBlock({ start_ms: 4000, end_ms: 8000 }, 6000, TARGETS, 30000);
+  assert.deepEqual(free, { start_ms: 10000, end_ms: 14000 });
+});
+
+test("moveBlock cannot push a block off the end", () => {
+  const moved = moveBlock({ start_ms: 25000, end_ms: 29000 }, 60000, [0, 30000], 30000);
+  assert.equal(moved.end_ms, 30000);
+  assert.equal(moved.end_ms - moved.start_ms, 4000);
+});
+
+test("moveBlock cannot push a block before zero", () => {
+  const moved = moveBlock({ start_ms: 1000, end_ms: 3000 }, -60000, [0, 30000], 30000);
+  assert.equal(moved.start_ms, 0);
+});
+
+test("resizeBlock moves the start edge", () => {
+  const resized = resizeBlock({ start_ms: 4000, end_ms: 9000 }, "start", 3900, TARGETS);
+  assert.deepEqual(resized, { start_ms: 4000, end_ms: 9000 });
+});
+
+test("resizeBlock moves the end edge", () => {
+  const resized = resizeBlock({ start_ms: 4000, end_ms: 9000 }, "end", 20050, TARGETS);
+  assert.deepEqual(resized, { start_ms: 4000, end_ms: 20000 });
+});
+
+test("resizeBlock refuses to invert the block", () => {
+  // Dragging the start past the end would create a negative-length block; clamping to a
+  // sliver is visible and reversible, an inverted block is a 500 from the server.
+  const resized = resizeBlock({ start_ms: 4000, end_ms: 5000 }, "start", 9000, TARGETS);
+  assert.equal(resized.end_ms - resized.start_ms, MIN_BLOCK_MS);
+});
+
+// --- hit testing -------------------------------------------------------
+
+test("blockAt finds the block under an instant", () => {
+  const blocks = [{ start_ms: 0, end_ms: 4000 }, { start_ms: 4000, end_ms: 8000 }];
+  assert.deepEqual(blockAt(500, blocks), blocks[0]);
+  assert.deepEqual(blockAt(4000, blocks), blocks[1], "half-open: 4000 belongs to the second");
+});
+
+test("blockAt returns null outside every block", () => {
+  assert.equal(blockAt(9999, [{ start_ms: 0, end_ms: 4000 }]), null);
+});
+
+test("blockAt prefers the later block when two overlap", () => {
+  const blocks = [{ start_ms: 0, end_ms: 5000 }, { start_ms: 3000, end_ms: 8000 }];
+  assert.deepEqual(blockAt(3500, blocks), blocks[1]);
+});
+
+// --- keeping the block on screen --------------------------------------
+
+test("viewAround centres a block without changing the span", () => {
+  const view = viewAround(60000, { from: 0, to: 20000 }, 120000);
+  assert.equal(view.to - view.from, 20000);
+  assert.equal(view.from, 50000);
+});
+
+test("viewAround clamps at the start and the end", () => {
+  assert.equal(viewAround(0, { from: 0, to: 20000 }, 120000).from, 0);
+  const atEnd = viewAround(120000, { from: 0, to: 20000 }, 120000);
+  assert.equal(atEnd.to, 120000);
 });

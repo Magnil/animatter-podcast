@@ -23,12 +23,17 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type VideoItem, type VideoTemplate, type VideoTimeline } from "./api";
+import { AssetLibrary } from "./AssetLibrary";
 import { formatDuration, formatTime } from "./format";
+import { VideoTrack } from "./VideoTrack";
 import {
   galleryCaption,
   lengthCaption,
+  dropRange,
   orphanedBlocks,
   summaryLine,
+  viewAround,
+  type View,
 } from "./videoTimeline";
 
 interface Props {
@@ -47,6 +52,16 @@ const FITS: { id: string; label: string; hint: string }[] = [
   { id: "stretch", label: "拉伸", hint: "会变形" },
 ];
 
+/** How many images a gallery block holds, tolerating a half-edited string. */
+function galleryCount(item: VideoItem): number {
+  try {
+    const parsed = JSON.parse(item.gallery_json || "[]") as unknown;
+    return Array.isArray(parsed) ? parsed.length : 0;
+  } catch {
+    return 0;
+  }
+}
+
 export function VideoPanel({
   projectId,
   versionId,
@@ -64,6 +79,11 @@ export function VideoPanel({
   const [fontSize, setFontSize] = useState(52);
   const [marginV, setMarginV] = useState(56);
   const [exporting, setExporting] = useState<{ id: string; percent: number; url: string } | null>(null);
+  // P2: the library, the dragged asset, and the selected block.
+  const [assetRevision, setAssetRevision] = useState(0);
+  const [draggingAsset, setDraggingAsset] = useState<string | null>(null);
+  const [selected, setSelected] = useState<VideoItem | null>(null);
+  const [view, setView] = useState<View>({ from: 0, to: 60_000 });
 
   const load = useCallback(async () => {
     setError(null);
@@ -145,7 +165,7 @@ export function VideoPanel({
     }
   };
 
-  const doFit = async (fit: string): Promise<void> => {
+  const doDefaultFit = async (fit: string): Promise<void> => {
     try {
       setTemplate(await api.updateVideoTemplate(projectId, fit));
     } catch (caught) {
@@ -213,8 +233,94 @@ export function VideoPanel({
   const doDeleteItem = async (item: VideoItem): Promise<void> => {
     try {
       await api.deleteVideoItem(item.id);
+      if (selected?.id === item.id) setSelected(null);
       await load();
       onNotice("素材块已删除");
+    } catch (caught) {
+      onNotice(caught instanceof Error ? caught.message : String(caught));
+    }
+  };
+
+  /**
+   * A block was dragged, resized, or dropped onto.
+   *
+   * Patching one field at a time would leave the block in a state the server never sees
+   * (start moved, end not yet), and the anchor rules would then re-seat it twice. So the
+   * two edges always travel together.
+   */
+  const doMove = async (item: VideoItem, startMs: number, endMs: number): Promise<void> => {
+    try {
+      await api.patchVideoItem(item.id, { start_ms: startMs, end_ms: endMs });
+      await load();
+    } catch (caught) {
+      onNotice(caught instanceof Error ? caught.message : String(caught));
+      await load();
+    }
+  };
+
+  /**
+   * Drop an asset onto the track: create a block covering the sentences it landed on.
+   *
+   * The range comes from `dropRange`, which snaps to the grid and refuses to overlap an
+   * existing block — an overlapping block would be mostly trimmed away by the chain and
+   * read as "the drop did nothing".
+   */
+  const doDropAsset = async (assetId: string, atMs: number): Promise<void> => {
+    if (!timeline) return;
+    const range = dropRange(atMs, timeline.grid.targets, timeline.grid.duration_ms, timeline.items);
+    if (range === null) {
+      onNotice("这里放不下新的素材块，换一个位置再拖");
+      return;
+    }
+    try {
+      const created = await api.addVideoItem(versionId, {
+        kind: "media",
+        start_ms: range.start_ms,
+        end_ms: range.end_ms,
+        asset_id: assetId,
+        fit: template?.box_fit_default ?? "blur_fill",
+      });
+      setSelected(created);
+      await load();
+      onNotice(`已加入素材块 ${formatTime(range.start_ms)}–${formatTime(range.end_ms)}`);
+    } catch (caught) {
+      onNotice(caught instanceof Error ? caught.message : String(caught));
+    }
+  };
+
+  /** Turn the selected block into a gallery, or add the current asset to it. */
+  const doMakeGallery = async (item: VideoItem, assetId: string): Promise<void> => {
+    let members: { asset_id: string; weight?: number }[] = [];
+    try {
+      members = item.kind === "gallery" ? (JSON.parse(item.gallery_json) as typeof members) : [];
+    } catch {
+      members = [];
+    }
+    if (item.kind === "media" && item.asset_id) {
+      members = [{ asset_id: item.asset_id }];
+    }
+    if (members.some((member) => member.asset_id === assetId)) {
+      onNotice("这个素材已经在这个画廊里了");
+      return;
+    }
+    members.push({ asset_id: assetId });
+    try {
+      await api.patchVideoItem(item.id, {
+        kind: "gallery",
+        gallery_json: JSON.stringify(members),
+        asset_id: "",
+      });
+      await load();
+      onNotice(`画廊现在有 ${members.length} 张`);
+    } catch (caught) {
+      onNotice(caught instanceof Error ? caught.message : String(caught));
+    }
+  };
+
+  const doFit = async (item: VideoItem, fit: string): Promise<void> => {
+    try {
+      await api.patchVideoItem(item.id, { fit });
+      await load();
     } catch (caught) {
       onNotice(caught instanceof Error ? caught.message : String(caught));
     }
@@ -363,7 +469,7 @@ export function VideoPanel({
               <span>框内默认填充</span>
               <select
                 value={template.box_fit_default}
-                onChange={(event) => void doFit(event.target.value)}
+                onChange={(event) => void doDefaultFit(event.target.value)}
               >
                 {FITS.map((fit) => (
                   <option key={fit.id} value={fit.id}>
@@ -395,18 +501,41 @@ export function VideoPanel({
             </div>
           ) : null}
 
+          {timeline ? (
+            <VideoTrack
+              items={timeline.items}
+              targets={timeline.grid.targets}
+              durationMs={timeline.grid.duration_ms}
+              view={view}
+              positionMs={positionMs}
+              draggingAssetId={draggingAsset}
+              onSeek={(ms) => setView(viewAround(ms, view, timeline.grid.duration_ms))}
+              onSelect={setSelected}
+              onMove={(item, start, end) => void doMove(item, start, end)}
+              onDropAsset={(assetId, atMs) => void doDropAsset(assetId, atMs)}
+            />
+          ) : null}
+
           <div className="video-items">
             {timeline && timeline.items.length === 0 ? (
-              <p className="muted small">还没有素材块。素材库和拖拽在 P2。</p>
+              <p className="muted small">
+                还没有素材块。从下面的素材库里把一个文件拖到时间轴上，或者拖给某个句子。
+              </p>
             ) : (
               <ul>
                 {(timeline?.items ?? []).map((item) => (
-                  <li key={item.id} className={item.orphaned ? "video-item is-orphan" : "video-item"}>
+                  <li
+                    key={item.id}
+                    className={`video-item${item.orphaned ? " is-orphan" : ""}${
+                      selected?.id === item.id ? " is-selected" : ""
+                    }`}
+                    onClick={() => setSelected(item)}
+                  >
                     <span className="video-item-when">{formatTime(item.start_ms)}</span>
                     <span className="video-item-len">{lengthCaption(item)}</span>
                     <span className="muted small">
                       {item.kind === "gallery"
-                        ? galleryCaption(item, JSON.parse(item.gallery_json || "[]").length)
+                        ? galleryCaption(item, galleryCount(item))
                         : item.fit}
                     </span>
                     <button type="button" className="ghost small" onClick={() => void doDeleteItem(item)}>
@@ -417,6 +546,52 @@ export function VideoPanel({
               </ul>
             )}
           </div>
+
+          {selected ? (
+            <div className="video-selected">
+              <p className="muted small">
+                选中 {formatTime(selected.start_ms)}–{formatTime(selected.end_ms)}（
+                {lengthCaption(selected)}）
+              </p>
+              <div className="edl-actions">
+                <label className="field inline">
+                  <span>填充</span>
+                  <select
+                    value={selected.fit}
+                    onChange={(event) => void doFit(selected, event.target.value)}
+                  >
+                    {FITS.map((fit) => (
+                      <option key={fit.id} value={fit.id}>
+                        {fit.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {draggingAsset ? null : (
+                  <span className="muted small">
+                    拖一个素材到这里可以加进画廊
+                    {selected.kind === "gallery" ? `（现在 ${galleryCount(selected)} 张）` : ""}
+                  </span>
+                )}
+              </div>
+            </div>
+          ) : null}
+
+          <AssetLibrary
+            projectId={projectId}
+            revision={assetRevision}
+            onDragStateChange={setDraggingAsset}
+            onAddToBlock={
+              selected === null ? undefined : (assetId) => void doMakeGallery(selected, assetId)
+            }
+            onNotice={(message) => {
+              // Importing or deleting an asset can change what a block can show, so the
+              // library and the timeline are refreshed together — but only on a *count*
+              // change, which the notice text is the cheapest signal for.
+              if (message.includes("素材")) setAssetRevision((value) => value + 1);
+              onNotice(message);
+            }}
+          />
 
           <div className="edl-actions">
             <button

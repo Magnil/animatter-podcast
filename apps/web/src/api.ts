@@ -852,6 +852,41 @@ export const api = {
   videoTimeline: (versionId: string) =>
     request<VideoTimeline>(`/api/versions/${versionId}/video/timeline`),
 
+  // --- asset library (P2) ------------------------------------------------
+
+  videoAssets: (projectId: string) =>
+    request<VideoAsset[]>(`/api/projects/${projectId}/video/assets`),
+
+  /** Import from a path on this machine — the same shape the PSD import uses. */
+  importVideoAsset: (projectId: string, path: string) =>
+    request<VideoAsset>(`/api/projects/${projectId}/video/assets`, {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    }),
+
+  /**
+   * Import bytes dragged into the browser.
+   *
+   * Uploaded rather than referenced because a `File` has no path: the browser hands over
+   * a blob, and pretending otherwise would mean asking the user to type a filesystem path
+   * for something they can see on screen.
+   */
+  uploadVideoAsset: async (projectId: string, file: File): Promise<VideoAsset> => {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    // Deliberately not `rawRequest` + a JSON content type: multipart sets its own
+    // boundary, and overriding it makes the server see an unparseable body.
+    const response = await fetch(`/api/projects/${projectId}/video/assets/upload`, {
+      method: "POST",
+      body: form,
+    });
+    if (!response.ok) throw await failure(response, `上传 ${file.name} 失败`);
+    return (await response.json()) as VideoAsset;
+  },
+
+  deleteVideoAsset: (assetId: string) =>
+    request<void>(`/api/video/assets/${assetId}`, { method: "DELETE" }),
+
   addVideoItem: (
     versionId: string,
     body: {
@@ -872,9 +907,12 @@ export const api = {
   patchVideoItem: (
     itemId: string,
     body: {
+      kind?: string;
       start_ms?: number;
       end_ms?: number;
       fit?: string;
+      asset_id?: string;
+      gallery_json?: string;
       snap?: boolean;
     },
   ) =>
@@ -1082,4 +1120,19 @@ export interface VideoExport {
   duration_ms: number;
   url: string;
   error: string | null;
+}
+
+export interface VideoAsset {
+  id: string;
+  kind: "image" | "video";
+  name: string;
+  sha256: string;
+  width: number;
+  height: number;
+  /** 0 for images: they have no intrinsic length. */
+  duration_ms: number;
+  created_at: string;
+  url: string;
+  /** False when the file was deleted outside the app. */
+  exists: boolean;
 }
