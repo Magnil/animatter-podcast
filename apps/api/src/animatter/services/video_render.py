@@ -36,6 +36,7 @@ from animatter.core.edl import Edl
 from animatter.errors import AppError
 from animatter.ids import new_id, utcnow_iso
 from animatter.log import get_logger
+from animatter.media import box_track
 from animatter.media import video as video_media
 from animatter.media.subtitle_ass import AssCue, SubtitleStyle, write_ass
 from animatter.models import Render, TranscriptVersion, VideoItem, VideoTemplate
@@ -43,6 +44,7 @@ from animatter.services import clipping as clipping_service
 from animatter.services import projects as project_service
 from animatter.services import subtitles as subtitle_service
 from animatter.services import video as video_service
+from animatter.services import video_box
 from animatter.services import video_templates as template_service
 
 log = get_logger(__name__)
@@ -191,11 +193,38 @@ def _ass_for(
 
 
 def _layers(template: VideoTemplate) -> list[video_media.Layer]:
-    """Static overlays above the box content, in P1 just the frame stroke."""
+    """Static overlays above the box content, in P1 just the frame stroke.
+
+    Ordered **after** the box in the graph, which is what makes the stroke sit on top of
+    the picture instead of being covered by it.
+    """
     path = Path(template.overlay_path) if template.overlay_path else None
     if path is None or not path.is_file():
         return []
     return [video_media.Layer(path=path, x=0, y=0)]
+
+
+def _box(
+    session: Session,
+    *,
+    template: VideoTemplate,
+    box_rect: dict[str, int],
+    items: list[VideoItem],
+    edl: Edl,
+) -> video_box.BoxPlan:
+    """Plan the media-box chain for this export (§19.5).
+
+    Returns an *empty* plan rather than raising when the project has no blocks: a film
+    with a background and subtitles but an empty box is a legitimate export, and refusing
+    it would make the feature regress for anyone who has not started using the box yet.
+    """
+    return video_box.plan(
+        session,
+        template_background=Path(template.background_path),
+        box_rect=box_rect,
+        items=items,
+        edl=edl,
+    )
 
 
 # --- still preview ------------------------------------------------------
@@ -233,7 +262,44 @@ def preview_still(
             session, version_id, edl, style or SubtitleStyle(), out_dir / "preview.ass"
         )
 
+    plan = _box(
+        session,
+        template=template,
+        box_rect=template_service.box_rect_of(template),
+        items=video_service.list_items(session, project_id),
+        edl=edl,
+    )
     target = out_dir / f"still-{at_ms:09d}.png"
+
+    box_chain: box_track.BoxChain | None = None
+    box_segment: box_track.BoxSegment | None = None
+    box_source: Path | None = None
+    if not plan.empty:
+        covered = video_box.covering(plan, at_ms=at_ms)
+        if covered is not None:
+            found, box_source, offset = covered
+            # ``found.input_index`` indexes into the *plan's* deduplicated input list, but
+            # the preview only declares one box input. Passing it through unchanged asked
+            # ffmpeg for `[5:v]` on a two-input command, which fails as
+            # "Error binding filtergraph inputs/outputs: Invalid argument" — an error that
+            # names neither the box nor the preview.
+            box_segment = box_track.BoxSegment(
+                input_index=0,
+                duration_ms=found.duration_ms,
+                kind=found.kind,
+                fit=found.fit,
+                crop=found.crop,
+                loop=found.loop,
+            )
+            box_chain = box_track.build_single(
+                box_segment,
+                source_offset_ms=offset,
+                width=plan.width,
+                height=plan.height,
+                x=plan.box_x,
+                y=plan.box_y,
+            )
+
     video_media.render_still(
         settings.ffmpeg_path,
         target=target,
@@ -242,6 +308,9 @@ def preview_still(
         height=template.canvas_h or 1080,
         background=Path(template.background_path),
         layers=_layers(template),
+        box=box_chain,
+        box_segment=box_segment,
+        box_source=box_source,
         subtitles=subtitles,
     )
     return target
@@ -308,11 +377,13 @@ def _video_signature(prepared: PreparedVideo, options: ExportOptions) -> str:
         str(prepared.duration_ms),
         hashlib.sha256(
             ";".join(
-                f"{item.start_ms}-{item.end_ms}:{item.kind}:{item.fit}:{item.asset_id or ''}"
+                f"{item.start_ms}-{item.end_ms}:{item.kind}:{item.fit}:"
+                f"{item.asset_id or ''}:{item.gallery_json}:{item.motion}"
                 for item in prepared.items
             ).encode()
         ).hexdigest(),
-        f"{style.font_name}/{style.font_size}/{style.primary_colour}/{options.burn_subtitles}",
+        f"{style.font_name}/{style.font_size}/{style.primary_colour}/"
+        f"{style.margin_v}/{style.outline}/{options.burn_subtitles}",
     ]
     return hashlib.sha256("|".join(parts).encode()).hexdigest()
 
@@ -385,6 +456,26 @@ def _encode(
                 session, version_id, prepared.edl, options.style(), out / f"{stem}.ass"
             )
 
+    with db.session() as session:
+        plan = _box(
+            session,
+            template=prepared.template,
+            box_rect=prepared.box_rect,
+            items=prepared.items,
+            edl=prepared.edl,
+        )
+        box_chain = (
+            None
+            if plan.empty
+            else box_track.build_chain(
+                plan.segments,
+                width=plan.width,
+                height=plan.height,
+                x=plan.box_x,
+                y=plan.box_y,
+            )
+        )
+
     video_media.render(
         settings.ffmpeg_path,
         target=silent,
@@ -393,6 +484,9 @@ def _encode(
         height=prepared.template.canvas_h or 1080,
         background=Path(prepared.template.background_path),
         layers=_layers(prepared.template),
+        box=box_chain,
+        box_segments=None if plan.empty else plan.segments,
+        box_sources=None if plan.empty else plan.sources,
         subtitles=subtitles,
     )
     report(0.95)

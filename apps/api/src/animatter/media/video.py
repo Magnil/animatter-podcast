@@ -36,6 +36,7 @@ from typing import Final
 
 from animatter.errors import AppError
 from animatter.log import get_logger
+from animatter.media import box_track
 from animatter.media.subtitle_ass import SubtitleStyle
 from animatter.media.subtitle_ass import ensure_font as ensure_font_installed
 
@@ -62,11 +63,23 @@ class VideoResult:
 
 @dataclass(frozen=True)
 class Layer:
-    """One static RGBA layer to be overlaid at the very top of the stack."""
+    """One layer composited on top of the background.
+
+    ``width``/``height`` default to the canvas, which is right for a full-frame artwork
+    layer (the frame stroke). The box content track is **not** full-frame — it is sized
+    to the box rect and positioned at it — so scaling it to the canvas would smear one
+    1440×810 image across 1920×1080 and push it off its own edge.
+
+    ``is_video`` picks the input declaration: a still is ``-loop 1 -t N``, a rendered
+    track is a real video and must be neither looped nor truncated at the input.
+    """
 
     path: Path
     x: int = 0
     y: int = 0
+    width: int | None = None
+    height: int | None = None
+    is_video: bool = False
 
 
 def escape_filter_path(path: Path) -> str:
@@ -90,6 +103,7 @@ def build_filtergraph(
     layers: list[Layer],
     subtitle_path: Path | None,
     offset_ms: int = 0,
+    box: box_track.BoxChain | None = None,
     out_label: str = "vout",
 ) -> str:
     """Assemble the video filtergraph.
@@ -97,6 +111,11 @@ def build_filtergraph(
     ``[0:v]`` is the compiled background. Every other input is a still or a
     pre-generated track overlaid in order; the subtitle burn is last so text is never
     covered by artwork.
+
+    ``box`` is the media-box content chain (§19.5). It is overlaid **before** the artwork
+    layers so the frame stroke sits on top of the picture, and after the background so the
+    picture covers the plate. Its inputs come last, which is why it needs to know how many
+    inputs came before it — see ``input_base``.
 
     The ``setsar=1`` on each branch is not cosmetic: the compiled PNGs carry no pixel
     aspect metadata, and a mismatch makes the ``overlay`` filter silently scale the
@@ -122,13 +141,26 @@ def build_filtergraph(
         current = "base0"
 
     for index, layer in enumerate(layers, start=1):
-        label = f"l{index}"
+        # A video track is already offset by the caller (it starts at the right instant);
+        # shifting its PTS again would move the picture away from the audio.
+        layer_shift = "" if layer.is_video else shift
+        layer_w = layer.width if layer.width is not None else width
+        layer_h = layer.height if layer.height is not None else height
         parts.append(
             f"[{current}]scale={width}:{height},setsar=1[base{index}];"
-            f"[{index}:v]scale={width}:{height},setsar=1{shift}[img{index}];"
-            f"[base{index}][img{index}]overlay=x={layer.x}:y={layer.y}:format=auto[{label}]"
+            f"[{index}:v]scale={layer_w}:{layer_h},setsar=1{layer_shift}[img{index}];"
+            f"[base{index}][img{index}]overlay=x={layer.x}:y={layer.y}:"
+            f"eof_action={'pass' if layer.is_video else 'repeat'}:format=auto[{label_of(index)}]"
         )
-        current = label
+        current = label_of(index)
+
+    if box is not None:
+        # The chain's own inputs start after the background and the artwork layers.
+        parts.append(box.text_for(input_base=1 + len(layers)))
+        parts.append(
+            f"[{current}][boxout]overlay=x={box.x}:y={box.y}:format=auto[withbox]"
+        )
+        current = "withbox"
 
     if subtitle_path is not None:
         parts.append(f"[{current}]ass=filename='{escape_filter_path(subtitle_path)}'[{out_label}]")
@@ -136,6 +168,10 @@ def build_filtergraph(
         parts.append(f"[{current}]copy[{out_label}]")
 
     return ";\n".join(parts)
+
+
+def label_of(index: int) -> str:
+    return f"l{index}"
 
 
 def _run(command: list[str], *, timeout: int = 7200) -> None:
@@ -187,6 +223,9 @@ def render(
     height: int,
     background: Path,
     layers: list[Layer],
+    box: box_track.BoxChain | None = None,
+    box_segments: list[box_track.BoxSegment] | None = None,
+    box_sources: list[Path] | None = None,
     subtitles: Path | None = None,
     preset: str = PRESET,
     crf: str = CRF,
@@ -196,6 +235,11 @@ def render(
     Each still is declared with ``-loop 1 -t <seconds>``: without the explicit
     ``-t`` ffmpeg loops forever and the encode never ends. The duration is the
     *rendered* one, so the video is exactly as long as the cut audio.
+
+    ``box``/``box_segments``/``box_sources`` are the media-box content (§19.5): a chain
+    built by ``services/video_box.plan`` and the distinct files it reads. They are passed
+    as three pieces rather than one object so this module stays free of the service layer —
+    the media layer only ever sees segments and paths.
     """
     if duration_ms <= 0:
         raise AppError("video_duration_invalid", "视频时长为 0", hint="先渲染音频。")
@@ -223,7 +267,11 @@ def render(
     seconds = f"{duration_ms / 1000:.3f}"
 
     graph = build_filtergraph(
-        width=width, height=height, layers=layers, subtitle_path=subtitles
+        width=width,
+        height=height,
+        layers=layers,
+        subtitle_path=subtitles,
+        box=box,
     )
     script = target.with_suffix(target.suffix + ".filtergraph")
     script.write_text(graph, encoding="utf-8")
@@ -242,7 +290,21 @@ def render(
         str(background),
     ]
     for layer in layers:
-        command += ["-loop", "1", "-t", seconds, "-i", str(layer.path)]
+        if layer.is_video:
+            # A rendered track is exactly as long as the film; looping it would make
+            # the encode never end and `-t` would cut it at the wrong place.
+            command += ["-i", str(layer.path)]
+        else:
+            command += ["-loop", "1", "-t", seconds, "-i", str(layer.path)]
+
+    if box_segments and box_sources:
+        # One input per *distinct* source, in the order the chain's indices refer to.
+        seen: set[int] = set()
+        for segment in box_segments:
+            if segment.input_index in seen:
+                continue
+            seen.add(segment.input_index)
+            command += box_track.input_args(segment, box_sources[segment.input_index])
 
     command += [
         "-filter_complex_script",
@@ -315,6 +377,9 @@ def render_still(
     height: int,
     background: Path,
     layers: list[Layer],
+    box: box_track.BoxChain | None = None,
+    box_segment: box_track.BoxSegment | None = None,
+    box_source: Path | None = None,
     subtitles: Path | None = None,
 ) -> VideoResult:
     """Composite one frame at ``at_ms`` for the preview (§19.7).
@@ -328,10 +393,19 @@ def render_still(
     then draw nothing because no cue covers 0. The offset is applied as a PTS shift on
     an infinitely looping still instead, which costs a few frames of decode and is the
     only version that actually shows the cue.
+
+    ``box_segment`` is the one box content stretch covering ``at_ms`` — a block's image or
+    clip, or a plate excerpt over a gap. Only that one is declared as an input, so a still
+    costs the same whether the film has two blocks or two hundred.
     """
     target.parent.mkdir(parents=True, exist_ok=True)
     graph = build_filtergraph(
-        width=width, height=height, layers=layers, subtitle_path=subtitles, offset_ms=max(0, at_ms)
+        width=width,
+        height=height,
+        layers=layers,
+        subtitle_path=subtitles,
+        offset_ms=max(0, at_ms),
+        box=box,
     )
     script = target.with_suffix(target.suffix + ".filtergraph")
     script.write_text(graph, encoding="utf-8")
@@ -339,8 +413,13 @@ def render_still(
     command = [ffmpeg, "-nostdin", "-y", "-loglevel", "error"]
     if subtitles is not None:
         ensure_font_ok(subtitles)
-    for path in [background, *(layer.path for layer in layers)]:
-        command += ["-loop", "1", "-i", str(path)]
+    for path, layer in [(background, None), *((layer.path, layer) for layer in layers)]:
+        if layer is not None and layer.is_video:
+            command += ["-i", str(path)]
+        else:
+            command += ["-loop", "1", "-i", str(path)]
+    if box_segment is not None and box_source is not None:
+        command += box_track.input_args(box_segment, box_source)
 
     command += [
         "-filter_complex_script",
