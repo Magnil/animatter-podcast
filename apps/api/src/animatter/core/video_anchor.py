@@ -118,33 +118,56 @@ def renormalize(
     grid: tuple[int, ...],
     *,
     duration_ms: int,
+    previous: tuple[int, ...] | None = None,
 ) -> list[Interval]:
-    """Re-seat every block edge on a surviving boundary.
+    """Re-seat block edges that have lost their boundary.
 
-    Called after any edit that can change the set of sentence starts. An edge that
-    still sits on a boundary does not move — that is the whole point of storing
-    absolute instants: the common case (deleting audio inside a block) must not
-    touch the block at all.
+    ``previous`` is the grid **as it was before the edit**. When it is given, only an
+    edge that sat on a boundary of that grid is moved — an edge that was never on a
+    boundary (the user dragged with snapping off, or deliberately dropped 40 ms into a
+    sentence) is left exactly where it is.
 
-    An edge whose boundary vanished moves to the nearest surviving one. When that
-    would collapse the block (``end <= start``), the block is extended to the next
-    boundary rather than dropped — dropping a row here would destroy the user's
-    clip on behalf of an edit they can undo.
+    That distinction matters more than it looks. Re-seating every edge onto the grid
+    would mean any sentence split silently rewrites every hand-placed block in the
+    project, and the user's careful 40 ms offset would be gone with no edit of theirs
+    to blame. When ``previous`` is ``None`` the function is total (every edge lands on
+    the grid), which is what a fresh import or a rebuilt timeline wants.
+
+    An edge whose boundary vanished moves to the nearest surviving one. When that would
+    collapse the block (``end <= start``), it is extended to the next boundary rather
+    than dropped — dropping a row here would destroy the user's clip on behalf of an
+    edit they can undo.
     """
     if not blocks:
         return []
     if not grid:
         grid = (0, max(0, duration_ms))
 
+    pinned = set(previous) if previous is not None else None
     moved: list[Interval] = []
     for block in blocks:
-        start = nearest_boundary(block.start_ms, grid)
-        end = nearest_boundary(block.end_ms, grid)
+        start = _reseat(block.start_ms, grid, duration_ms, pinned)
+        end = _reseat(block.end_ms, grid, duration_ms, pinned)
         if end <= start:
             later = [point for point in grid if point > start]
             end = later[0] if later else max(start + 1, duration_ms)
         moved.append(Interval(start_ms=start, end_ms=end))
     return moved
+
+
+def _reseat(
+    value_ms: int,
+    grid: tuple[int, ...],
+    duration_ms: int,
+    pinned: set[int] | None,
+) -> int:
+    """Move ``value_ms`` onto the grid only if it used to be on one."""
+    if value_ms in grid:
+        return value_ms
+    if pinned is not None and value_ms not in pinned:
+        # Never anchored: this edge is the user's own choice, not a stale cut point.
+        return value_ms
+    return nearest_boundary(value_ms, grid)
 
 
 def nearest_boundary(value_ms: int, grid: tuple[int, ...]) -> int:

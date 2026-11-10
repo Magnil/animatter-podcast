@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from animatter.db import Database
 from animatter.errors import AppError
 from animatter.services import align as align_service
+from animatter.services import video as video_service
 
 router = APIRouter(prefix="/api", tags=["align"])
 
@@ -83,6 +84,11 @@ def set_time_shift(
     except align_service.AlignError as exc:
         _raise(exc)
         raise
+    # The shift is a rigid move of the whole timeline, so the video track moves with
+    # it rather than being re-seated onto the grid: a block whose edge deliberately
+    # sat between two sentences must keep its offset. This is the only path that may
+    # move a `video_item` row's milliseconds.
+    video_service.shift_items(session, _project_of(session, version_id), result.delta_ms)
     return ShiftOut(
         shift_ms=result.applied_ms,
         previous_ms=result.previous_ms,
@@ -92,3 +98,10 @@ def set_time_shift(
         clamped=result.clamped,
         reason=result.reason,
     )
+
+
+def _project_of(session: Session, version_id: str) -> str:
+    from animatter.models import TranscriptVersion
+
+    version = session.get(TranscriptVersion, version_id)
+    return version.project_id if version is not None else ""

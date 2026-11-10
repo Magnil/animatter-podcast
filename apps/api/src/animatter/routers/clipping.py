@@ -81,6 +81,15 @@ def list_deletions(version_id: str, session: Session = Depends(_session_dependen
 def add_deletion(
     version_id: str, payload: DeletionIn, session: Session = Depends(_session_dependency)
 ) -> list[DeletionOut]:
+    """Delete by token ids or by an explicit range.
+
+    Deliberately **no** video-anchor refresh here: a deletion removes audio, but it
+    does not move a single token, so the sentence-start grid this timeline snaps to is
+    untouched. What a deletion *does* change is how long each block plays, and that is
+    derived on read (``services/video.view_items``) rather than stored — so there is
+    nothing to repair on this path, and recompiling the EDL per deletion would be pure
+    cost on the keystroke that has to feel instant.
+    """
     if payload.token_ids:
         rows = clipping_service.add_token_deletion(session, version_id, payload.token_ids)
     elif payload.start_ms is not None and payload.end_ms is not None:

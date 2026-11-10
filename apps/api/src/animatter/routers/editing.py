@@ -18,6 +18,7 @@ from animatter.media import peaks as peaks_service
 from animatter.models import Media
 from animatter.services import editing as edit_service
 from animatter.services import transcribe as transcribe_service
+from animatter.services import video_anchors
 
 router = APIRouter(prefix="/api", tags=["editing"])
 log = get_logger(__name__)
@@ -227,8 +228,20 @@ def mime_for(codec: str, suffix: str) -> str:
 def edit_boundaries(
     version_id: str,
     payload: BoundaryIn,
+    request: Request,
     session: Session = Depends(_session_dependency),
 ) -> BoundaryOut:
+    """Redraw sentence ranges.
+
+    This is one of the two operations that can move the sentence-start grid the video
+    timeline snaps to (the other is a whole-timeline shift). Splitting moves a
+    sentence's first token, merging deletes a boundary entirely — so any video block
+    edge sitting on a boundary that no longer exists has to be re-seated before the
+    response goes out, or the timeline would silently hold a cut point that is not a
+    cut point any more.
+    """
+    settings: Settings = request.app.state.settings
+    previous = video_anchors.grid_before(session, version_id)
     spans = edit_service.apply_boundary(
         session,
         version_id,
@@ -236,6 +249,7 @@ def edit_boundaries(
         from_token=payload.from_token,
         to_token=payload.to_token,
     )
+    video_anchors.after_boundary_edit(session, settings, version_id, previous_grid=previous)
     tokens = transcribe_service.load_tokens(session, version_id)
     return BoundaryOut(sentences=[_view(tokens, span) for span in spans])
 

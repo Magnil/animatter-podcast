@@ -296,13 +296,19 @@ def project_has_items(session: Session, project_id: str) -> bool:
     )
 
 
-def refresh_anchors(session: Session, version: TranscriptVersion) -> int:
+def refresh_anchors(
+    session: Session, version: TranscriptVersion, *, previous: tuple[int, ...] | None = None
+) -> int:
     """Re-seat block edges whose sentence boundary no longer exists.
 
-    Call after anything that can change the set of sentence starts: a boundary
-    edit, a merge, or a deletion that swallowed a whole sentence. Edges still on a
-    surviving boundary do not move, so the common case — deleting audio *inside* a
-    block — costs one query and changes nothing.
+    Call after anything that can change the set of sentence starts: a boundary edit or
+    a merge. Edges still on a surviving boundary do not move, so the common case —
+    deleting audio *inside* a block — costs one query and changes nothing.
+
+    ``previous`` is the grid as it was **before** the edit. It must be passed by any
+    caller that changed the grid, or a hand-placed edge (dragged with snapping off)
+    would be snapped onto the grid along with the genuinely stale ones, silently
+    rewriting an offset the user chose.
 
     Returns how many blocks actually moved, which the caller reports to the user.
     """
@@ -316,6 +322,7 @@ def refresh_anchors(session: Session, version: TranscriptVersion) -> int:
         [Interval(start, end) for start, end in before],
         grid.boundaries,
         duration_ms=grid.duration_ms,
+        previous=previous,
     )
 
     moved = 0
@@ -411,17 +418,23 @@ def refresh_after_audio_edit(
     session: Session,
     settings: Settings,
     version_id: str,
+    *,
+    previous: tuple[int, ...] | None = None,
 ) -> AnchorReport:
-    """Keep the video track coherent after any audio edit.
+    """Keep the video track coherent after an edit that can move the grid.
 
-    Called from the three places that can change what the sentence grid looks like
-    (deletion, restore, boundary edit) and from undo. One function for all of them:
-    each entry point that re-seats anchors separately is a chance for the rules to
-    drift apart.
+    Called from the paths that can change the set of sentence starts (a boundary edit
+    or a merge), and from undo. One function for all of them: each entry point that
+    re-seats anchors separately is a chance for the rules to drift apart.
 
-    Cheap in the common case — if the project has no video blocks, or the compiled
-    keep list still leaves every edge on a boundary, this does one `SELECT` and
-    returns zeros.
+    A **deletion or a restore does not need this**: no token moves, so the grid is
+    unchanged, and a block's shortened length is derived on read by ``view_items``.
+    That is deliberate — the delete keystroke has to stay instant, and recompiling the
+    EDL per deletion would make it the slowest interaction in the app.
+
+    Cheap in the common case — if the project has no video blocks, or the compiled keep
+    list still leaves every edge on a boundary, this does one `SELECT` and returns
+    zeros.
     """
     version = session.get(TranscriptVersion, version_id)
     if version is None or not project_has_items(session, version.project_id):
@@ -435,7 +448,7 @@ def refresh_after_audio_edit(
     keeps = [(keep.orig_start, keep.orig_end) for keep in edl.keeps]
 
     flagged = mark_orphans(session, version, keeps)
-    moved = refresh_anchors(session, version)
+    moved = refresh_anchors(session, version, previous=previous)
     report = AnchorReport(moved=moved, orphaned=len(flagged))
     if report.changed:
         log.info("video.anchors_refreshed", version=version_id, moved=moved, orphaned=len(flagged))
