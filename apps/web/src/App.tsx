@@ -321,7 +321,9 @@ function Desk({
   // the sentence header — invisible from the timeline, where the user is looking
   // when they ask "what did I actually change".
   const hiddenSpans = useMemo(() => hiddenWordSpans(boot.tokens), [boot.tokens]);
-  const playback = usePlayback(audioUrl, boot.version.duration_ms, deletedSpans);
+  const playback = usePlayback(audioUrl, boot.version.duration_ms, deletedSpans, (issue) =>
+    setNotice(issue.message),
+  );
 
   // The EDL is derived on the server from the deletion set; refetch whenever the
   // transcript reloads, because a text edit can change token timings.
