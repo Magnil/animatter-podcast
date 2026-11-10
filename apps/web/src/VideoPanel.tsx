@@ -384,7 +384,7 @@ export function VideoPanel({
                   <li key={item.id}>
                     {formatTime(item.start_ms)} ·{" "}
                     <button type="button" className="ghost small" onClick={() => void doNudge(item)}>
-                      往后挪一秒
+                      挪到下一处
                     </button>
                     <button type="button" className="ghost small" onClick={() => void doDeleteItem(item)}>
                       删掉这个块
