@@ -1,7 +1,15 @@
 /**
- * 一键清理：how the one-click cleanup decides what to cut.
+ * 一键删除与隐去：how the batch actions decide what to act on.
  *
- * Separate panel because it is the only place in this dialog where saving has a
+ * Three categories, one page, in the order the menu lists them:
+ *
+ * 1. **口癖词** — one word list, two actions (delete / hide). The list is shared
+ *    on purpose: "which words are filler" is a fact about the podcast, not about
+ *    what you intend to do with them today.
+ * 2. **静音** — a cut threshold plus the detector that feeds it.
+ * 3. **未转写语流** — a minimum length.
+ *
+ * Separate page because this is the only place in this dialog where saving has a
  * destructive consequence. Everything else adjusts how future output *looks*;
  * this decides what gets removed from the audio. Giving it a page of its own is
  * the cheapest way to make that distinction felt.
@@ -12,10 +20,15 @@ import { NumberField, SectionNote, TextField, type PanelProps } from "./fields";
 export function CleanupPanel({ settings, patch }: PanelProps): React.JSX.Element {
   return (
     <div className="settings-panel">
+      {/* No opening paragraph: the nav entry's summary already reads
+          「删除会剪掉音频，隐去不会；只影响下一次执行」, and restating it in
+          slightly different words made the panel look like two claims that
+          might disagree. The per-category notes below carry the detail that is
+          not already in the summary. */}
+      <h4 className="settings-subhead">口癖词</h4>
       <SectionNote>
-        清理是把音频<strong>真的剪掉</strong>，不是只改文字。改这里只影响下一次清理，已经剪过的内容不会被追溯改动。
+        删除口癖词和隐去口癖词<strong>共用这一份词表</strong>。两者互斥：一个词要么被删除，要么被隐去。
       </SectionNote>
-
       <TextField
         label="口癖词表"
         hint="每行一个，也可用逗号分隔；大小写与首尾标点不敏感"
@@ -29,6 +42,7 @@ export function CleanupPanel({ settings, patch }: PanelProps): React.JSX.Element
         默认不收——需要时自己加，误删比漏删贵得多。
       </SectionNote>
 
+      <h4 className="settings-subhead">静音</h4>
       <NumberField
         label="静音判定 (ms)"
         hint="词之间超过这个长度才算死气，进清单"
@@ -47,19 +61,8 @@ export function CleanupPanel({ settings, patch }: PanelProps): React.JSX.Element
         value={settings.cleanup_silence_pad_ms}
         onChange={(value) => patch("cleanup_silence_pad_ms", value)}
       />
-      <NumberField
-        label="未转写语流最短长度 (ms)"
-        hint="音频里是语音、稿子里没有字；太短的可能是时间戳抖动"
-        min={100}
-        max={3000}
-        step={50}
-        value={settings.cleanup_min_disfluency_ms}
-        onChange={(value) => patch("cleanup_min_disfluency_ms", value)}
-      />
-
-      <h4 className="settings-subhead">静音检测器</h4>
       <SectionNote>
-        这两个值同时决定「哪里算静音」和「切点吸附到哪个静音谷」。改完要重新检测，旧缓存按参数分开存放，不会串。
+        下面两个值同时决定「哪里算静音」和「切点吸附到哪个静音谷」。改完要重新检测，旧缓存按参数分开存放，不会串。
       </SectionNote>
       <NumberField
         label="噪声阈值 (dBFS)"
@@ -78,6 +81,20 @@ export function CleanupPanel({ settings, patch }: PanelProps): React.JSX.Element
         step={50}
         value={settings.silence_min_duration_ms}
         onChange={(value) => patch("silence_min_duration_ms", value)}
+      />
+
+      <h4 className="settings-subhead">未转写语流</h4>
+      <SectionNote>
+        音频里是语音、稿子里没有字的那一段。它没有对应的词，所以只能删除，不能隐去。
+      </SectionNote>
+      <NumberField
+        label="最短长度 (ms)"
+        hint="太短的可能是时间戳抖动，不是漏掉的口癖"
+        min={100}
+        max={3000}
+        step={50}
+        value={settings.cleanup_min_disfluency_ms}
+        onChange={(value) => patch("cleanup_min_disfluency_ms", value)}
       />
     </div>
   );

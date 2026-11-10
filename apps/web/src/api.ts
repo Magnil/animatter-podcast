@@ -544,7 +544,7 @@ export const api = {
       }),
     }),
 
-  /** Bring back a whole category ("还原口癖词") or one batch. */
+  /** Bring back a whole category ("还原已删除口癖词") or one batch. */
   restoreCleanup: (versionId: string, options: { source?: string; batch?: string }) => {
     const params = new URLSearchParams();
     if (options.source) params.set("source", options.source);
@@ -554,6 +554,25 @@ export const api = {
       { method: "POST" },
     );
   },
+
+  /**
+   * Batch-hide filler words: gone from the subtitles, audio untouched.
+   *
+   * A separate call rather than a flag on `applyCleanup`, because the two write
+   * different row types — one creates deletions that reach the renderer, the
+   * other only flips a boolean on the token.
+   */
+  hideFillers: (versionId: string) =>
+    request<{
+      op_id: string;
+      /** Places hidden — the same unit the dialog counted. */
+      hidden: number;
+      /** Raw tokens; larger when adjacent fillers merged into one band. */
+      words: number;
+      span_ms: number;
+      counts: Record<string, number>;
+      kinds: string[];
+    }>(`/api/versions/${versionId}/cleanup/hide-fillers`, { method: "POST" }),
 
   cleanupCounts: (versionId: string) =>
     request<{ counts: Record<string, number> }>(`/api/versions/${versionId}/cleanup/counts`),

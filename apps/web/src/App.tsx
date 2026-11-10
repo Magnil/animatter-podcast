@@ -25,7 +25,7 @@ import { HistoryPanel } from "./HistoryPanel";
 import { NewProjectDialog } from "./NewProjectDialog";
 import { SubtitlePanel } from "./SubtitlePanel";
 import { ScriptPanel } from "./ScriptPanel";
-import { CleanupDialog } from "./CleanupDialog";
+import { CleanupDialog, type BatchAction } from "./CleanupDialog";
 import { HotwordPanel } from "./HotwordPanel";
 import { MenuBar, type Menu } from "./MenuBar";
 import { SentenceList, findActiveSentence, tokenRangeOfSentences, type TokenSelection } from "./SentenceList";
@@ -246,6 +246,14 @@ function Desk({
   const [scriptFormat, setScriptFormat] = useState<ScriptFormat>("shownotes");
   const [showScript, setShowScript] = useState(false);
   const [cleanupOpen, setCleanupOpen] = useState(false);
+  // Which batch action the 处理 menu asked for. Kept as one state rather than
+  // five booleans so "the dialog is open" and "what it does" cannot disagree.
+  const [batchAction, setBatchAction] = useState<BatchAction>("delete-all");
+
+  const openBatch = useCallback((action: BatchAction) => {
+    setBatchAction(action);
+    setCleanupOpen(true);
+  }, []);
   const [episodeHotwords, setEpisodeHotwords] = useState<HotwordItem[]>([]);
   const [globalHotwords, setGlobalHotwords] = useState<HotwordItem[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -694,6 +702,13 @@ function Desk({
     }
   }, [boot.version.id, pollRender, run, say, settings?.export_format]);
 
+  // The filler pair is mutually exclusive: once one of them has been applied the
+  // other has nothing left to act on. Both states are derived from the counts the
+  // menu already loads, so this costs no extra request. `?? 0` because the record
+  // is empty until the first load lands.
+  const fillerHidden = (cleanupCounts["hidden_filler"] ?? 0) > 0;
+  const fillerDeleted = (cleanupCounts["filler"] ?? 0) > 0;
+
   const menus: Menu[] = useMemo(
     () => [
       {
@@ -732,47 +747,99 @@ function Desk({
       },
       {
         id: "cleanup",
-        label: "清理",
+        label: "处理",
         items: [
+          // The actions come first and are scoped: the dialog a menu item opens
+          // is already that action. This replaced a single "一键清理" that asked
+          // for the scope inside the dialog — one button doing two very different
+          // things (cut audio / only edit text) depending on a toggle.
+          //
+          // The filler pair is mutually exclusive and says so by greying out: a
+          // word is either deleted or hidden, never both. The hint is the reason,
+          // not a count — "已隐去 183 处" on a *delete* item reads as a threat.
           {
-            id: "one-click",
-            label: "一键清理…",
-            hint: "口癖 / 静音 / 漏字",
-            onSelect: () => setCleanupOpen(true),
+            id: "delete-filler",
+            label: "删除口癖词…",
+            hint: fillerHidden ? "已隐去的口癖词要先还原" : "剪掉音频",
+            disabled: fillerHidden,
+            onSelect: () => openBatch("delete-filler"),
+          },
+          {
+            id: "hide-filler",
+            label: "隐去口癖词…",
+            hint: fillerDeleted ? "已删除的口癖词要先还原" : "只改字幕",
+            disabled: fillerDeleted,
+            onSelect: () => openBatch("hide-filler"),
+          },
+          {
+            id: "delete-silence",
+            label: "删除静音…",
+            onSelect: () => openBatch("delete-silence"),
+          },
+          {
+            id: "delete-disfluency",
+            label: "删除未转写语流…",
+            onSelect: () => openBatch("delete-disfluency"),
           },
           "separator",
           {
-            id: "restore-filler",
-            label: `还原口癖词${cleanupCounts.filler ? `（${cleanupCounts.filler}）` : ""}`,
+            id: "delete-all",
+            label: "删除全部三类…",
+            hint: "口癖 / 静音 / 漏字",
+            onSelect: () => openBatch("delete-all"),
+          },
+          "separator",
+          // Restores are per-kind and say what they take back. The filler pair is
+          // split because deleting and hiding are different acts: one comes back
+          // with its audio, the other with its text.
+          {
+            id: "restore-deleted-filler",
+            label: `还原已删除口癖词${cleanupCounts.filler ? `（${cleanupCounts.filler}）` : ""}`,
             disabled: !cleanupCounts.filler,
             onSelect: () =>
-              void run("还原口癖词", async () => {
+              void run("还原已删除口癖词", async () => {
                 const result = await api.restoreCleanup(boot.version.id, { source: "filler" });
-                setNotice(`已还原 ${result.restored} 处口癖词`);
+                say(`已还原 ${result.restored} 处已删除口癖词`);
+                await onReload();
+                await reloadCleanupCounts();
+              }),
+          },
+          {
+            id: "restore-hidden-filler",
+            label: `还原已隐去口癖词${
+              cleanupCounts.hidden_filler ? `（${cleanupCounts.hidden_filler}）` : ""
+            }`,
+            disabled: !cleanupCounts.hidden_filler,
+            onSelect: () =>
+              void run("还原已隐去口癖词", async () => {
+                const result = await api.restoreCleanup(boot.version.id, { source: "hidden_filler" });
+                say(`已还原 ${result.restored} 处已隐去口癖词`);
                 await onReload();
                 await reloadCleanupCounts();
               }),
           },
           {
             id: "restore-silence",
-            label: `还原静音${cleanupCounts.silence ? `（${cleanupCounts.silence}）` : ""}`,
+            label: `还原已删除静音${cleanupCounts.silence ? `（${cleanupCounts.silence}）` : ""}`,
             disabled: !cleanupCounts.silence,
             onSelect: () =>
-              void run("还原静音", async () => {
+              void run("还原已删除静音", async () => {
                 const result = await api.restoreCleanup(boot.version.id, { source: "silence" });
-                setNotice(`已还原 ${result.restored} 处静音`);
+                say(`已还原 ${result.restored} 处已删除静音`);
                 await onReload();
                 await reloadCleanupCounts();
               }),
           },
           {
             id: "restore-disfluency",
-            label: `还原未转写语流${cleanupCounts.disfluency ? `（${cleanupCounts.disfluency}）` : ""}`,
+            label: `还原已删除未转写语流${
+              cleanupCounts.disfluency ? `（${cleanupCounts.disfluency}）` : ""
+            }`,
             disabled: !cleanupCounts.disfluency,
             onSelect: () =>
-              void run("还原未转写语流", async () => {
+              void run("还原已删除未转写语流", async () => {
                 const result = await api.restoreCleanup(boot.version.id, { source: "disfluency" });
-                setNotice(`已还原 ${result.restored} 处未转写语流`);
+                say(`已还原 ${result.restored} 处已删除未转写语流`);
                 await onReload();
                 await reloadCleanupCounts();
               }),
@@ -801,7 +868,7 @@ function Desk({
           },
           {
             id: "cleanup-settings",
-            label: "一键清理设置…",
+            label: "一键删除与隐去…",
             onSelect: () => {
               setSettingsSection("cleanup");
               setSettingsOpen(true);
@@ -1213,6 +1280,7 @@ function Desk({
 
       <CleanupDialog
         open={cleanupOpen}
+        action={batchAction}
         versionId={boot.version.id}
         onClose={() => setCleanupOpen(false)}
         onNotice={setNotice}

@@ -68,7 +68,7 @@ const NAV: NavEntry[] = [
   // sentences saying the same thing read as a stutter.
   { id: "models", label: "模型", summary: "改动只在重新转写后生效" },
   { id: "hotwords", label: "热词与校对", summary: "热词进识别，校对读同一份词表" },
-  { id: "cleanup", label: "一键清理", summary: "会真的剪掉音频，只影响下一次清理" },
+  { id: "cleanup", label: "一键删除与隐去", summary: "删除会剪掉音频，隐去不会；只影响下一次执行" },
   { id: "editing", label: "剪辑", summary: "影响下一次渲染与边界吸附" },
   { id: "export", label: "导出", summary: "只在写出文件时生效，不改工程" },
   { id: "text", label: "文本处理", summary: "只在生成 ShowNotes / 文稿时生效" },
