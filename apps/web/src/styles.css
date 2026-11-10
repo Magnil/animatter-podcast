@@ -1896,3 +1896,21 @@ button.small,
 .button-link:hover {
   background: color-mix(in oklab, var(--accent) 12%, transparent);
 }
+
+/* Two sliders under the still. Kept inline in the panel (not a dialog) because
+   the loop is "nudge the number, look at the frame" — a modal would hide the
+   very thing being adjusted. */
+.video-style {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.video-style .field {
+  min-width: 160px;
+  flex: 1;
+}
+
+.video-style input[type="range"] {
+  width: 100%;
+}

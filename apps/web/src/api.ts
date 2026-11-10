@@ -887,10 +887,29 @@ export const api = {
     request<void>(`/api/video/items/${itemId}`, { method: "DELETE" }),
 
   /** One composited frame at `atMs` on the **output** timeline. */
-  videoPreview: (versionId: string, atMs: number) =>
-    request<{ url: string; at_ms: number }>(
-      `/api/versions/${versionId}/video/preview?at_ms=${Math.max(0, Math.round(atMs))}`,
-    ),
+  videoPreview: (
+    versionId: string,
+    atMs: number,
+    style: { font_name?: string; font_size?: number; margin_v?: number } = {},
+  ) => {
+    const params = new URLSearchParams({ at_ms: String(Math.max(0, Math.round(atMs))) });
+    if (style.font_name) params.set("font_name", style.font_name);
+    if (style.font_size !== undefined) params.set("font_size", String(style.font_size));
+    if (style.margin_v !== undefined) params.set("margin_v", String(style.margin_v));
+    return request<{ url: string; at_ms: number }>(
+      `/api/versions/${versionId}/video/preview?${params.toString()}`,
+    );
+  },
+
+  videoSubtitleStyle: () =>
+    request<{
+      font_name: string;
+      font_size: number;
+      margin_v: number;
+      primary_colour: string;
+      outline: number;
+      bold: boolean;
+    }>("/api/video/subtitle-style"),
 
   previewUrl: (projectId: string, name: string) =>
     `/api/video/preview/file/${encodeURIComponent(name)}?project_id=${encodeURIComponent(projectId)}`,

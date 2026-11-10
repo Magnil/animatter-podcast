@@ -140,6 +140,63 @@ def escape_text(text: str) -> str:
     )
 
 
+#: Characters to break *after*, best first. A break after a comma reads far better
+#: than one mid-phrase, and CJK gives libass no spaces to break on at all.
+_BREAK_AFTER: Final[tuple[str, ...]] = (
+    "。！？",
+    "，、；：",
+    ",.;:!?",
+    " ",
+)
+
+
+def chars_per_line(style: SubtitleStyle, play_w: int) -> int:
+    """How many CJK characters fit between the margins at this font size.
+
+    A CJK glyph is one em wide, and ASS's font size *is* the em size in PlayRes
+    units, so the arithmetic is a division rather than a measurement. Calibrated
+    against a real render: 52 px on 1920 with 120+120 margins fits exactly 32
+    characters, and 1680 // 52 is 32.
+    """
+    usable = max(1, play_w - style.margin_l - style.margin_r)
+    return max(1, int(usable // max(1, style.font_size)))
+
+
+def wrap_cjk(text: str, *, style: SubtitleStyle, play_w: int) -> list[str]:
+    """Break ``text`` into lines that actually fit.
+
+    This has to happen here because libass will not do it: ``WrapStyle: 0`` finds
+    break opportunities at spaces, CJK has none, so a long cue is drawn as one line
+    that runs off *both* edges — a 88 px subtitle on a 1920 px frame lost its first
+    and last characters, which is the kind of failure that looks like a font bug.
+    WrapStyle 2 (no wrapping at all) was the old behaviour; breaking ourselves is
+    the only version that survives a font-size change.
+    """
+    limit = chars_per_line(style, play_w)
+    remaining = text.strip()
+    if len(remaining) <= limit:
+        return [remaining] if remaining else []
+
+    lines: list[str] = []
+    while len(remaining) > limit:
+        window = remaining[:limit]
+        cut = 0
+        for marks in _BREAK_AFTER:
+            position = max(window.rfind(mark) for mark in marks)
+            if position > 0:
+                cut = position + 1  # keep the punctuation on its own line's end
+                break
+        if cut <= 0:
+            cut = limit
+        line = remaining[:cut].strip()
+        if line:
+            lines.append(line)
+        remaining = remaining[cut:].strip()
+    if remaining:
+        lines.append(remaining)
+    return lines
+
+
 def build_ass(
     cues: list[AssCue],
     *,
@@ -177,9 +234,11 @@ def build_ass(
     for cue in cues:
         if cue.end_ms <= cue.start_ms:
             continue
+        wrapped = wrap_cjk(cue.text, style=style, play_w=play_w)
+        body = "\\N".join(escape_text(line) for line in wrapped)
         lines.append(
             f"Dialogue: 0,{ass_timestamp(cue.start_ms)},{ass_timestamp(cue.end_ms)},"
-            f"Default,,0,0,0,,{escape_text(cue.text)}"
+            f"Default,,0,0,0,,{body}"
         )
     return "\n".join(lines) + "\n"
 

@@ -21,6 +21,7 @@ from animatter.config import Settings
 from animatter.db import Database
 from animatter.errors import AppError
 from animatter.log import get_logger
+from animatter.media.subtitle_ass import SubtitleStyle
 from animatter.models import Render, VideoItem
 from animatter.services import clipping as clipping_service
 from animatter.services import video as video_service
@@ -337,6 +338,56 @@ def delete_item(item_id: str, session: Session = Depends(_session_dependency)) -
 
 # --- preview and export -------------------------------------------------
 
+class SubtitleStyleOut(BaseModel):
+    """Everything the 「字幕」 controls can change, round-tripped to the client."""
+
+    font_name: str
+    font_size: int
+    margin_v: int
+    primary_colour: str
+    outline: float
+    bold: bool
+
+
+def _style_of(
+    font_name: str | None,
+    font_size: int | None,
+    margin_v: int | None,
+    primary_colour: str | None,
+    outline: float | None,
+    bold: bool | None,
+) -> SubtitleStyle:
+    """Build a style from the request, defaulting every field it does not set."""
+    base = SubtitleStyle()
+    return SubtitleStyle(
+        font_name=font_name or base.font_name,
+        font_size=font_size if font_size is not None else base.font_size,
+        margin_v=margin_v if margin_v is not None else base.margin_v,
+        primary_colour=primary_colour or base.primary_colour,
+        outline=outline if outline is not None else base.outline,
+        bold=bold if bold is not None else base.bold,
+    )
+
+
+@router.get("/video/subtitle-style", response_model=SubtitleStyleOut)
+def get_subtitle_style() -> SubtitleStyleOut:
+    """The default subtitle style, so the panel opens on real values.
+
+    Deliberately **not** version-scoped: the style is a property of the renderer, not
+    of a transcript. A version in the path would have been ignored, and a path
+    parameter nobody reads is an invitation to pass the wrong one.
+    """
+    base = SubtitleStyle()
+    return SubtitleStyleOut(
+        font_name=base.font_name,
+        font_size=base.font_size,
+        margin_v=base.margin_v,
+        primary_colour=base.primary_colour,
+        outline=base.outline,
+        bold=base.bold,
+    )
+
+
 class PreviewOut(BaseModel):
     url: str
     at_ms: int
@@ -348,12 +399,26 @@ def preview(
     request: Request,
     session: Session = Depends(_session_dependency),
     at_ms: int = Query(ge=0),
+    font_name: str | None = Query(default=None),
+    font_size: int | None = Query(default=None, ge=16, le=160),
+    margin_v: int | None = Query(default=None, ge=0, le=600),
+    primary_colour: str | None = Query(default=None),
 ) -> PreviewOut:
-    """One composited frame at ``at_ms`` (output timeline)."""
+    """One composited frame at ``at_ms`` (output timeline).
+
+    The style is a query parameter rather than a stored setting because the preview is
+    what the user drags *while deciding* the style; saving to 设置 first would make
+    every slider move a database write.
+    """
     settings: Settings = request.app.state.settings
     version = clipping_service.get_version(session, version_id)
     path = video_render_service.preview_still(
-        session, settings, version.project_id, version_id, at_ms=at_ms
+        session,
+        settings,
+        version.project_id,
+        version_id,
+        at_ms=at_ms,
+        style=_style_of(font_name, font_size, margin_v, primary_colour, None, None),
     )
     return PreviewOut(url=f"/api/video/preview/file/{path.name}", at_ms=at_ms)
 
@@ -377,6 +442,7 @@ class VideoExportIn(BaseModel):
     burn_subtitles: bool = True
     font_name: str | None = None
     font_size: int | None = Field(default=None, ge=16, le=160)
+    margin_v: int | None = Field(default=None, ge=0, le=600)
     lossless_audio: bool = False
 
 
@@ -400,16 +466,12 @@ def export_video(
     db: Database = request.app.state.db
     version = clipping_service.get_version(session, version_id)
 
-    from animatter.media.subtitle_ass import SubtitleStyle
-
-    style = SubtitleStyle()
-    if payload.font_name or payload.font_size:
-        style = SubtitleStyle(
-            font_name=payload.font_name or style.font_name,
-            font_size=payload.font_size or style.font_size,
-        )
     options = video_render_service.ExportOptions(
-        subtitle_style=style,
+        subtitle_style=_style_of(
+            payload.font_name, payload.font_size, payload.margin_v, None, None, None
+        )
+        if (payload.font_name or payload.font_size or payload.margin_v)
+        else None,
         burn_subtitles=payload.burn_subtitles,
         lossless_audio=payload.lossless_audio,
     )

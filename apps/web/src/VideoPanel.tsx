@@ -61,6 +61,8 @@ export function VideoPanel({
   const [importPath, setImportPath] = useState("");
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewAt, setPreviewAt] = useState(0);
+  const [fontSize, setFontSize] = useState(52);
+  const [marginV, setMarginV] = useState(56);
   const [exporting, setExporting] = useState<{ id: string; percent: number; url: string } | null>(null);
 
   const load = useCallback(async () => {
@@ -80,6 +82,18 @@ export function VideoPanel({
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Open on the renderer's real defaults instead of hard-coded numbers that would
+  // drift the moment the ASS style changes.
+  useEffect(() => {
+    void api
+      .videoSubtitleStyle()
+      .then((style) => {
+        setFontSize(style.font_size);
+        setMarginV(style.margin_v);
+      })
+      .catch(() => undefined);
+  }, []);
 
   /**
    * Poll while a compile is running.
@@ -143,7 +157,10 @@ export function VideoPanel({
     if (!timeline) return;
     setBusy(true);
     try {
-      const result = await api.videoPreview(versionId, positionMs);
+      const result = await api.videoPreview(versionId, positionMs, {
+        font_size: fontSize,
+        margin_v: marginV,
+      });
       setPreviewUrl(api.previewUrl(projectId, result.url.split("/").pop() ?? ""));
       setPreviewAt(positionMs);
     } catch (caught) {
@@ -156,7 +173,10 @@ export function VideoPanel({
   const doExport = async (): Promise<void> => {
     setBusy(true);
     try {
-      const started = await api.exportVideo(versionId, { burn_subtitles: true });
+      const started = await api.exportVideo(versionId, {
+        burn_subtitles: true,
+        font_size: fontSize,
+      });
       setExporting({ id: started.id, percent: 0, url: "" });
     } catch (caught) {
       onNotice(caught instanceof Error ? caught.message : String(caught));
@@ -286,7 +306,42 @@ export function VideoPanel({
             <button type="button" disabled={busy} onClick={() => void doPreview()}>
               生成静帧
             </button>
-            <span className="muted small">预览为近似：成片 1080p，预览更大字号一致</span>
+            <span className="muted small">预览为近似：成片 1080p，字号与位置一致</span>
+          </div>
+
+          {/*
+            The style controls live next to the still, not in 设置: the whole point is
+            to nudge a number and look at the frame. Nothing is saved until 导出 — a
+            slider that wrote to the database on every drag would be both slow and a
+            surprise when reopening the project.
+          */}
+          <div className="video-style">
+            <label className="field">
+              <span>
+                字幕字号 <b>{fontSize}</b>
+              </span>
+              <input
+                type="range"
+                min={28}
+                max={96}
+                step={2}
+                value={fontSize}
+                onChange={(event) => setFontSize(Number(event.target.value))}
+              />
+            </label>
+            <label className="field">
+              <span>
+                底部留白 <b>{marginV}</b> px
+              </span>
+              <input
+                type="range"
+                min={0}
+                max={160}
+                step={4}
+                value={marginV}
+                onChange={(event) => setMarginV(Number(event.target.value))}
+              />
+            </label>
           </div>
 
           <details className="video-box-info">
