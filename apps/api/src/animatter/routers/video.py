@@ -9,10 +9,12 @@ would make the one interaction that must feel immediate the slowest one.
 from __future__ import annotations
 
 import concurrent.futures
+import shutil
+import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -25,6 +27,7 @@ from animatter.media.subtitle_ass import SubtitleStyle
 from animatter.models import Render, VideoItem
 from animatter.services import clipping as clipping_service
 from animatter.services import video as video_service
+from animatter.services import video_assets as asset_service
 from animatter.services import video_render as video_render_service
 from animatter.services import video_templates as template_service
 
@@ -334,6 +337,127 @@ def patch_item(
 @router.delete("/video/items/{item_id}", status_code=204)
 def delete_item(item_id: str, session: Session = Depends(_session_dependency)) -> None:
     video_service.delete_item(session, item_id)
+
+
+# --- asset library ------------------------------------------------------
+
+
+class AssetOut(BaseModel):
+    id: str
+    kind: str
+    name: str
+    sha256: str
+    width: int
+    height: int
+    duration_ms: int
+    created_at: str
+    url: str
+    exists: bool
+
+
+class AssetPathIn(BaseModel):
+    path: str = Field(description="本地图片或视频的绝对路径")
+
+
+@router.get("/projects/{project_id}/video/assets", response_model=list[AssetOut])
+def list_assets(
+    project_id: str,
+    request: Request,
+    session: Session = Depends(_session_dependency),
+) -> list[AssetOut]:
+    """The project's library, newest first.
+
+    An ``exists`` flag rides along instead of a 404: a library row whose file was deleted
+    outside the app is a real state, and the picker has to be able to draw it as broken
+    rather than pretend the asset is fine until the export fails.
+    """
+    settings: Settings = request.app.state.settings
+    views = asset_service.view_all(session, settings, project_id)
+    return [AssetOut(**view.as_dict()) for view in views]  # type: ignore[arg-type]
+
+
+@router.post("/projects/{project_id}/video/assets", response_model=AssetOut, status_code=201)
+def import_asset_by_path(
+    project_id: str,
+    payload: AssetPathIn,
+    request: Request,
+    session: Session = Depends(_session_dependency),
+) -> AssetOut:
+    """Import from a path on this machine.
+
+    The same shape the template import uses, and for the same reason: this is a local
+    application, and a path is one field instead of a file dialog that has to be taught
+    about sandboxing. The browser drag-and-drop path uploads instead, because a ``File``
+    has no path.
+    """
+    settings: Settings = request.app.state.settings
+    file = asset_service.import_asset(session, settings, project_id, Path(payload.path))
+    session.commit()
+    views = {view.row.id: view for view in asset_service.view_all(session, settings, project_id)}
+    return AssetOut(**views[file.id].as_dict())  # type: ignore[arg-type]
+
+
+@router.post("/projects/{project_id}/video/assets/upload", response_model=AssetOut, status_code=201)
+async def upload_asset(
+    project_id: str,
+    request: Request,
+    session: Session = Depends(_session_dependency),
+    file: UploadFile = File(...),
+) -> AssetOut:
+    """Import bytes dragged into the browser.
+
+    Written to a temp file first and then handed to the same import path as everything
+    else, so the dedupe/validation rules cannot drift between "dropped" and "typed a
+    path". The temp suffix is taken from the uploaded name: ffprobe identifies by content
+    but the *size limit and kind* checks read the suffix.
+    """
+    settings: Settings = request.app.state.settings
+    name = Path(file.filename or "upload").name
+    suffix = Path(name).suffix.lower()
+    if not suffix:
+        raise AppError(
+            "asset_unsupported",
+            "这个文件没有扩展名，判断不出是图片还是视频",
+            hint="改成 .png/.jpg/.mp4 之类的名字再拖进来。",
+        )
+
+    staging = Path(tempfile.mkdtemp(prefix="am-asset-")) / f"upload{suffix}"
+    try:
+        size = 0
+        with staging.open("wb") as handle:
+            while chunk := await file.read(1 << 20):
+                size += len(chunk)
+                if size > asset_service.MAX_BYTES:
+                    raise AppError(
+                        "asset_too_large",
+                        f"{name} 超过 {asset_service.MAX_BYTES // 1024 // 1024} MB",
+                        hint="长视频请先剪短再导入。",
+                    )
+                handle.write(chunk)
+        row = asset_service.import_asset(session, settings, project_id, staging)
+        session.commit()
+    finally:
+        shutil.rmtree(staging.parent, ignore_errors=True)
+
+    views = {view.row.id: view for view in asset_service.view_all(session, settings, project_id)}
+    return AssetOut(**views[row.id].as_dict())  # type: ignore[arg-type]
+
+
+@router.delete("/video/assets/{asset_id}", status_code=204)
+def delete_asset(asset_id: str, session: Session = Depends(_session_dependency)) -> None:
+    """Remove an asset, refusing while a block still uses it."""
+    asset_service.delete_asset(session, asset_id)
+
+
+@router.get("/projects/{project_id}/video/assets/{asset_id}/file")
+def asset_file(
+    project_id: str,
+    asset_id: str,
+    session: Session = Depends(_session_dependency),
+) -> FileResponse:
+    """Serve the original bytes. Range requests are what make `<video>` scrubbing work."""
+    path = asset_service.file_path(session, project_id, asset_id)
+    return FileResponse(path)
 
 
 # --- preview and export -------------------------------------------------
