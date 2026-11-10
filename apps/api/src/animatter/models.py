@@ -370,3 +370,142 @@ class Setting(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     payload_json: Mapped[str] = mapped_column(Text, default="{}")
     updated_at: Mapped[str] = mapped_column(String(32))
+
+
+# --- video (AGENTS.md §19) ---------------------------------------------
+
+
+class VideoTemplate(Base):
+    """A compiled PSD template: background, overlay, and slot geometry.
+
+    The compile step is **once per import**, not once per render. Measured cost is
+    5–20 s per ``CompositeEngine`` pass on a 2560×1440 58-layer file, which is
+    fine as a one-off and impossible inside an export.
+
+    ``source_sha256`` is what makes re-importing the same file free: the compiled
+    PNGs depend only on the PSD bytes, so a matching hash can reuse them.
+    """
+
+    __tablename__ = "video_template"
+    __table_args__ = (Index("ix_video_template_project", "project_id"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("project.id", ondelete="CASCADE"), index=True
+    )
+    source_path: Mapped[str] = mapped_column(Text, default="")
+    source_sha256: Mapped[str] = mapped_column(String(64), default="")
+    canvas_w: Mapped[int] = mapped_column(Integer, default=0)
+    canvas_h: Mapped[int] = mapped_column(Integer, default=0)
+    #: The poster with the media-box plate but no content, avatars and all text
+    #: flattened out. Rendered by us, never re-read from the PSD.
+    background_path: Mapped[str] = mapped_column(Text, default="")
+    #: The layers that must sit *above* the box content (its border/stroke).
+    overlay_path: Mapped[str] = mapped_column(Text, default="")
+    #: ``{"x","y","w","h"}`` in canvas coordinates — where content goes.
+    box_rect: Mapped[str] = mapped_column(Text, default="{}")
+    box_fit_default: Mapped[str] = mapped_column(String(16), default="blur_fill")
+    #: ``{"avatars": [...], "texts": [...]}``; see services/video_templates.py.
+    slots_json: Mapped[str] = mapped_column(Text, default="{}")
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    #: Human-readable reason for ``status == 'failed'``. A compile can fail on a
+    #: file psd-tools cannot parse, and "failed" alone sends the user nowhere.
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[str] = mapped_column(String(32))
+    compiled_at: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+
+class VideoAsset(Base):
+    """One image or video the user can drop into the media box."""
+
+    __tablename__ = "video_asset"
+    __table_args__ = (UniqueConstraint("project_id", "sha256", name="uq_video_asset_project_sha256"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("project.id", ondelete="CASCADE"), index=True
+    )
+    #: ``image`` | ``video``
+    kind: Mapped[str] = mapped_column(String(16), default="image")
+    path: Mapped[str] = mapped_column(Text)
+    sha256: Mapped[str] = mapped_column(String(64), index=True)
+    width: Mapped[int] = mapped_column(Integer, default=0)
+    height: Mapped[int] = mapped_column(Integer, default=0)
+    #: 0 for images — they have no intrinsic length, so a block's length is
+    #: whatever the timeline says rather than something the asset forces.
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[str] = mapped_column(String(32))
+
+
+class Deck(Base):
+    """Our own slide model. Never a ``.pptx`` as the render source (AGENTS.md §19.6)."""
+
+    __tablename__ = "deck"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("project.id", ondelete="CASCADE"), index=True
+    )
+    title: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[str] = mapped_column(String(32))
+
+
+class Slide(Base):
+    __tablename__ = "slide"
+    __table_args__ = (Index("ix_slide_deck_ord", "deck_id", "ord", unique=True),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    deck_id: Mapped[str] = mapped_column(ForeignKey("deck.id", ondelete="CASCADE"), index=True)
+    ord: Mapped[int] = mapped_column(Integer)
+    title: Mapped[str] = mapped_column(Text, default="")
+    body: Mapped[str] = mapped_column(Text, default="")
+    #: ``title`` | ``title_body`` | ``quote``
+    layout: Mapped[str] = mapped_column(String(16), default="title_body")
+    #: Which sentence produced this page, so the editor can jump to its source.
+    source_ord: Mapped[int] = mapped_column(Integer, default=-1)
+    start_ms: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class VideoItem(Base):
+    """One block on the video timeline.
+
+    ``start_ms``/``end_ms`` are **original-timeline milliseconds**, snapped to a
+    sentence start when the user drags (AGENTS.md §19.3). They are absolute
+    values, not references: measured against real data, every candidate identity
+    for "which sentence boundary is this" turned out to be unstable — ``sentence.id``
+    follows the *position* because rows are matched by ``ord``, ``token.idx``
+    shifts on text edits (31 of 379 real edits changed the token count), and
+    ``src_word_idx`` is a word ordinal (83 distinct values across 8180 tokens), not
+    an address. An absolute instant only moves on ``align.apply_shift``, which is a
+    rigid whole-timeline move and can shift these rows with it.
+
+    The block plays **continuously** in the output: deleting audio inside it
+    shortens it and its content loops or truncates. It does not jump-cut.
+    """
+
+    __tablename__ = "video_item"
+    __table_args__ = (Index("ix_video_item_project_start", "project_id", "start_ms"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("project.id", ondelete="CASCADE"), index=True
+    )
+    #: ``media`` | ``gallery`` | ``slide``
+    kind: Mapped[str] = mapped_column(String(16), default="media")
+    start_ms: Mapped[int] = mapped_column(Integer)
+    end_ms: Mapped[int] = mapped_column(Integer)
+    z: Mapped[int] = mapped_column(Integer, default=0)
+    #: ``contain`` | ``cover`` | ``blur_fill`` | ``stretch``
+    fit: Mapped[str] = mapped_column(String(16), default="blur_fill")
+    #: ``none`` | ``kenburns``
+    motion: Mapped[str] = mapped_column(String(16), default="none")
+    asset_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    deck_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    slide_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: Gallery members: ``[{"asset_id": ..., "weight": ...}]``.
+    gallery_json: Mapped[str] = mapped_column(Text, default="[]")
+    #: The block's audio was deleted in full, so it has zero length in the output.
+    #: Flagged rather than deleted: the user may restore that sentence tomorrow.
+    orphaned: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[str] = mapped_column(String(32))
+    updated_at: Mapped[str] = mapped_column(String(32))
