@@ -31,10 +31,22 @@ POST   /api/versions/{vid}/boundaries                  重划句边界
 POST   /api/versions/{vid}/hide                        隐去文字（不动音频）
        body: {token_start:int, token_end:int, hidden:bool=true}
        一个端点两个方向：`hidden:false` 是恢复，省得两个端点各存一半状态
+POST   /api/versions/{vid}/cleanup                      批量删除
+       body: {kinds:['filler'|'disfluency'|'silence'], 阈值覆盖可选}
+POST   /api/versions/{vid}/cleanup/hide-fillers         批量隐去口癖词（不动音频）
+POST   /api/versions/{vid}/cleanup/restore?source=      按类别还原
+       source: filler | silence | disfluency | hidden_filler
+       分开是因为删除拿回音频、隐去拿回文字，不是同一件事
+GET    /api/versions/{vid}/cleanup/plan                 将要做什么（只读）
+GET    /api/versions/{vid}/cleanup/counts               每类还有多少可还原
 POST   /api/versions/{vid}/undo  |  /redo
 
 POST   /api/versions/{vid}/deletions                   删除（token 或 range）
-DELETE /api/versions/{vid}/deletions/{id}
+DELETE /api/versions/{vid}/deletions/{id}              整条删除记录还原（运输栏的「恢复删除」）
+POST   /api/versions/{vid}/deletions/restore           按词还原（字幕气泡的「还」）
+       body: {token_ids:[int]}
+       不同于上一条：一条 deletion 行可能覆盖整句十几个词，
+       点一个词就还原整行会把用户没指的音频也拿回来。
 GET    /api/versions/{vid}/edl                         预算 EDL + 新时长
 POST   /api/versions/{vid}/render                      排队渲染，立刻返回 {id,status,progress}
 GET    /api/renders/{id}                               轮询进度 0..1 / status / error
