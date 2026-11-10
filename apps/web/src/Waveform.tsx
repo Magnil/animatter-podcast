@@ -27,6 +27,7 @@ import {
   MIN_VISIBLE_MS,
   ZOOM_STEP,
   clampView,
+  hitEdge,
   initialView,
   isZoomed,
   msToX as msToXIn,
@@ -525,14 +526,12 @@ export function Waveform({
       if (!canvas) return null;
       const rect = canvas.getBoundingClientRect();
       const px = clientX - rect.left;
-      let best: { handle: EdgeHandle; distance: number } | null = null;
-      for (const handle of handles) {
-        const distance = Math.abs(msToX(handle.ms) - px);
-        if (distance <= HANDLE_HIT_PX && (best === null || distance < best.distance)) {
-          best = { handle, distance };
-        }
-      }
-      return best?.handle ?? null;
+      const index = hitEdge(
+        handles.map((handle) => msToX(handle.ms)),
+        px,
+        HANDLE_HIT_PX,
+      );
+      return index < 0 ? null : (handles[index] ?? null);
     },
     [handles, msToX],
   );

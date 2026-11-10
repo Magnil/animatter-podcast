@@ -109,3 +109,58 @@ export function scrollFraction(view: View, total: number): { start: number; size
   const start = Math.min(Math.max(0, view.from / safeTotal), Math.max(0, 1 - size));
   return { start, size };
 }
+
+/**
+ * Two edges closer than this in pixels are the same edge.
+ *
+ * Sentence boundaries are shared — one sentence's `end_ms` is the next one's
+ * `start_ms` — so their handles land on exactly the same pixel, and dragging
+ * either means the same thing. Only exactly-coincident positions are merged;
+ * anything with real distance between them stays a separate edge.
+ */
+const SAME_EDGE_PX = 1e-6;
+
+/**
+ * Index of the edge handle under the pointer, or -1 when the click is not
+ * unambiguously on one.
+ *
+ * The bug this exists for: with 1682 sentences in a 61-minute episode, the
+ * timeline holds 3364 edges across 978 px — 0.45 px apart — while the hit radius
+ * is 6 px. So *every* click anywhere on the waveform body hit a handle, took the
+ * drag branch, and then released without moving: pressing on the waveform did
+ * nothing at all. Measured with `scripts/check-seek-probe.mjs` before the fix:
+ * six clicks spread across the canvas, the clock never moved once, while a click
+ * on the caption band (a different code path) jumped to 38:08.
+ *
+ * The rule is "closest, and clearly so": the nearest edge must be within
+ * `hitPx`, *and* the next distinct edge must be further than `hitPx`. Where that
+ * fails the edges are too dense to aim at, and the honest answer is "no handle"
+ * — the click falls through to a seek, which is what the user meant anyway.
+ * Zooming in restores dragging as soon as edges are far enough apart to be
+ * distinguishable, which is the same condition under which a drag can hit what
+ * the user is pointing at.
+ */
+export function hitEdge(xs: number[], px: number, hitPx: number): number {
+  let best = -1;
+  let nearest = Number.POSITIVE_INFINITY;
+  for (let index = 0; index < xs.length; index += 1) {
+    const distance = Math.abs((xs[index] ?? 0) - px);
+    if (distance < nearest) {
+      nearest = distance;
+      best = index;
+    }
+  }
+  if (best < 0 || nearest > hitPx) return -1;
+
+  // A second edge inside the radius makes the click ambiguous — unless it is the
+  // same edge, which is what a shared sentence boundary produces. Comparing
+  // *positions* rather than distances is what separates the two cases: two
+  // distinct edges at 100 and 104 are equidistant from 102 and genuinely
+  // ambiguous, while two edges both at 100 are one edge drawn twice.
+  const chosen = xs[best] ?? 0;
+  for (const other of xs) {
+    if (Math.abs(other - chosen) <= SAME_EDGE_PX) continue;
+    if (Math.abs(other - px) <= hitPx) return -1;
+  }
+  return best;
+}

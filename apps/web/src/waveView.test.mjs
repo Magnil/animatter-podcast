@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import {
   MIN_VISIBLE_MS,
   clampView,
+  hitEdge,
   initialView,
   shouldRememberView,
   isZoomed,
@@ -163,4 +164,46 @@ test("initialView clamps a window that no longer fits the file", () => {
   assert.ok(restored.from >= 0);
   assert.ok(restored.to <= 3 * 60_000);
   assert.equal(restored.to - restored.from, 60_000);
+});
+
+// --- hitting an edge handle ----------------------------------------------
+
+test("hitEdge picks the edge under the pointer", () => {
+  assert.equal(hitEdge([10, 100, 400], 104, 6), 1);
+  assert.equal(hitEdge([10, 100, 400], 10, 6), 0);
+});
+
+test("hitEdge misses when nothing is within reach", () => {
+  assert.equal(hitEdge([10, 100], 50, 6), -1);
+  assert.equal(hitEdge([], 50, 6), -1);
+});
+
+test("hitEdge refuses when the edges are too dense to aim at", () => {
+  // The real case: 3364 edges across 978 px is 0.29 px apart, so *every* pixel
+  // is within the 6 px radius of some handle. Answering "a handle" there is how
+  // pressing on the waveform came to do nothing at all.
+  const dense = [];
+  for (let i = 0; i < 3364; i += 1) dense.push((i / 3364) * 978);
+  for (const px of [0, 123.4, 500, 900]) assert.equal(hitEdge(dense, px, 6), -1);
+});
+
+test("hitEdge still works once zooming separates the edges", () => {
+  // The same episode zoomed to a couple of seconds: a dozen edges over 978 px,
+  // each ~80 px from the next, so a 6 px radius means something again.
+  const edges = [0, 80, 160, 240, 320, 400];
+  assert.equal(hitEdge(edges, 163, 6), 2);
+  assert.equal(hitEdge(edges, 180, 6), -1);
+});
+
+test("hitEdge treats two coincident edges as one edge", () => {
+  // Shared sentence boundaries land on the same pixel; dragging either means the
+  // same thing, so the neighbour does not veto the hit.
+  assert.equal(hitEdge([100, 100], 101, 6), 0);
+});
+
+test("hitEdge refuses when the runner-up is also inside the radius", () => {
+  // Two handles 4 px apart: a click 2 px from each cannot say which was meant.
+  assert.equal(hitEdge([100, 104], 102, 6), -1);
+  // 13 px apart, click 6 px from the nearer one: unambiguous again.
+  assert.equal(hitEdge([100, 113], 106, 6), 0);
 });
