@@ -82,6 +82,28 @@ class Layer:
     is_video: bool = False
 
 
+@dataclass(frozen=True)
+class AvatarLayer:
+    """One avatar's lit/dim track, placed at its slot (P3).
+
+    Unlike :class:`Layer` this is always a **video** input: the track was rendered by
+    ``media/avatar_track`` and is exactly as long as the film, so it must be neither looped
+    nor truncated at the input. ``eof_action=pass`` on the overlay is the safety net — if
+    the track ever ends a frame early, the frame underneath shows instead of the last avatar
+    state freezing on screen for the rest of the film.
+    """
+
+    path: Path
+    x: int
+    y: int
+    width: int
+    height: int
+    #: ``False`` for the still preview, which shows one lit-or-dim PNG per slot rather
+    #: than paying for a track. It is the same picture at that instant, and a still costs
+    #: ~200 ms against 1.5 s per 600 s of track.
+    is_video: bool = True
+
+
 def escape_filter_path(path: Path) -> str:
     """Escape a filesystem path for use inside a filtergraph option.
 
@@ -104,6 +126,7 @@ def build_filtergraph(
     subtitle_path: Path | None,
     offset_ms: int = 0,
     box: box_track.BoxChain | None = None,
+    avatars: list[AvatarLayer] | None = None,
     out_label: str = "vout",
 ) -> str:
     """Assemble the video filtergraph.
@@ -116,6 +139,12 @@ def build_filtergraph(
     layers so the frame stroke sits on top of the picture, and after the background so the
     picture covers the plate. Its inputs come last, which is why it needs to know how many
     inputs came before it — see ``input_base``.
+
+    ``avatars`` are P3's lit/dim tracks. They are overlaid **after** the box and before the
+    subtitles: an avatar sits beside the box rather than inside it, so the order only
+    matters for a template that overlaps them, and "panel in front of the slide" is the
+    reading that matches how the PSD stacks the two groups. Their inputs therefore come
+    after the box's, which is why the box keeps its ``1 + len(layers)`` base.
 
     The ``setsar=1`` on each branch is not cosmetic: the compiled PNGs carry no pixel
     aspect metadata, and a mismatch makes the ``overlay`` filter silently scale the
@@ -161,6 +190,21 @@ def build_filtergraph(
             f"[{current}][boxout]overlay=x={box.x}:y={box.y}:format=auto[withbox]"
         )
         current = "withbox"
+
+    for position, avatar in enumerate(avatars or []):
+        # Input numbers are 1-based: background, then every layer, then the box's distinct
+        # sources. Derived rather than passed so the two orders cannot drift apart.
+        input_no = 1 + len(layers) + (box.input_count if box is not None else 0) + position
+        label = f"av{position}"
+        avatar_shift = "" if avatar.is_video else shift
+        parts.append(
+            f"[{current}]scale={width}:{height},setsar=1[{label}base];"
+            f"[{input_no}:v]scale={avatar.width}:{avatar.height},setsar=1{avatar_shift}"
+            f"[{label}img];"
+            f"[{label}base][{label}img]overlay=x={avatar.x}:y={avatar.y}:"
+            f"eof_action={'pass' if avatar.is_video else 'repeat'}:format=auto[{label}]"
+        )
+        current = label
 
     if subtitle_path is not None:
         parts.append(f"[{current}]ass=filename='{escape_filter_path(subtitle_path)}'[{out_label}]")
@@ -226,6 +270,7 @@ def render(
     box: box_track.BoxChain | None = None,
     box_segments: list[box_track.BoxSegment] | None = None,
     box_sources: list[Path] | None = None,
+    avatars: list[AvatarLayer] | None = None,
     subtitles: Path | None = None,
     preset: str = PRESET,
     crf: str = CRF,
@@ -240,6 +285,9 @@ def render(
     built by ``services/video_box.plan`` and the distinct files it reads. They are passed
     as three pieces rather than one object so this module stays free of the service layer —
     the media layer only ever sees segments and paths.
+
+    ``avatars`` are P3's lit/dim tracks, declared as plain ``-i`` inputs in the same order
+    the filtergraph expects (background, artwork, box sources, avatars).
     """
     if duration_ms <= 0:
         raise AppError("video_duration_invalid", "视频时长为 0", hint="先渲染音频。")
@@ -272,6 +320,7 @@ def render(
         layers=layers,
         subtitle_path=subtitles,
         box=box,
+        avatars=avatars,
     )
     script = target.with_suffix(target.suffix + ".filtergraph")
     script.write_text(graph, encoding="utf-8")
@@ -305,6 +354,16 @@ def render(
                 continue
             seen.add(segment.input_index)
             command += box_track.input_args(segment, box_sources[segment.input_index])
+
+    for avatar in avatars or []:
+        if not avatar.path.is_file():
+            raise AppError(
+                "avatar_track_missing",
+                f"头像轨不见了：{avatar.path.name}",
+                hint="重新导出；如果反复失败，把项目里的头像位重新绑定一次。",
+                status=409,
+            )
+        command += ["-i", str(avatar.path)]
 
     command += [
         "-filter_complex_script",
@@ -380,6 +439,7 @@ def render_still(
     box: box_track.BoxChain | None = None,
     box_segment: box_track.BoxSegment | None = None,
     box_source: Path | None = None,
+    avatars: list[AvatarLayer] | None = None,
     subtitles: Path | None = None,
 ) -> VideoResult:
     """Composite one frame at ``at_ms`` for the preview (§19.7).
@@ -406,6 +466,7 @@ def render_still(
         subtitle_path=subtitles,
         offset_ms=max(0, at_ms),
         box=box,
+        avatars=avatars,
     )
     script = target.with_suffix(target.suffix + ".filtergraph")
     script.write_text(graph, encoding="utf-8")
@@ -420,6 +481,11 @@ def render_still(
             command += ["-loop", "1", "-i", str(path)]
     if box_segment is not None and box_source is not None:
         command += box_track.input_args(box_segment, box_source)
+    for avatar in avatars or []:
+        if avatar.is_video:
+            command += ["-i", str(avatar.path)]
+        else:
+            command += ["-loop", "1", "-i", str(avatar.path)]
 
     command += [
         "-filter_complex_script",

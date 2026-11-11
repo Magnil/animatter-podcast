@@ -28,6 +28,7 @@ from animatter.models import Render, VideoItem
 from animatter.services import clipping as clipping_service
 from animatter.services import video as video_service
 from animatter.services import video_assets as asset_service
+from animatter.services import video_avatars
 from animatter.services import video_render as video_render_service
 from animatter.services import video_templates as template_service
 
@@ -157,6 +158,81 @@ def template_asset(
     """Serve one compiled PNG. Only the file name is honoured — see the service."""
     path = template_service.asset_path(session, project_id, name)
     return FileResponse(path, media_type="image/png")
+
+
+# --- avatar bindings (P3) -----------------------------------------------
+
+
+class AvatarOut(BaseModel):
+    name: str
+    label: str
+    x: int
+    y: int
+    lit_url: str
+    dim_url: str
+    speaker_id: int | None = None
+    speaker_name: str = ""
+    turns: int
+    lit_ms: int
+    share: float
+
+
+class AvatarBindingIn(BaseModel):
+    #: ``None`` unbinds the slot, which is a real operation: it is how you say
+    #: 「this avatar does not react」 without deleting the panel member.
+    speaker_id: int | None = None
+
+
+@router.get("/versions/{version_id}/video/avatars", response_model=list[AvatarOut])
+def list_avatars(
+    version_id: str,
+    request: Request,
+    session: Session = Depends(_session_dependency),
+) -> list[AvatarOut]:
+    """Every avatar slot with its speaker and how much of the film that speaker talks.
+
+    ``share`` is reported so the confirm screen can show a number instead of asking the
+    user to trust a dropdown: a slot at 0 % is bound to someone who never speaks, and
+    that is a visible, fixable mistake rather than a mystery.
+    """
+    settings: Settings = request.app.state.settings
+    version = clipping_service.get_version(session, version_id)
+    template = template_service.require(session, version.project_id)
+    edl = clipping_service.build_edl(session, settings, version)
+    return [
+        AvatarOut(**item)  # type: ignore[arg-type]
+        for item in video_avatars.describe(session, template, version, edl)
+    ]
+
+
+@router.put("/projects/{project_id}/video/avatars/{slot}", response_model=AvatarOut)
+def bind_avatar(
+    project_id: str,
+    slot: str,
+    payload: AvatarBindingIn,
+    request: Request,
+    version_id: str = Query(description="用哪个版本的说话人标签来统计时长"),
+    session: Session = Depends(_session_dependency),
+) -> AvatarOut:
+    """Bind one avatar slot to a speaker (or unbind it with ``speaker_id: null``).
+
+    ``version_id`` is a query parameter because the *binding* is project-wide while the
+    *talk time* is per version: there is one template per project, but several transcript
+    versions, and the user is looking at the one they are editing.
+    """
+    settings: Settings = request.app.state.settings
+    version = clipping_service.get_version(session, version_id)
+    if version.project_id != project_id:
+        raise AppError("version_project_mismatch", "这个版本不属于这个项目", status=400)
+    video_avatars.set_binding(session, project_id, slot=slot, speaker_id=payload.speaker_id)
+    session.commit()
+
+    template = template_service.require(session, project_id)
+    edl = clipping_service.build_edl(session, settings, version)
+    for item in video_avatars.describe(session, template, version, edl):
+        if item["name"] == slot:
+            return AvatarOut(**item)  # type: ignore[arg-type]
+    raise AppError("avatar_slot_unknown", f"这个模板里没有头像位「{slot}」", status=404)
 
 
 # --- timeline -----------------------------------------------------------

@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from sqlalchemy import select
@@ -33,10 +33,11 @@ from sqlalchemy.orm import Session
 
 from animatter.config import Settings
 from animatter.core.edl import Edl
+from animatter.core.video_avatar import Interval, lit_at, track_pieces
 from animatter.errors import AppError
 from animatter.ids import new_id, utcnow_iso
 from animatter.log import get_logger
-from animatter.media import box_track
+from animatter.media import avatar_track, box_track
 from animatter.media import video as video_media
 from animatter.media.subtitle_ass import AssCue, SubtitleStyle, write_ass
 from animatter.models import Render, TranscriptVersion, VideoItem, VideoTemplate
@@ -44,7 +45,7 @@ from animatter.services import clipping as clipping_service
 from animatter.services import projects as project_service
 from animatter.services import subtitles as subtitle_service
 from animatter.services import video as video_service
-from animatter.services import video_box
+from animatter.services import video_avatars, video_box
 from animatter.services import video_templates as template_service
 
 log = get_logger(__name__)
@@ -81,6 +82,25 @@ class ExportOptions:
 
 
 @dataclass(frozen=True)
+class AvatarTrack:
+    """One avatar slot that changes state during the film (P3).
+
+    ``lit`` holds the intervals in **output** time: the EDL has already been applied, so a
+    speaker whose only sentences were cut produces no interval at all and the slot is left
+    exactly as the compiled background drew it.
+    """
+
+    name: str
+    x: int
+    y: int
+    width: int
+    height: int
+    lit_path: Path
+    dim_path: Path
+    lit: list[Interval]
+
+
+@dataclass(frozen=True)
 class PreparedVideo:
     """The inputs an encode needs, resolved once so the worker never re-reads them."""
 
@@ -90,6 +110,13 @@ class PreparedVideo:
     edl: Edl
     audio_path: Path
     duration_ms: int
+    #: Empty unless at least one avatar slot is bound to a speaker who talks.
+    avatars: list[AvatarTrack] = field(default_factory=list)
+
+    @property
+    def background_path(self) -> Path:
+        """Which compiled poster to start from — see :func:`_base_background`."""
+        return _base_background(self.template, self.avatars)
 
 
 def output_dir(settings: Settings, project_id: str) -> Path:
@@ -169,6 +196,7 @@ def prepare(
         edl=edl,
         audio_path=audio,
         duration_ms=edl.output_duration_ms,
+        avatars=avatar_tracks(session, template, version, edl),
     )
 
 
@@ -225,6 +253,131 @@ def _box(
         items=items,
         edl=edl,
     )
+
+
+def avatar_tracks(
+    session: Session,
+    template: VideoTemplate,
+    version: TranscriptVersion,
+    edl: Edl,
+) -> list[AvatarTrack]:
+    """Which avatar slots change state, and when (§19.5, P3).
+
+    Slots without a binding, and slots bound to a speaker who never talks in the film, are
+    **absent**: the compiled background already shows their photo, and building a constant
+    track for them would cost a full-length clip for no visible change. On the sample
+    template (4 slots / 2 speakers) that is half of them.
+    """
+    lit_by_slot = video_avatars.resolve(session, template, version, edl)
+    if not lit_by_slot:
+        return []
+
+    slots = {slot.name: slot for slot in video_avatars.bound_slots(session, template)}
+    out: list[AvatarTrack] = []
+    for name, lit in lit_by_slot.items():
+        slot = slots.get(name)
+        if slot is None:
+            continue
+        out.append(
+            AvatarTrack(
+                name=name,
+                x=slot.x,
+                y=slot.y,
+                # The track is rendered at the PNGs' own size (236×249 on the sample), and
+                # the slot rect is where it goes (177×188): the overlay scales it, exactly
+                # as the compile step scaled the static photo.
+                width=slot.width,
+                height=slot.height,
+                lit_path=slot.lit_path,
+                dim_path=slot.dim_path,
+                lit=lit,
+            )
+        )
+    # Stable order so the same bindings always produce the same input numbering (and
+    # therefore the same command line, which is what the determinism test relies on).
+    out.sort(key=lambda item: (item.y, item.x, item.name))
+    return out
+
+
+def _avatar_layers(
+    settings: Settings,
+    tracks: list[AvatarTrack],
+    *,
+    duration_ms: int,
+    work_dir: Path,
+) -> list[video_media.AvatarLayer]:
+    """Render one lit/dim track per bound slot, ready to overlay.
+
+    Measured 1.5 s and 55 MB per 600 s of track, so the cost is small next to the encode
+    itself. Rendering them here rather than in ``prepare`` keeps the request that queues an
+    export fast: the user is watching a progress bar either way.
+    """
+    layers: list[video_media.AvatarLayer] = []
+    for track in tracks:
+        sequence = track_pieces(track.lit, total_ms=duration_ms)
+        pieces = avatar_track.pieces_of(
+            lit=[track.lit_path], dim=track.dim_path, sequence=sequence
+        )
+        target = work_dir / f"avatar-{_slug(track.name)}.mov"
+        avatar_track.build_track(
+            settings.ffmpeg_path, target=target, pieces=pieces, work_dir=work_dir
+        )
+        layers.append(
+            video_media.AvatarLayer(
+                path=target, x=track.x, y=track.y, width=track.width, height=track.height
+            )
+        )
+    return layers
+
+
+def _avatar_stills(
+    tracks: list[AvatarTrack], *, at_ms: int
+) -> list[video_media.AvatarLayer]:
+    """One lit-or-dim PNG per slot at ``at_ms`` — the still preview's cheap path."""
+    return [
+        video_media.AvatarLayer(
+            path=track.lit_path if lit_at(track.lit, at_ms) else track.dim_path,
+            x=track.x,
+            y=track.y,
+            width=track.width,
+            height=track.height,
+            is_video=False,
+        )
+        for track in tracks
+    ]
+
+
+def _slug(name: str) -> str:
+    """A file-name-safe slot name.
+
+    Slots are named from PSD layer names, so they hold CJK, spaces and ``拷贝``. Written
+    as-is, the concat script and the ``.mov`` would both be fine, but a name with a path
+    separator would not — and ``Path(name).name`` is cheaper than debugging that.
+    """
+    cleaned = "".join(char if char.isalnum() else "-" for char in name).strip("-")
+    return cleaned[:40] or "avatar"
+
+
+def _base_background(template: VideoTemplate, tracks: list[AvatarTrack]) -> Path:
+    """Which compiled poster to start from.
+
+    With any bound avatar this **must** be ``background_bare``: ``background.png`` has the
+    PSD's own photos flattened in, so a slot that goes dim would show the bright photo
+    underneath the dim overlay — a panel that dims to *almost* dim.
+
+    The recomposition was checked pixel-for-pixel: bare plus all four lit PNGs at their
+    rects differs from ``background.png`` in **0** pixels, so switching bases changes
+    nothing until a slot actually changes state. If ``background_bare.png`` is missing
+    (a template compiled before P1 finished writing it), fall back rather than fail: the
+    film is wrong by one dim photo, not broken.
+    """
+    if not tracks:
+        return Path(template.background_path)
+    bare = Path(template.background_path).with_name("background_bare.png")
+    if bare.is_file():
+        return bare
+    log.warning("video.bare_background_missing", template=template.id)
+    return Path(template.background_path)
 
 
 # --- still preview ------------------------------------------------------
@@ -300,17 +453,19 @@ def preview_still(
                 y=plan.box_y,
             )
 
+    tracks = avatar_tracks(session, template, version, edl)
     video_media.render_still(
         settings.ffmpeg_path,
         target=target,
         at_ms=int(at_ms),
         width=template.canvas_w or 1920,
         height=template.canvas_h or 1080,
-        background=Path(template.background_path),
+        background=_base_background(template, tracks),
         layers=_layers(template),
         box=box_chain,
         box_segment=box_segment,
         box_source=box_source,
+        avatars=_avatar_stills(tracks, at_ms=at_ms),
         subtitles=subtitles,
     )
     return target
@@ -482,11 +637,17 @@ def _encode(
         duration_ms=prepared.duration_ms,
         width=prepared.template.canvas_w or 1920,
         height=prepared.template.canvas_h or 1080,
-        background=Path(prepared.template.background_path),
+        background=prepared.background_path,
         layers=_layers(prepared.template),
         box=box_chain,
         box_segments=None if plan.empty else plan.segments,
         box_sources=None if plan.empty else plan.sources,
+        avatars=_avatar_layers(
+            settings,
+            prepared.avatars,
+            duration_ms=prepared.duration_ms,
+            work_dir=out,
+        ),
         subtitles=subtitles,
     )
     report(0.95)
