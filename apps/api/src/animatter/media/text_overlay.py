@@ -57,7 +57,11 @@ MIN_PX: Final[int] = 12
 #: without it, deploying a layout fix leaves the old pictures in place under unchanged
 #: names, and the next request happily returns them. Measured while writing this file —
 #: a wrap fix produced a byte-identical still because the digest only covered the data.
-RENDER_VERSION: Final[str] = "2"
+#:
+#: v3: a multi-line slot keeps the colours of its **second and later** lines. Before this,
+#: the newline between paragraphs broke the colour mapping and every line after the first
+#: was painted in the slot's base colour (the sample title's red 「苦与乐」 was blue).
+RENDER_VERSION: Final[str] = "3"
 
 
 @dataclass(frozen=True)
@@ -136,10 +140,17 @@ def _colour_lines(
 ) -> list[list[tuple[str, str]]]:
     """Map plain wrapped ``lines`` back onto ``styled``.
 
-    Wrapping only ever drops whitespace *between* lines, so one pass over the sequence that
-    skips characters the line does not contain is enough. A mismatch means the two disagree (a
-    future wrapping rule that rewrites text, say); that line is then painted in the slot's base
-    colour rather than mis-painted with every colour shifted by one character.
+    Wrapping only ever drops whitespace *between* lines — and a paragraph break is exactly one
+    of those: ``_wrap`` splits the text on ``\\n`` and emits the two paragraphs as separate
+    lines with no newline character of their own. So ``\\n`` has to be consumed like any other
+    whitespace. Leaving it out of that test was a real bug: the second line of the title never
+    matched, fell into the "disagree ⇒ paint the whole line in the base colour" branch, and the
+    PSD's red 「苦与乐」 came out blue on every still. Measured on the sample poster: line 2 held
+    0 red pixels instead of 2,400.
+
+    A genuine mismatch means the two disagree (a future wrapping rule that rewrites text, say);
+    that line is then painted in the slot's base colour rather than mis-painted with every
+    colour shifted by one character.
     """
     out: list[list[tuple[str, str]]] = []
     position = 0
@@ -154,7 +165,7 @@ def _colour_lines(
                 break
             char, colour = styled[position]
             if char != target[index]:
-                if char.isspace() and char != "\n":
+                if char.isspace():
                     position += 1
                     continue
                 ok = False
@@ -162,6 +173,10 @@ def _colour_lines(
             chunk.append((char, colour))
             position += 1
             index += 1
+        # The newline that ended this paragraph is still ahead of us; step over it so the next
+        # line starts at its own first character.
+        while position < len(styled) and styled[position][0].isspace():
+            position += 1
         out.append(chunk if ok else [(char, base) for char in target])
     return out
 
