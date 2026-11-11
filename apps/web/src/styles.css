@@ -2087,41 +2087,6 @@ button.small,
   width: 100%;
 }
 
-/* P3: one row per avatar slot — name, speaker dropdown, and how much it talks.
-   The talk time is the point of the row: a binding to a speaker who never speaks
-   renders as 「0 段」, which is how a wrong binding differs from a broken export. */
-.video-avatar-row {
-  display: grid;
-  grid-template-columns: minmax(96px, 1fr) minmax(120px, 1.2fr) auto;
-  gap: 8px;
-  align-items: center;
-  list-style: none;
-  margin: 4px 0;
-}
-
-.video-box-info ul {
-  padding-left: 0;
-}
-
-.video-avatar-name {
-  display: flex;
-  flex-direction: column;
-  color: var(--text);
-}
-
-.video-avatar-name small {
-  color: var(--muted);
-}
-
-.video-avatar-row select {
-  min-width: 0;
-}
-
-.video-avatar-talk {
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-
 /* P4: deck panel. The list is narrow and fixed-width so the preview and the edit fields
    keep a stable position while paging through 10–40 slides; a fluid list makes the whole
    panel jump on every selection change. */
@@ -2297,66 +2262,100 @@ button.small,
   left: 7px;
 }
 
-/* --- template text + avatar photo editing (§19.12) -----------------------
-   Rows are a 4-column grid: label, content, face, size. The size column is
-   fixed at 54 px so the numbers line up down the list — scanning 「56 / 69 / 16」
-   is how the user checks the PSD's type scale was read correctly. */
+/* --- template properties, one list (§19.12, §19.15) ---------------------
+   Every property is one row of the same 4-column grid: label / control /
+   次要控件 / 数值或动作. Text rows put 字体 and 字号 in the last two columns,
+   avatar rows put 时长 and 换图 there — so the label column lines up down the
+   whole form and the eye can scan 「期号 / 当期标题 / 主播1 / … / 页脚」 in one
+   pass. The label column is 76 px because that is the width of 「当期标题」 at
+   0.74rem; a fluid column made the two list halves start at different x. */
 
-.template-texts {
+.template-form {
   display: flex;
   flex-direction: column;
   gap: 4px;
   margin-bottom: 8px;
 }
 
-.template-text-row {
+.template-row {
   display: grid;
-  /* 76 / text / 144 / 46, measured against 「Alimama ShuHeiTi」 at 0.78rem: the family needs
-     144 px before it stops truncating, and the size field only ever holds three digits. */
-  grid-template-columns: 76px minmax(0, 1fr) 144px 46px;
   gap: 6px;
   align-items: center;
 }
 
-.template-text-row input,
-.template-text-row select {
+.template-row.is-text {
+  /* 76 / text / 144 / 46, measured against 「Alimama ShuHeiTi」 at 0.78rem: the family needs
+     144 px before it stops truncating, and the size field only ever holds three digits. */
+  grid-template-columns: 76px minmax(0, 1fr) 144px 46px;
+}
+
+.template-row.is-avatar {
+  /* The name plate is derived from the binding, so the second column is the speaker
+     dropdown — the widest thing on the row — and the last two are small. */
+  grid-template-columns: 76px minmax(0, 1fr) auto auto;
+}
+
+.template-row input,
+.template-row select,
+.template-row textarea {
   min-width: 0;
   font-size: 0.78rem;
   padding: 2px 4px;
 }
 
-.template-text-row .template-size {
+/* A multi-line value gets a textarea (an <input type=text> silently drops the newline — see
+   the comment in TemplateTexts.tsx). It grows with the value's own line count instead of
+   scrolling, so the design's two-line title is visible as two lines. The row aligns to the
+   top so the label stays next to the first line rather than floating mid-height. */
+.template-row textarea {
+  font-family: inherit;
+  line-height: 1.35;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--text);
+}
+
+.template-row.is-multiline {
+  align-items: start;
+}
+
+.template-row.is-multiline .template-row-label {
+  padding-top: 4px;
+  white-space: normal;
+}
+
+.template-row .template-size {
   text-align: right;
 }
 
-.template-text-label {
-  display: flex;
-  flex-direction: column;
+/* One label style for both halves. The avatar-name rows used to be `var(--text)` while the
+   期号/标题 rows were `var(--muted)`, which read as two different kinds of field when they are
+   the same kind of field. */
+.template-row-label {
   font-size: 0.74rem;
   color: var(--muted);
   line-height: 1.15;
   overflow: hidden;
-  /* One line each: the PSD's layer names run to 24 characters, and letting them wrap made
-     that row twice as tall as its neighbours. The full text is in the `title` attribute. */
+  /* One line each: a PSD layer name runs to 24 characters, and letting it wrap made that
+     row twice as tall as its neighbours. The full name is in the `title` attribute. */
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
-.template-text-label small {
-  font-size: 0.68rem;
-  opacity: 0.75;
-}
-
-/* The avatar-name rows are the ones users touch most, so they get a hair more
-   contrast than the notes without changing the grid. */
-.template-text-row.is-name .template-text-label {
-  color: var(--text);
+.template-row-talk {
+  color: var(--muted);
+  font-size: 0.72rem;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .avatar-photo-actions {
   display: inline-flex;
   gap: 4px;
   align-items: center;
+  justify-content: flex-end;
 }
 
 .avatar-photo-actions label.ghost {
@@ -2369,7 +2368,10 @@ button.small,
 }
 
 /* The colour hint shows a literal `**` and a colour; keep it readable in the narrow column. */
-.template-texts + .section-note code,
+.template-hint {
+  margin-top: 2px;
+}
+
 .section-note code {
   padding: 0 3px;
   border-radius: 3px;
@@ -2414,15 +2416,6 @@ button.small,
   overflow-y: auto;
 }
 
-.video-slot-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
 /* 演示稿 is the one tab that is a two-pane editor rather than a form: a page list, a
    720×405 preview and three fields. At 320px the list truncates every title to six
    characters, so that tab — and only that tab — gets a wider column. */
@@ -2430,8 +2423,8 @@ button.small,
   grid-template-columns: minmax(0, 1fr) 560px;
 }
 
-/* The 模板 tab is a four-column grid (label / text / font / size). At 320 px the font
-   dropdown truncates mid-family — measured 「Alimama ShuH」 in the walkthrough — and the
+/* The 模板 tab is a four-column grid (label / control / secondary / value). At 320 px the
+   font dropdown truncates mid-family — measured 「Alimama ShuH」 in the walkthrough — and the
    font is the one thing on the tab the user cannot infer from the picture. */
 .video-stage.wants-mid {
   grid-template-columns: minmax(0, 1fr) 480px;

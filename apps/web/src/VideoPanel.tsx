@@ -34,7 +34,7 @@ import {
 import { AssetLibrary } from "./AssetLibrary";
 import { CollapsiblePanel } from "./CollapsiblePanel";
 import { DeckPanel } from "./DeckPanel";
-import { AvatarPhotoButton, TemplateTexts } from "./TemplateTexts";
+import { TemplateTexts } from "./TemplateTexts";
 import { formatDuration, formatTime } from "./format";
 import { VideoTrack } from "./VideoTrack";
 import type { View } from "./waveView";
@@ -244,11 +244,17 @@ export function VideoPanel({
    * The response carries the new talk time, so the row updates from the server instead of
    * guessing — a slot bound to a speaker who never speaks reports 0 段, and that number is
    * the only way the user can tell a wrong binding from a broken render.
+   *
+   * The **template** is reloaded too: the name plate is the bound speaker's name now (round
+   * 99), so binding changes the poster's text, not just the avatar track. Refreshing one and
+   * not the other is how the panel showed 「主播1 · 马小褂」 while the film still printed the
+   * PSD's placeholder.
    */
   const doBind = async (slot: string, speakerId: number | null): Promise<void> => {
     try {
       const updated = await api.bindVideoAvatar(projectId, slot, versionId, speakerId);
       setAvatars((current) => current.map((item) => (item.name === slot ? updated : item)));
+      await load();
     } catch (caught) {
       onNotice(caught instanceof Error ? caught.message : String(caught));
     }
@@ -566,68 +572,24 @@ export function VideoPanel({
                     <TemplateTexts
                       projectId={projectId}
                       template={template}
+                      avatars={avatars}
+                      speakers={speakers}
                       onTemplate={setTemplate}
+                      onBind={(slot, speakerId) => void doBind(slot, speakerId)}
                       onNotice={onNotice}
                     />
-                    <ul className="video-slot-list">
-                      <li className="muted small">
-                        素材框 {template.box_rect.w}×{template.box_rect.h} ·{" "}
-                        {template.slots.avatars?.length ?? 0} 个头像位
-                      </li>
-                      {(template.slots.notes ?? []).map((note, index) => (
-                        <li key={index} className="muted small">
-                          {note}
-                        </li>
-                      ))}
-                  {(template.slots.avatars ?? []).map((slot) => {
-                    const bound = avatars.find((item) => item.name === slot.name);
-                    return (
-                      <li key={slot.name} className="video-avatar-row">
-                        {/*
-                          `label_name` is what the compile derived from the group's side
-                          (「主播1」/「嘉宾1」). `name` is Photoshop's own layer name, which on this
-                          template is 「头像1 拷贝」 — meaningful to the file, meaningless to the user.
-                          The small line is the PSD's rendered name plate, which is now only the
-                          *default* text of that slot's name field.
-                        */}
-                        <span className="video-avatar-name">
-                          {slot.label_name || slot.name}
-                          <small>{slot.label || "（无名牌）"}</small>
-                        </span>
-                        <select
-                          value={bound?.speaker_id ?? ""}
-                          onChange={(event) =>
-                            void doBind(
-                              slot.name,
-                              event.target.value === "" ? null : Number(event.target.value),
-                            )
-                          }
-                        >
-                          <option value="">不绑定（一直不变）</option>
-                          {speakers.map((speaker) => (
-                            <option key={speaker.local_id} value={speaker.local_id}>
-                              {speaker.name || `说话人 ${speaker.local_id}`}
-                            </option>
-                          ))}
-                        </select>
-                        <small className="video-avatar-talk">
-                          {bound === undefined || bound.speaker_id === null
-                            ? "—"
-                            : bound.turns === 0
-                              ? "0 段（这个人没说话）"
-                              : `${bound.turns} 段 · ${formatDuration(bound.lit_ms)}`}
-                        </small>
-                        <AvatarPhotoButton
-                          projectId={projectId}
-                          slot={slot}
-                          label={slot.name}
-                          onTemplate={setTemplate}
-                          onNotice={onNotice}
-                        />
-                      </li>
-                    );
-                  })}
-                    </ul>
+                    {/*
+                      Only **problems** reach this list now — a missing 期号/标题 layer, a media
+                      box with no plate. The compile used to also record facts nobody could act
+                      on (hidden avatar groups, an evened-out box size) and they sat above the
+                      form pushing the fields off the column. Nothing is printed when there is
+                      nothing wrong, which on the sample PSD is the normal case.
+                    */}
+                    {(template.slots.notes ?? []).map((note, index) => (
+                      <p key={index} className="section-note">
+                        {note}
+                      </p>
+                    ))}
                     <label className="field">
                       <span>框内默认填充</span>
                       <select

@@ -1,12 +1,28 @@
 /**
- * The template's editable text and avatar photos (§19.12).
+ * The template's editable properties (§19.12, §19.15).
  *
  * What this panel is for: the PSD supplies the **layout** — where each piece of text sits, how
  * big it is, what colour it is — and this lets the user change the **content** without
  * Photoshop. Nothing here can move a slot; that is deliberate, because the whole promise of
  * 「导入模板」 is that the designer's layout is kept.
  *
- * Three decisions worth knowing before changing this file:
+ * **One list, not two** (round 99). The avatar rows used to live in a second list below this
+ * one, so 「主播1」 appeared twice — once as a name-plate input here, once as a binding row
+ * there — and the two could disagree. There is one row per property now:
+ *
+ * | 行 | 能改什么 |
+ * |---|---|
+ * | 期号 / 当期标题 / 页脚 | 文字、字体、字号 |
+ * | 主播1、主播2 / 嘉宾1、嘉宾2 | 绑定哪个说话人，以及换掉这张头像 |
+ *
+ * and they share one label style, because the two lists used to colour their labels
+ * differently for no reason a reader could see.
+ *
+ * **The avatar name is no longer an input.** It is the bound speaker's name (server-side,
+ * `video_avatars.name_plates`), so the plate cannot say 「彼方」 over 呈AA's face, and renaming
+ * a speaker renames the plate. That is why `onBind` also refreshes the template.
+ *
+ * Two decisions worth knowing before changing this file:
  *
  * 1. **Edits are committed per field, on blur.** Every keystroke writing to the server would
  *    make each letter of a title a recompile-triggering request. Blur (and Enter) is the
@@ -14,29 +30,31 @@
  * 2. **The server's response replaces local state.** The response is the *resolved* slot list,
  *    so clearing a field visibly returns to the PSD's text — no "did it save?" guessing, and
  *    no second source of truth to drift.
- * 3. **A content slot is shown but not editable.** 「开场及嘉宾介绍」and the guest block sit
- *    inside the media box; the footage covers them. Listing them with an explanation is
- *    honest; hiding them would make the PSD's own text look like it was dropped by a bug.
  */
 
 import { useEffect, useState } from "react";
-import { api, type VideoTemplate, type VideoTextSlot } from "./api";
+import {
+  api,
+  type SpeakerInfo,
+  type VideoAvatar,
+  type VideoTemplate,
+  type VideoTextSlot,
+} from "./api";
+import { formatDuration } from "./format";
 
 interface Props {
   projectId: string;
   template: VideoTemplate;
+  /** The avatar slots with their current speaker and talk time (P3). */
+  avatars: VideoAvatar[];
+  speakers: SpeakerInfo[];
   onTemplate: (next: VideoTemplate) => void;
+  onBind: (slot: string, speakerId: number | null) => void;
   onNotice: (message: string) => void;
 }
 
-/**
- * The accent colour, spelled out for the hint. It is the design's red, measured from the PSD's
- * own second style run (#f9485c on the episode number, the title and the footer).
- */
-const ACCENT_TEXT = "#f9485c";
-
-/** Roles the user can edit, in the order the poster reads them. */
-const EDITABLE: VideoTextSlot["role"][] = ["episode", "title", "avatar_name", "note"];
+/** Roles that are a text field, in the order the poster reads them. */
+const EDITABLE: VideoTextSlot["role"][] = ["episode", "title", "note"];
 
 const ROLE_LABEL: Record<VideoTextSlot["role"], string> = {
   episode: "期号",
@@ -46,7 +64,15 @@ const ROLE_LABEL: Record<VideoTextSlot["role"], string> = {
   content: "框内文字",
 };
 
-export function TemplateTexts({ projectId, template, onTemplate, onNotice }: Props): React.JSX.Element {
+export function TemplateTexts({
+  projectId,
+  template,
+  avatars,
+  speakers,
+  onTemplate,
+  onBind,
+  onNotice,
+}: Props): React.JSX.Element {
   const [families, setFamilies] = useState<string[]>([]);
   const [preferred, setPreferred] = useState<string[]>([]);
   const [editing, setEditing] = useState<string | null>(null);
@@ -90,88 +116,158 @@ export function TemplateTexts({ projectId, template, onTemplate, onNotice }: Pro
     return [...head, ...rest];
   };
 
-  const rows = EDITABLE.flatMap((role) => slots.filter((slot) => slot.role === role));
-  const content = slots.filter((slot) => slot.role === "content");
+  const head = EDITABLE.slice(0, 2).flatMap((role) => slots.filter((slot) => slot.role === role));
+  const notes = slots.filter((slot) => slot.role === "note");
+
+  const textRow = (slot: VideoTextSlot): React.JSX.Element => {
+    const busy = editing === slot.key;
+    /*
+      A multi-line value needs a `<textarea>`, not an `<input type="text">`.
+
+      Measured in the walkthrough: the title slot's value is 31 characters holding a `\n`, and
+      the `<input>`'s `value` came back with **no newline at all** — HTML's value sanitisation
+      strips CR/LF from a text input. So the field showed 「…独家专访**六年磨一剑…」 as one run-on
+      line, and *any* edit (even changing one character elsewhere in it) committed that
+      stripped string back, silently collapsing the design's two-line title into one. The
+      poster is the thing this panel exists to control, so the control has to be able to
+      express what the design actually contains.
+
+      The 期号 is one line by definition (`EP.23`), so it keeps the single-line input.
+    */
+    const multiline = slot.role !== "episode";
+    const lines = Math.min(3, Math.max(1, slot.text.split("\n").length));
+    const shared = {
+      key: `text:${slot.text}`,
+      defaultValue: slot.text,
+      disabled: busy,
+      "aria-label": `${ROLE_LABEL[slot.role]}内容`,
+      onBlur: (event: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+        const next = event.target.value;
+        if (next !== slot.text) void commit(slot, { text: next });
+      },
+    };
+    return (
+      <div
+        key={slot.key}
+        className={`template-row is-text${multiline ? " is-multiline" : ""}`}
+        data-slot={slot.key}
+      >
+        {/*
+          The server's label, not the layer name: 「页脚」 is a role name derived at compile
+          time. A [data-]label taken from the layer name was the value-labelled-with-itself bug
+          of round 98 — Photoshop names an un-renamed text layer after its own text.
+        */}
+        <span className="template-row-label" title={`${ROLE_LABEL[slot.role]} · ${slot.name}`}>
+          {slot.label}
+        </span>
+        {multiline ? (
+          <textarea
+            {...shared}
+            rows={lines}
+            onKeyDown={(event) => {
+              // Enter inserts a line break here — that is the point of the field. Escape is the
+              // way out without committing, which is what a multi-line editor should do.
+              if (event.key === "Escape") event.currentTarget.blur();
+            }}
+          />
+        ) : (
+          <input
+            {...shared}
+            type="text"
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.currentTarget.blur();
+            }}
+          />
+        )}
+        <select
+          value={slot.font}
+          disabled={busy || families.length === 0}
+          aria-label={`${ROLE_LABEL[slot.role]}字体`}
+          onChange={(event) => void commit(slot, { font: event.target.value })}
+        >
+          {fontOptions(slot.font).map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </select>
+        <input
+          type="number"
+          className="template-size"
+          defaultValue={slot.font_size}
+          min={6}
+          max={400}
+          step={1}
+          disabled={busy}
+          aria-label={`${ROLE_LABEL[slot.role]}字号`}
+          title={`字号 ${slot.font_size} px（PSD 里的实际大小）`}
+          onBlur={(event) => {
+            const next = Number(event.target.value);
+            if (Number.isFinite(next) && next > 0 && next !== slot.font_size) {
+              void commit(slot, { font_size: Math.round(next) });
+            }
+          }}
+        />
+      </div>
+    );
+  };
+
+  /**
+   * One avatar row: which speaker it shows, how much they talk, and the photo button.
+   *
+   * The talk time is not decoration — a slot bound to a speaker who never speaks reads
+   * 「没说话」, and that number is the only way to tell a wrong binding from a broken render.
+   * It is one short line, not a paragraph: the panel's job is the form, not the explanation.
+   */
+  const avatarRow = (slot: NonNullable<VideoTemplate["slots"]["avatars"]>[number]) => {
+    const bound = avatars.find((item) => item.name === slot.name);
+    const label = slot.label_name || slot.name;
+    return (
+      <div key={slot.name} className="template-row is-avatar" data-slot={slot.name}>
+        <span className="template-row-label" title={`头像位 ${slot.name}`}>
+          {label}
+        </span>
+        <select
+          value={bound?.speaker_id ?? ""}
+          aria-label={`${label}绑定说话人`}
+          onChange={(event) =>
+            onBind(slot.name, event.target.value === "" ? null : Number(event.target.value))
+          }
+        >
+          <option value="">不绑定（不出现）</option>
+          {speakers.map((speaker) => (
+            <option key={speaker.local_id} value={speaker.local_id}>
+              {speaker.name || `说话人 ${speaker.local_id}`}
+            </option>
+          ))}
+        </select>
+        <small className="template-row-talk">
+          {bound === undefined || bound.speaker_id === null
+            ? "—"
+            : bound.turns === 0
+              ? "没说话"
+              : `${bound.turns} 段 · ${formatDuration(bound.lit_ms)}`}
+        </small>
+        <AvatarPhotoButton
+          projectId={projectId}
+          slot={slot}
+          label={label}
+          onTemplate={onTemplate}
+          onNotice={onNotice}
+        />
+      </div>
+    );
+  };
 
   return (
-    <div className="template-texts">
-      {rows.map((slot) => {
-        const isName = slot.role === "avatar_name";
-        const busy = editing === slot.key;
-        return (
-          <div
-            key={slot.key}
-            className={isName ? "template-text-row is-name" : "template-text-row"}
-            data-slot={slot.key}
-          >
-            {/*
-              The server's label, not the role: 「主播1」/「嘉宾2」/「页脚」 are names the compile
-              derived, and 「头像名」 would have told every row the same thing.
-            */}
-            <span className="template-text-label" title={`${ROLE_LABEL[slot.role]} · ${slot.name}`}>
-              {slot.label}
-            </span>
-            <input
-              // Remounted when the server's text changes, so clearing a field visibly goes
-              // back to the PSD's own string instead of keeping the cleared one on screen.
-              key={`text:${slot.text}`}
-              type="text"
-              defaultValue={slot.text}
-              disabled={busy}
-              aria-label={`${ROLE_LABEL[slot.role]}内容`}
-              onBlur={(event) => {
-                const next = event.target.value;
-                if (next !== slot.text) void commit(slot, { text: next });
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") event.currentTarget.blur();
-              }}
-            />
-            <select
-              value={slot.font}
-              disabled={busy || families.length === 0}
-              aria-label={`${ROLE_LABEL[slot.role]}字体`}
-              onChange={(event) => void commit(slot, { font: event.target.value })}
-            >
-              {fontOptions(slot.font).map((name) => (
-                <option key={name} value={name}>
-                  {name}
-                </option>
-              ))}
-            </select>
-            <input
-              type="number"
-              className="template-size"
-              defaultValue={slot.font_size}
-              min={6}
-              max={400}
-              step={1}
-              disabled={busy}
-              aria-label={`${ROLE_LABEL[slot.role]}字号`}
-              title={`字号 ${slot.font_size} px（PSD 里的实际大小）`}
-              onBlur={(event) => {
-                const next = Number(event.target.value);
-                if (Number.isFinite(next) && next > 0 && next !== slot.font_size) {
-                  void commit(slot, { font_size: Math.round(next) });
-                }
-              }}
-            />
-          </div>
-        );
-      })}
+    <div className="template-form">
+      {head.map(textRow)}
+      {(template.slots.avatars ?? []).map(avatarRow)}
+      {notes.map(textRow)}
 
-      {rows.some((slot) => slot.text.includes("**")) ? (
-        <p className="section-note">
-          用 <b>**</b> 把要变色的字括起来，例如 <code>EP.**23**</code>：括号里的是红
-          （{ACCENT_TEXT}），外面是本色。两边不成对就按普通文字显示。
-        </p>
-      ) : null}
-
-      {content.length > 0 ? (
-        <p className="section-note">
-          框内有 {content.length} 段模板文字（
-          {content.map((slot) => slot.text.split("\n")[0]).join("、")}
-          ），素材会把它们盖住，这轮不参与渲染。
+      {slots.some((slot) => slot.text.includes("**")) ? (
+        <p className="section-note template-hint">
+          用 <b>**</b> 标出要变色的字，例如 <code>EP.**23**</code>。
         </p>
       ) : null}
     </div>
