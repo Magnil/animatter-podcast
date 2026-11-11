@@ -98,10 +98,18 @@ class BoxChain:
     sources: list[Path]
     #: The input number the chain's ``input_index == 0`` refers to. Set by build_chain.
     input_base: int = 0
+    #: How many ffmpeg inputs the chain consumes, counted from the segments themselves.
+    #:
+    #: It has to be stored: the caller owns the ``-i`` list and ``sources`` is empty here
+    #: (the service layer holds the paths), so nothing else knows the number. Before P3
+    #: nothing downstream depended on it — the box was always overlaid last — but an avatar
+    #: overlay comes *after* the box, and getting the count wrong asks ffmpeg for the wrong
+    #: stream, which fails with "Error binding filtergraph inputs/outputs".
+    inputs: int = 1
 
     @property
     def input_count(self) -> int:
-        return len(self.sources)
+        return max(self.inputs, len(self.sources))
 
     def text_for(self, *, input_base: int) -> str:
         """The chain, with every ``[N:v]`` shifted to start at ``input_base``.
@@ -248,7 +256,16 @@ def build_chain(
     else:
         parts.append(f"{''.join(labels)}concat=n={len(labels)}:v=1:a=0[{out_label}]")
 
-    return BoxChain(text=";\n".join(parts), x=x, y=y, width=width, height=height, sources=[])
+    return BoxChain(
+        text=";\n".join(parts),
+        x=x,
+        y=y,
+        width=width,
+        height=height,
+        sources=[],
+        input_base=input_base,
+        inputs=len({segment.input_index for segment in segments}),
+    )
 
 
 def build_single(
@@ -275,4 +292,13 @@ def build_single(
         f"{_normalise(segment, width, height, input_base=input_base, tag=0)}{shift},fps={FPS},"
         f"trim=duration={remaining / 1000:.3f},setpts=PTS-STARTPTS[{out_label}]"
     )
-    return BoxChain(text=text, x=x, y=y, width=width, height=height, sources=[])
+    return BoxChain(
+        text=text,
+        x=x,
+        y=y,
+        width=width,
+        height=height,
+        sources=[],
+        input_base=input_base,
+        inputs=1,
+    )

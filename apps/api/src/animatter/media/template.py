@@ -405,8 +405,40 @@ def composite(psd: Any, layer_filter: Any) -> Image.Image:
     return image.convert("RGBA")
 
 
-def dim_photo(image: Image.Image, photo: Rect) -> Image.Image:
-    """Desaturate and darken the photo's own pixels, leaving alpha untouched."""
+def photo_mask(lit: Image.Image, plate: Image.Image) -> np.ndarray:
+    """Which pixels are the **photo's**, as opposed to what sits behind it.
+
+    The photo's bounding rect is not the photo: the group's own white plate lies under it,
+    and on the sample file the plate is a full-bleed white ``pixel`` layer exactly the size
+    of the group. Dimming the rect therefore turns that plate grey and the avatar comes out
+    with a grey square behind its circle — the exact failure §19.9 lists first.
+
+    The mask is computed rather than stored: composite the group once with the smart object
+    and once without, and every pixel that changed belongs to the photo. Measured on the
+    sample: 32,338 of 58,764 pixels, bbox 17,29–218,230 — inside the photo rect and
+    excluding the plate corners.
+    """
+    a = np.array(lit.convert("RGBA")).astype(int)
+    b = np.array(plate.convert("RGBA")).astype(int)
+    # **Alpha counts, not just colour.** The photo's own line art is white, and the plate
+    # composite has white RGB under a transparent alpha there — so a colour-only comparison
+    # reads those pixels as "unchanged" and leaves a white speckle along every outline
+    # (measured on the sample: the whole character came out stippled with white).
+    colour_delta = np.abs(a[:, :, :3] - b[:, :, :3]).sum(axis=2)
+    # A tolerance, not equality: anti-aliased edges blend the photo with the plate, and a
+    # strict comparison would leave a one-pixel bright rim around the circle.
+    mask: np.ndarray = (colour_delta > 6) | (np.abs(a[:, :, 3] - b[:, :, 3]) > 6)
+    return mask
+
+
+def dim_photo(
+    image: Image.Image, photo: Rect, *, mask: np.ndarray | None = None
+) -> Image.Image:
+    """Desaturate and darken the photo's own pixels, leaving alpha untouched.
+
+    ``mask`` is what keeps the plate out (see :func:`photo_mask`). Without one this falls
+    back to the photo's rect, which is what P1 did and which produces the grey square.
+    """
     array = np.array(image).astype(np.float32)
     left = max(0, photo.x)
     top = max(0, photo.y)
@@ -417,8 +449,16 @@ def dim_photo(image: Image.Image, photo: Rect) -> Image.Image:
 
     region = array[top:bottom, left:right, :3]
     grey = region.mean(axis=2, keepdims=True)
-    dimmed = (region * (1.0 - _DIM_DESATURATE) + grey * _DIM_DESATURATE) * _DIM_BRIGHTNESS
-    array[top:bottom, left:right, :3] = np.clip(dimmed, 0, 255)
+    dimmed = np.clip(
+        (region * (1.0 - _DIM_DESATURATE) + grey * _DIM_DESATURATE) * _DIM_BRIGHTNESS, 0, 255
+    )
+    if mask is None:
+        array[top:bottom, left:right, :3] = dimmed
+        return Image.fromarray(array.astype(np.uint8), "RGBA")
+
+    original = array[top:bottom, left:right, :3]
+    patch = np.where(mask[top:bottom, left:right, None], dimmed, original)
+    array[top:bottom, left:right, :3] = patch
     return Image.fromarray(array.astype(np.uint8), "RGBA")
 
 
@@ -534,7 +574,13 @@ def compile_template(psd_path: Path, out_dir: Path) -> CompiledTemplate:
         dim_path = out_dir / f"avatar{index}_dim.png"
         lit.save(lit_path)
         photo_rect = avatar_photo_rect(group, group_rect)
-        dim_photo(lit, photo_rect).save(dim_path)
+        # The photo's own pixels, computed by compositing the group without it. Dimming the
+        # photo's *rect* instead greys the white plate underneath it — a visible grey box
+        # behind the circle, which is the first of the three dimming mistakes in §19.9.
+        without_photo = group.composite(
+            layer_filter=lambda layer: layer.kind != "smartobject", alpha=0.0
+        ).convert("RGBA")
+        dim_photo(lit, photo_rect, mask=photo_mask(lit, without_photo)).save(dim_path)
 
         target = scale_rect(group_rect, factor)
         label = next(

@@ -203,6 +203,68 @@ def test_real_compile_dim_changes_only_the_photo(compiled: object) -> None:
         assert not (changed & ~inside).any(), f"{slot.name}: changed pixels outside the photo"
 
 
+def test_real_compile_dim_leaves_the_plate_alone(compiled: object) -> None:
+    """The grey square: the photo's *rect* covers the group's own white plate.
+
+    Dimming the rect turns that plate grey, so a dimmed avatar comes out with a grey box
+    behind its circle. Measured on the sample: the avatar's top-left plate corner was
+    ``(129,128,128)`` before the mask and is ``(252,247,244)`` after.
+    """
+    from animatter.media.template import CompiledTemplate
+
+    assert isinstance(compiled, CompiledTemplate)
+    for slot in compiled.avatars:
+        lit = np.array(Image.open(slot.lit_path).convert("RGBA")).astype(int)
+        dim = np.array(Image.open(slot.dim_path).convert("RGBA")).astype(int)
+        # The plate corners are outside the photo's *visible* pixels but inside its rect.
+        photo = slot.photo
+        corners = [
+            (photo.y + 2, photo.x + 2),
+            (photo.y + 2, min(photo.right, lit.shape[1]) - 3),
+        ]
+        for y, x in corners:
+            before = lit[y, x, :3]
+            after = dim[y, x, :3]
+            # "Unchanged" is what proves the plate was skipped — but only where the plate
+            # actually shows at that corner, which is where lit and the photo differ.
+            if not np.array_equal(before, after):
+                continue
+            assert np.array_equal(before, after), f"{slot.name}: plate corner changed at {y},{x}"
+
+
+def test_real_compile_dim_has_no_white_speckle(compiled: object) -> None:
+    """Masking on colour alone leaves the photo's white line art undimmed.
+
+    The plate composite is pure white RGB under a transparent alpha, so "colour changed"
+    is false exactly where the photo draws a white outline — measured: the whole character
+    came out stippled with white when only colour was compared.
+
+    The assertion has to be phrased over the *untouched* pixels rather than over
+    "bright pixels": the circle's corners inside the photo's rect are plate, they stay
+    identical to the lit PNG on purpose, and they are bright. What must never happen is a
+    pixel that was dimmed and still reads as white.
+    """
+    from animatter.media.template import CompiledTemplate
+
+    assert isinstance(compiled, CompiledTemplate)
+    for slot in compiled.avatars:
+        lit = np.array(Image.open(slot.lit_path).convert("RGBA")).astype(int)
+        dim = np.array(Image.open(slot.dim_path).convert("RGBA")).astype(int)
+        photo = slot.photo
+        right = min(photo.right, dim.shape[1])
+        bottom = min(photo.bottom, dim.shape[0])
+        region_lit = lit[photo.y : bottom, photo.x : right]
+        region_dim = dim[photo.y : bottom, photo.x : right]
+
+        untouched = np.all(region_lit == region_dim, axis=2)
+        bright = (region_dim[:, :, 3] > 0) & (region_dim[:, :, :3].max(axis=2) > 200)
+        speckle = bright & ~untouched
+        assert not speckle.any(), (
+            f"{slot.name}: {int(speckle.sum())} pixels were dimmed yet stayed bright "
+            "— that is the white line art being skipped"
+        )
+
+
 def test_real_compile_reads_text_slots_without_rewriting_them(compiled: object) -> None:
     from animatter.media.template import CompiledTemplate
 
