@@ -1940,3 +1940,65 @@ digest = sha256(样式 | 时刻 | 覆盖该帧的框段 | 该时刻的头像亮�
   "audioCollapsed":false,"waveformVisible":true}`；展开视频后 `hasBody:true`、
   摘要「模板已套用 · 2 个素材块」；收起音频后 `hasWave:false`、`headStillThere:"音频剪辑"`。
 - 前端 219 passed，`tsc` 与 `vite build` 干净；后端未改动。
+
+## 工作区改版：抽屉、标签页、两条轴共用一个窗口（2026-11-11）
+
+三件事一起做，因为它们互相依赖：左栏让位之后视频区才有宽度做「预览 + 设置列」；设置收进标签页
+之后视频轴才够得着面板底部；轴到底部之后，和音频轴共用窗口才有意义。
+
+### 1. 左栏变成抽屉
+
+三个面板各自能折，但它们加起来是**一个工作区**、共用一条右边框。做视频版面、导出、调设置时，
+要的不是折掉某一段，而是整栏让位。所以右边框上挂了一个 14×64 的把手（`‹` / `›`），点一下
+收成 0 宽，把手跟到窗口左缘。
+
+两个数字是量出来的：
+
+- **关着时 `left` 不能是 0。** 居中在 14px 宽的元素上，`left: 0` 会让它跑到屏幕外一半（实测
+  `left: -7`），可点面积只剩 7px。改停在 `7px`。
+- **只设 `grid-template-columns: 0` 合不上。** flex 子项仍按 min-content 撑开，实测侧栏宽度还是
+  420px。`.sidebar` 在关闭态加 `visibility: hidden` 之后才是 0。
+
+### 2. 视频区：预览左、设置右、标签页切换
+
+原来 模板 / 字幕 / 素材库 / 演示稿 四段竖着堆，堆完的结果是「要够到下面的视频轴，先滚过四屏
+和自己当前目标无关的设置」。现在 `.video-stage` 是两列网格：左边 16:9 预览 + 生成静帧，右边
+320px 的设置卡片，顶部四个 `.tab`（与 `ScriptPanel` 同一套），下面只渲染选中那一页。
+
+「演示稿」那页单独放宽到 560px（`.video-stage.wants-wide`）：它是唯一一个**双栏编辑器**而不是
+表单的页，320px 会把每个页标题截成六个字。窄于 1180px 时两列堆叠——硬撑两列会让预览先塌掉，
+而预览才是这个面板存在的理由。
+
+### 3. 视频轴到底部，与音频轴共用一个窗口
+
+这条是「导入素材不知道放哪」的根因，不是排序偏好。`VideoPanel` 原来自己持有
+`{from: 0, to: 60_000}`，波形持有另一个（可以是整段 61 分钟）——屏幕上同一个横坐标在两条轴上
+代表两个不同的时刻，素材块看着压在 12:00 上而波形说那里是 30:00。
+
+窗口提到 `App`（新 `apps/web/src/timelineView.ts` 的 `useTimelineView`），`Waveform` 与
+`VideoTrack` 都从它渲染：滚轮缩放、滚动条、「跟着播放头」全走同一个 `zoomAt` / `panTo` /
+`followPlayhead`。`Waveform` 从自持 `useState(view)` 改成受控组件。
+
+还有一个 7px 的坑：波形的 canvas 在 `.waveform` 里被 6px padding + 1px border 内缩，视频轴
+原本贴着内容边缘——实测 canvas `left 452 / width 956`，轨道 `left 445 / width 970`。号称同一条
+时间轴的两条轨道起点差 7px，等于块压在错误的那一秒上。`.video-track-wrap { padding: 0 7px }`
+之后两者逐像素相同。
+
+`VideoTrack` 的滚轮监听必须是 **non-passive**：React 的合成 `onWheel` 不能 `preventDefault`，
+否则页面会在缩放时跟着滚。
+
+### 验证
+
+`scripts/check-layout-v2.mjs`（走查，不入库）断言的都是算出来的事实：
+
+- 抽屉：开 `{"closed":false,"sidebarWidth":420,"handleLeft":413}`；关
+  `{"closed":true,"sidebarWidth":0,"sidebarVisibility":"hidden","stageWidth":1440}`。
+- 标签页：`settingsRightOfPreview:true`（几何断言，不是看截图），四页各自换掉正文文本。
+- 轴的位置：`trackInsideVideo:true`、`gapTrackToWave:87`、`exportBelowTrack:false`（导出按钮在
+  轴上面）。
+- **共用窗口**：在同一个横向比例上分别点视频轴和波形，读 `aria-valuenow` ——
+  `trackTime 2734987 / waveTime 2734987`，`deltaMs 0`。各算各的窗口时这两个数会差出几分钟。
+
+顺手清掉了几段没有对应标记的 CSS（`.video-box-info`、`.video-items`、`.video-item*`、
+`.video-deck-section`）：轴下面的块列表删掉之后，这些选择器留着只会让样式表里多一批没人能判断
+死活的东西。`followView` 的算术从 hook 里提到 `waveView.ts` 并加了 5 条单测（其中两条是「已经在窗口内就不要动」和「全观时不产生新对象」——后者若每次返回新窗口，两条轴会在每个播放 tick 重渲染）。前端 224 passed / `tsc` / `vite build` 干净；后端未改动。
