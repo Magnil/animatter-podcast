@@ -367,6 +367,63 @@ def test_describe_carries_the_slot_geometry(session: Session, tmp_path: Path) ->
         )
     }
     assert (described["头像1"]["x"], described["头像1"]["y"]) == (42, 200)
+    assert (described["头像1"]["name"], described["头像1"]["label"]) == ("头像1", "彼方")
+
+
+def test_avatar_tracks_carry_the_slot_rect_not_the_png_size(
+    session: Session, tmp_path: Path
+) -> None:
+    """Placement size, not artwork size — measured in pixels, and it bit the artefact.
+
+    The compiled PNGs are the PSD group's own size (236×249 on the sample) and the slot
+    rect is 177×188. Overlaying at the *artwork* size makes each avatar 32 px taller than
+    the gap between slots (the two frames touch) and 47 px wider (it runs into the media
+    box), and the upper avatar's opaque plate covers the lower one's name plate.
+    """
+    from animatter.services import video_render
+
+    version = with_speakers(session, turns=[(0, 0, 1000)])
+    row = make_template(session, version.project_id, tmp_path)
+    video_avatars.set_binding(session, version.project_id, slot="头像1", speaker_id=0)
+
+    tracks = video_render.avatar_tracks(
+        session, row, version, edl_without_deletions(1000)
+    )
+    assert len(tracks) == 1
+    track = tracks[0]
+    assert (track.x, track.y) == (42, 200)
+    assert (track.width, track.height) == (177, 188), "must be the slot rect, not 236×249"
+
+
+def test_avatar_overlays_do_not_overlap_or_reach_the_box(
+    session: Session, tmp_path: Path
+) -> None:
+    """Two slots on the same side must stay inside the margin between them.
+
+    This is the property the user saw fail: the frames touched, and both ran into the media
+    box. Checked as arithmetic on the geometry rather than on pixels, so it fails at the
+    source instead of after a 14-second encode.
+    """
+    from animatter.services import video_render
+
+    version = with_speakers(session, turns=[(0, 0, 1000), (1, 500, 1500)])
+    row = make_template(session, version.project_id, tmp_path)
+    video_avatars.set_binding(session, version.project_id, slot="头像1", speaker_id=0)
+    video_avatars.set_binding(session, version.project_id, slot="头像2", speaker_id=1)
+
+    tracks = video_render.avatar_tracks(
+        session, row, version, edl_without_deletions(2000)
+    )
+    assert len(tracks) == 2
+    ordered = sorted(tracks, key=lambda item: item.y)
+    upper, lower = ordered[0], ordered[1]
+    assert upper.y + upper.height <= lower.y, "the two avatar frames must not overlap"
+
+    box_left = json.loads(row.box_rect)["x"]
+    for track in tracks:
+        assert track.x + track.width <= box_left, (
+            f"{track.name} reaches x={track.x + track.width}, past the box edge {box_left}"
+        )
 
 
 # --- output time --------------------------------------------------------

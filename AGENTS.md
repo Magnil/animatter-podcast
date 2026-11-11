@@ -79,7 +79,7 @@ docs/                    本文件拆出来的设计文档
 
 ```powershell
 # 后端：在 apps/api 下跑
-..\..\.venv\Scripts\python.exe -m pytest -q            # 1017 passed, 1 skipped, 3 deselected
+..\..\.venv\Scripts\python.exe -m pytest -q            # 1019 passed, 1 skipped, 3 deselected
 ..\..\.venv\Scripts\python.exe -m ruff check src tests
 ..\..\.venv\Scripts\python.exe -m mypy --strict src    # 90 files
 
