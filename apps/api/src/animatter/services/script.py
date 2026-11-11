@@ -134,6 +134,102 @@ def _sentences(session: Session, version_id: str, time_map: TimeMap | None) -> l
     return out
 
 
+def script_sentences(
+    session: Session, settings: Settings, version: TranscriptVersion
+) -> list[ScriptSentence]:
+    """The version's sentences in **source** time, for deck generation.
+
+    Source time, not output time: a slide's ``start_ms`` is what a video block snaps to, and
+    blocks live on the original clock (§19.3). The deck maps them through the EDL at render
+    time, where deleting a page's opening sentence can be handled page by page.
+    """
+    del settings
+    return _sentences(session, version.id, None)
+
+
+def chapters_from_pairs(
+    pairs: list[tuple[str, int]], session: Session, version: TranscriptVersion
+) -> list[Chapter]:
+    """Turn ``(heading, start_ms)`` pairs into chapters with a sentence ord.
+
+    Chapters are **not persisted** anywhere: the ShowNotes generator returns them and the
+    caller renders them into markdown. So a deck either gets them handed in explicitly (the
+    UI still has them from the run that produced the show notes) or does without — and doing
+    without is fine, because the pause heuristic finds the same boundaries in most episodes.
+
+    ``start_ms`` is snapped to the nearest sentence start: a chapter written by hand sits up
+    to 6 s off the sentence it names, and snapping to the *nearest* one keeps it from
+    attaching to the following topic.
+    """
+    starts = sentence_starts(session, version.id)
+    return [
+        Chapter(heading=heading, start_ms=start_ms, first_ord=nearest_sentence_ord(starts, start_ms))
+        for heading, start_ms in pairs
+    ]
+
+
+def parse_chapter_lines(
+    markdown: str, *, session: Session, version: TranscriptVersion
+) -> list[Chapter]:
+    """``- **00:12:34** 标题`` lines back into :class:`Chapter` objects."""
+    import re
+
+    pattern = re.compile(r"^-\s*\*\*(\d{2}):(\d{2}):(\d{2})\*\*\s*(.+)$")
+    starts = sentence_starts(session, version.id)
+    out: list[Chapter] = []
+    for line in markdown.splitlines():
+        match = pattern.match(line.strip())
+        if match is None:
+            continue
+        hours, minutes, seconds = (int(match.group(index)) for index in (1, 2, 3))
+        start_ms = (hours * 3600 + minutes * 60 + seconds) * 1000
+        out.append(
+            Chapter(
+                heading=match.group(4).strip(),
+                start_ms=start_ms,
+                first_ord=nearest_sentence_ord(starts, start_ms),
+            )
+        )
+    return out
+
+
+def sentence_starts(session: Session, version_id: str) -> list[int]:
+    """Wall-clock start of each sentence, in ``ord`` order."""
+    rows = session.scalars(
+        select(Sentence).where(Sentence.version_id == version_id).order_by(Sentence.ord)
+    ).all()
+    tokens = {
+        token.idx: token
+        for token in session.scalars(
+            select(Token).where(Token.version_id == version_id)
+        ).all()
+    }
+    out: list[int] = []
+    for row in rows:
+        first = tokens.get(row.token_start)
+        if first is not None:
+            out.append(first.start_ms)
+    return out
+
+
+def nearest_sentence_ord(starts: list[int], at_ms: int) -> int:
+    """Index of the sentence that starts closest to ``at_ms``.
+
+    Chapters are written by hand in the published description and can sit a fraction of a
+    second before the sentence they name (measured 0–6 s). Choosing the *nearest* start
+    rather than the first one after it keeps a chapter from attaching to the next topic.
+    """
+    if not starts:
+        return 0
+    best = 0
+    best_distance = abs(starts[0] - at_ms)
+    for index, start in enumerate(starts):
+        distance = abs(start - at_ms)
+        if distance < best_distance:
+            best, best_distance = index, distance
+    return best
+
+
 def _time_map(session: Session, settings: Settings, version: TranscriptVersion) -> TimeMap | None:
     """Rendered timeline when anything was cut, otherwise ``None``.
 

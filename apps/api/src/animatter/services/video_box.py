@@ -29,14 +29,16 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from animatter.core.edl import Edl
+from animatter.core.edl import Edl, TimeMap
 from animatter.core.video_box import split_gallery
 from animatter.errors import AppError
 from animatter.log import get_logger
 from animatter.media import box_track
-from animatter.models import VideoAsset, VideoItem
+from animatter.models import Slide, VideoAsset, VideoItem
+from animatter.services import decks as slide_service
 from animatter.services import video_assets as asset_service
 
 log = get_logger(__name__)
@@ -117,13 +119,34 @@ def _stretches_for(
     item: VideoItem,
     cache: dict[str, VideoAsset | None],
     output_ms: int,
+    *,
+    span_ms: int = 0,
+    time_map: TimeMap | None = None,
+    slide_images: dict[str, Path] | None = None,
+    slide_starts: dict[str, list[tuple[int, str]]] | None = None,
 ) -> list[tuple[box_track.BoxSegment, Path]]:
     """Every (segment, source file) pair one block contributes.
 
     ``input_index`` is filled in later by :func:`plan`, which owns the deduplicated list of
     inputs — one file used twice still gets one ffmpeg input.
+
+    A ``slide`` block is the one kind that needs the **original** time map: its pages carry
+    original-timeline millisecond starts (``slide.start_ms``), and which page is on screen
+    depends on where the playhead is in the *source*, not in the output. Mapping each page
+    start through ``time_map`` is what keeps 「页切换点与字幕段落对齐」 true after audio is
+    cut: a page whose opening sentence was deleted has no output position and is dropped,
+    rather than appearing at the wrong moment.
     """
     fit = item.fit or "blur_fill"
+
+    if item.kind == "slide":
+        return _slide_stretches(
+            item,
+            output_ms,
+            time_map=time_map,
+            slide_images=slide_images or {},
+            slide_starts=slide_starts or {},
+        )
 
     if item.kind == "gallery":
         members = _gallery_ids(item.gallery_json)
@@ -181,7 +204,81 @@ def _stretches_for(
     # A block with neither an asset nor gallery members: the user created it but has not
     # picked anything yet. Contributes nothing rather than raising — that is a normal
     # intermediate state while dragging.
+    del span_ms
     return []
+
+
+def _slide_stretches(
+    item: VideoItem,
+    output_ms: int,
+    *,
+    time_map: TimeMap | None,
+    slide_images: dict[str, Path],
+    slide_starts: dict[str, list[tuple[int, str]]],
+) -> list[tuple[box_track.BoxSegment, Path]]:
+    """Which slide is on screen for how long, inside one block's stretch.
+
+    The pages are shown in order and each runs until the next one, so the *durations* come
+    from the gaps between page starts rather than from anything stored per page — inserting
+    a page therefore does not require rewriting its neighbour (same reasoning as
+    ``core/deck.page_spans``).
+    """
+    pages = sorted(slide_starts.get(item.deck_id or "", []))
+    if not pages:
+        return []
+
+    inside = [
+        (start, slide_id)
+        for start, slide_id in pages
+        if item.start_ms <= start < item.end_ms and slide_id in slide_images
+    ]
+    if not inside:
+        return []
+
+    out: list[tuple[box_track.BoxSegment, Path]] = []
+    for index, (start_ms, slide_id) in enumerate(inside):
+        next_start = inside[index + 1][0] if index + 1 < len(inside) else item.end_ms
+        if time_map is not None:
+            mapped = time_map.map_range(start_ms, next_start)
+            if mapped is None or mapped[1] <= mapped[0]:
+                continue
+            duration = mapped[1] - mapped[0]
+        else:
+            duration = next_start - start_ms
+        if duration <= 0:
+            continue
+        out.append(
+            (
+                box_track.BoxSegment(
+                    input_index=0,
+                    # A page is a still, so it has no intrinsic length; it fills its stretch.
+                    duration_ms=duration,
+                    kind=box_track.KIND_IMAGE,
+                    fit=item.fit or "contain",
+                    loop=False,
+                ),
+                slide_images[slide_id],
+            )
+        )
+
+    # The block may start before its first page does (the user dragged the leading edge onto
+    # an earlier sentence). Filling that head with the first page is better than a flash of
+    # plate, and it is what the block's own span promises the viewer.
+    if out:
+        missing = output_ms - sum(segment.duration_ms for segment, _path in out)
+        if missing > 0:
+            first_segment, first_path = out[0]
+            out[0] = (
+                box_track.BoxSegment(
+                    input_index=0,
+                    duration_ms=first_segment.duration_ms + missing,
+                    kind=first_segment.kind,
+                    fit=first_segment.fit,
+                    loop=False,
+                ),
+                first_path,
+            )
+    return out
 
 
 def plan(
@@ -191,11 +288,17 @@ def plan(
     box_rect: dict[str, int],
     items: list[VideoItem],
     edl: Edl,
+    settings: object | None = None,
+    project_id: str = "",
 ) -> BoxPlan:
     """Build the full chain for one export, in output time.
 
     ``template_background`` is the compiled plate: gap and orphan stretches are cut from
     it, which is also why this needs no separate "empty box" image.
+
+    ``settings``/``project_id`` are only used to draw slide decks. Passing neither leaves a
+    ``slide`` block contributing nothing, which is what the tests want when they are checking
+    the pure geometry of the plan.
     """
     width = int(box_rect.get("w") or 0)
     height = int(box_rect.get("h") or 0)
@@ -209,6 +312,12 @@ def plan(
     planned: list[PlannedBlock] = []
     orphaned = 0
 
+    # Slide decks are resolved once for the whole plan: the same deck can be used by several
+    # blocks, and the PNGs must not be re-rendered per block.
+    slide_images, slide_starts = _slide_tables(
+        session, items, settings=settings, project_id=project_id, width=width, height=height
+    )
+
     for item in items:
         mapped = time_map.map_range(item.start_ms, item.end_ms)
         if mapped is None or mapped[1] <= mapped[0]:
@@ -217,7 +326,16 @@ def plan(
             orphaned += 1
             continue
         start, end = mapped
-        pieces = _stretches_for(session, item, cache, end - start)
+        pieces = _stretches_for(
+            session,
+            item,
+            cache,
+            end - start,
+            span_ms=item.end_ms - item.start_ms,
+            time_map=time_map,
+            slide_images=slide_images,
+            slide_starts=slide_starts,
+        )
         if not pieces:
             orphaned += 1
             continue
@@ -294,6 +412,50 @@ def plan(
         orphaned=orphaned,
         empty=empty,
     )
+
+
+def _slide_tables(
+    session: Session,
+    items: list[VideoItem],
+    *,
+    settings: object | None,
+    project_id: str,
+    width: int,
+    height: int,
+) -> tuple[dict[str, Path], dict[str, list[tuple[int, str]]]]:
+    """Render every deck a plan needs, once, and index its pages by start time.
+
+    The PNGs are drawn at the **media box's** size so they are never rescaled on the way in;
+    a slide rendered at some other size would be resampled by the overlay and the text would
+    go soft, which is the one thing a slide must not do.
+
+    ``settings`` may be ``None`` when a caller only needs the plan's geometry (the tests do):
+    the page starts are still returned, and no image is rendered. That keeps the pure part of
+    the plan testable without a clock, a font or a filesystem.
+    """
+    deck_ids = {item.deck_id for item in items if item.kind == "slide" and item.deck_id}
+    if not deck_ids:
+        return {}, {}
+
+    images: dict[str, Path] = {}
+    starts: dict[str, list[tuple[int, str]]] = {}
+    for deck_id in deck_ids:
+        rows = session.scalars(
+            select(Slide).where(Slide.deck_id == deck_id).order_by(Slide.ord)
+        ).all()
+        starts[deck_id] = [(row.start_ms, row.id) for row in rows]
+        if settings is None:
+            continue
+        for row in rows:
+            images[row.id] = slide_service.render_slide(
+                settings,
+                project_id,
+                deck_id,
+                row,
+                width=width,
+                height=height,
+            )
+    return images, starts
 
 
 def _plate(

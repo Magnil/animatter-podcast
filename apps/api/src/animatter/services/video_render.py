@@ -235,6 +235,7 @@ def _layers(template: VideoTemplate) -> list[video_media.Layer]:
 def _box(
     session: Session,
     *,
+    settings: Settings,
     template: VideoTemplate,
     box_rect: dict[str, int],
     items: list[VideoItem],
@@ -245,6 +246,9 @@ def _box(
     Returns an *empty* plan rather than raising when the project has no blocks: a film
     with a background and subtitles but an empty box is a legitimate export, and refusing
     it would make the feature regress for anyone who has not started using the box yet.
+
+    ``settings``/``project_id`` are what let a ``slide`` block draw its pages: the PNGs are
+    rendered at the box's exact size on the way in, so the overlay never rescales them.
     """
     return video_box.plan(
         session,
@@ -252,6 +256,8 @@ def _box(
         box_rect=box_rect,
         items=items,
         edl=edl,
+        settings=settings,
+        project_id=template.project_id,
     )
 
 
@@ -417,6 +423,7 @@ def preview_still(
 
     plan = _box(
         session,
+        settings=settings,
         template=template,
         box_rect=template_service.box_rect_of(template),
         items=video_service.list_items(session, project_id),
@@ -614,6 +621,7 @@ def _encode(
     with db.session() as session:
         plan = _box(
             session,
+            settings=settings,
             template=prepared.template,
             box_rect=prepared.box_rect,
             items=prepared.items,

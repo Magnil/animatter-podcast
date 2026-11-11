@@ -25,6 +25,7 @@ from animatter.routers import (
     archive,
     cleanup,
     clipping,
+    decks,
     editing,
     health,
     hotwords,
@@ -131,6 +132,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(script_router.router)
     app.include_router(align.router)
     app.include_router(video.router)
+    app.include_router(decks.router)
     return app
 
 
