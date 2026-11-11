@@ -34,6 +34,7 @@ import {
 import { AssetLibrary } from "./AssetLibrary";
 import { CollapsiblePanel } from "./CollapsiblePanel";
 import { DeckPanel } from "./DeckPanel";
+import { AvatarPhotoButton, TemplateTexts } from "./TemplateTexts";
 import { formatDuration, formatTime } from "./format";
 import { VideoTrack } from "./VideoTrack";
 import type { View } from "./waveView";
@@ -523,7 +524,9 @@ export function VideoPanel({
             list is squeezed to a column of truncated titles. Widen the settings column for
             that tab only, rather than making every tab pay for the widest one.
           */}
-          <div className={`video-stage${tab === "deck" ? " wants-wide" : ""}`}>
+          <div
+            className={`video-stage${tab === "deck" ? " wants-wide" : ""}${tab === "template" ? " wants-mid" : ""}`}
+          >
             <div className="video-stage-main">
               <div className="video-preview-box">
                 {previewUrl ? (
@@ -560,6 +563,12 @@ export function VideoPanel({
               <div className="video-settings-body">
                 {tab === "template" ? (
                   <>
+                    <TemplateTexts
+                      projectId={projectId}
+                      template={template}
+                      onTemplate={setTemplate}
+                      onNotice={onNotice}
+                    />
                     <ul className="video-slot-list">
                       <li className="muted small">
                         素材框 {template.box_rect.w}×{template.box_rect.h} ·{" "}
@@ -601,6 +610,13 @@ export function VideoPanel({
                               ? "0 段（这个人没说话）"
                               : `${bound.turns} 段 · ${formatDuration(bound.lit_ms)}`}
                         </small>
+                        <AvatarPhotoButton
+                          projectId={projectId}
+                          slot={slot}
+                          label={slot.name}
+                          onTemplate={setTemplate}
+                          onNotice={onNotice}
+                        />
                       </li>
                     );
                   })}

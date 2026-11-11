@@ -2297,6 +2297,77 @@ button.small,
   left: 7px;
 }
 
+/* --- template text + avatar photo editing (§19.12) -----------------------
+   Rows are a 4-column grid: label, content, face, size. The size column is
+   fixed at 54 px so the numbers line up down the list — scanning 「56 / 69 / 16」
+   is how the user checks the PSD's type scale was read correctly. */
+
+.template-texts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.template-text-row {
+  display: grid;
+  /* 76 / text / 144 / 46, measured against 「Alimama ShuHeiTi」 at 0.78rem: the family needs
+     144 px before it stops truncating, and the size field only ever holds three digits. */
+  grid-template-columns: 76px minmax(0, 1fr) 144px 46px;
+  gap: 6px;
+  align-items: center;
+}
+
+.template-text-row input,
+.template-text-row select {
+  min-width: 0;
+  font-size: 0.78rem;
+  padding: 2px 4px;
+}
+
+.template-text-row .template-size {
+  text-align: right;
+}
+
+.template-text-label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.74rem;
+  color: var(--muted);
+  line-height: 1.15;
+  overflow: hidden;
+  /* One line each: the PSD's layer names run to 24 characters, and letting them wrap made
+     that row twice as tall as its neighbours. The full text is in the `title` attribute. */
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.template-text-label small {
+  font-size: 0.68rem;
+  opacity: 0.75;
+}
+
+/* The avatar-name rows are the ones users touch most, so they get a hair more
+   contrast than the notes without changing the grid. */
+.template-text-row.is-name .template-text-label {
+  color: var(--text);
+}
+
+.avatar-photo-actions {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.avatar-photo-actions label.ghost {
+  cursor: pointer;
+}
+
+.avatar-photo-actions .disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
 /* --- video: preview left, one tabbed settings column right ----------------- */
 .video-stage {
   display: grid;
@@ -2348,6 +2419,13 @@ button.small,
    characters, so that tab — and only that tab — gets a wider column. */
 .video-stage.wants-wide {
   grid-template-columns: minmax(0, 1fr) 560px;
+}
+
+/* The 模板 tab is a four-column grid (label / text / font / size). At 320 px the font
+   dropdown truncates mid-family — measured 「Alimama ShuH」 in the walkthrough — and the
+   font is the one thing on the tab the user cannot infer from the picture. */
+.video-stage.wants-mid {
+  grid-template-columns: minmax(0, 1fr) 480px;
 }
 
 .video-stage.wants-wide .video-settings-body {

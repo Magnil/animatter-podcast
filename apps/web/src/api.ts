@@ -843,6 +843,27 @@ export const api = {
       method: "POST",
     }),
 
+  /** Every family this machine can draw, including 字由's own store. */
+  fonts: () => request<{ families: string[]; preferred: string[]; faces: number }>("/api/fonts"),
+
+  /** Override one text slot. An empty string clears that field back to the PSD's value. */
+  editVideoText: (
+    projectId: string,
+    key: string,
+    edit: { text?: string; font?: string; colour?: string; font_size?: number },
+  ) =>
+    request<VideoTemplate>(
+      `/api/projects/${projectId}/video/template/texts/${encodeURIComponent(key)}`,
+      { method: "PATCH", body: JSON.stringify(edit) },
+    ),
+
+  /** Replace one avatar's photo; `null` restores the PSD's own. */
+  setVideoAvatarPhoto: (projectId: string, slot: string, assetId: string | null) =>
+    request<VideoTemplate>(
+      `/api/projects/${projectId}/video/template/avatars/${encodeURIComponent(slot)}/photo`,
+      { method: "PUT", body: JSON.stringify({ asset_id: assetId }) },
+    ),
+
   updateVideoTemplate: (projectId: string, boxFitDefault: string) =>
     request<VideoTemplate>(`/api/projects/${projectId}/video/template`, {
       method: "PATCH",
@@ -1125,16 +1146,32 @@ export interface VideoAvatarSlot {
   name: string;
   rect: VideoRect;
   photo: VideoRect;
-  /** The PSD's own name plate text. Flattened into the background as artwork. */
+  /** The PSD's own name plate text — now only the **default** for this slot's name. */
   label: string;
   lit_path: string;
   dim_path: string;
+  lit_url: string;
+  dim_url: string;
+  /** Key of this slot's name text slot (`avatar:<group>`), for editing it. */
+  name_key: string;
+  /** True once the user replaced this slot's photo. */
+  photo_replaced: boolean;
 }
 
+/** One piece of text on the poster: 期号 / 当期标题 / 头像名 / a note. */
 export interface VideoTextSlot {
+  /** Stable across recompiles; this is what an override is stored under. */
+  key: string;
+  role: "episode" | "title" | "avatar_name" | "note" | "content";
+  /** 「期号」/「当期标题」/「头像名 · 头像1」/the PSD layer's own name. */
+  label: string;
   name: string;
   rect: VideoRect;
   text: string;
+  font_size: number;
+  /** `#rrggbb`, measured from the PSD rather than guessed. */
+  colour: string;
+  font: string;
 }
 
 /** One avatar panel slot with its speaker (P3). */
@@ -1166,6 +1203,7 @@ export interface VideoTemplate {
   overlay_url: string;
   slots: {
     avatars?: VideoAvatarSlot[];
+    /** Resolved: the PSD's defaults with the user's edits already applied. */
     texts?: VideoTextSlot[];
     notes?: string[];
   };
