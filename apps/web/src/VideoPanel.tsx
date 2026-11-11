@@ -32,6 +32,7 @@ import {
   type VideoTimeline,
 } from "./api";
 import { AssetLibrary } from "./AssetLibrary";
+import { CollapsiblePanel } from "./CollapsiblePanel";
 import { DeckPanel } from "./DeckPanel";
 import { formatDuration, formatTime } from "./format";
 import { VideoTrack } from "./VideoTrack";
@@ -449,14 +450,12 @@ export function VideoPanel({
   };
 
   return (
-    <div className="panel video-panel">
-      <div className="panel-head">
-        <h3>视频</h3>
-        <span className="muted small">
-          {summaryLine(template?.status ?? null, timeline?.items.length ?? 0, orphans.length)}
-        </span>
-      </div>
-
+    <CollapsiblePanel
+      title="视频剪辑"
+      summary={summaryLine(template?.status ?? null, timeline?.items.length ?? 0, orphans.length)}
+      className="video-panel"
+      defaultCollapsed
+    >
       {error ? <p className="error-text">{error}</p> : null}
 
       {template === null || template.status === "failed" ? (
@@ -754,6 +753,6 @@ export function VideoPanel({
           </div>
         </div>
       )}
-    </div>
+    </CollapsiblePanel>
   );
 }

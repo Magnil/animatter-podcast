@@ -1,5 +1,5 @@
 /**
- * Sidebar panel that can fold down to its title row.
+ * A panel that can fold down to its title row.
  *
  * The sidebar holds three stacked regions — 热词 / 字幕 / 操作记录 — and the one in
  * the middle is the one people actually work in. The other two are reference
@@ -26,6 +26,14 @@ interface Props {
   /** Head controls (刷新 …) that only make sense while the body is showing. */
   actions?: ReactNode;
   className?: string;
+  /**
+   * Start folded.
+   *
+   * The video area uses this: it is a real panel with a real header now, so it stays
+   * findable while costing one row to an audio-only session. The header — and therefore the
+   * summary — still renders, which is what makes collapsing different from hiding.
+   */
+  defaultCollapsed?: boolean;
   children: ReactNode;
 }
 
@@ -34,9 +42,10 @@ export function CollapsiblePanel({
   summary,
   actions,
   className = "",
+  defaultCollapsed = false,
   children,
 }: Props): React.JSX.Element {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(defaultCollapsed);
 
   return (
     <div className={`panel collapsible-panel ${className}${collapsed ? " is-collapsed" : ""}`}>

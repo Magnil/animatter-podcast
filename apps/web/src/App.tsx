@@ -27,6 +27,7 @@ import { SubtitlePanel } from "./SubtitlePanel";
 import { ScriptPanel } from "./ScriptPanel";
 import { CleanupDialog, type BatchAction } from "./CleanupDialog";
 import { HotwordPanel } from "./HotwordPanel";
+import { CollapsiblePanel } from "./CollapsiblePanel";
 import { MenuBar, type Menu } from "./MenuBar";
 import { SentenceList, findActiveSentence, tokenRangeOfSentences, type TokenSelection } from "./SentenceList";
 import { SettingsDialog, type SettingsSection } from "./SettingsDialog";
@@ -242,10 +243,6 @@ function Desk({
   // "save, then load it back" needs no copying and no guesswork.
   const [lastArchive, setLastArchive] = useState<{ path: string; filename: string } | null>(null);
   const [showSubtitles, setShowSubtitles] = useState(false);
-  // The video area sits above the waveform and is collapsed by default: most sessions
-  // are audio-only, and a feature nobody switched on must not cost vertical space on
-  // every edit (docs/frontend.md §7.7).
-  const [showVideo, setShowVideo] = useState(false);
   // Which generation the 导出 menu asked for. Kept as state rather than two
   // booleans so opening the panel means "generate this", not "open a dialog".
   const [scriptFormat, setScriptFormat] = useState<ScriptFormat>("shownotes");
@@ -982,13 +979,6 @@ function Desk({
             },
           },
           "separator",
-          {
-            id: "video",
-            label: "显示视频区",
-            hint: "时间轴上方，默认收起",
-            checked: showVideo,
-            onSelect: () => setShowVideo((value) => !value),
-          },
         ],
       },
       {
@@ -1096,7 +1086,6 @@ function Desk({
       setSettingsOpen,
       setSettingsSection,
       settings,
-      showVideo,
     ],
   );
   /**
@@ -1248,122 +1237,145 @@ function Desk({
         </aside>
 
         <section className="stage">
-          <div className="stage-top">
-            <span className="clock">{formatTime(playback.positionMs)}</span>
-            <span className="muted small">
-              {boot.version.sentence_count} 句 · {boot.version.token_count} 词 ·{" "}
-              {formatDuration(boot.version.duration_ms)}
-            </span>
-            {edl ? (
-              <span className="muted small">
-                成片 {formatClock(edl.output_duration_ms)} / 原始{" "}
-                {formatClock(edl.original_duration_ms)} · 删除{" "}
-                {formatClock(edl.removed_ms)}
-                {edl.segment_count > 1 ? ` · ${edl.segment_count} 段` : ""}
-                {edl.clamps.length > 0 ? ` · ${edl.clamps.length} 处吸附` : ""}
-              </span>
-            ) : null}
-          </div>
-
-          {showVideo ? (
-            <VideoPanel
-              projectId={boot.projectId}
-              versionId={boot.version.id}
-              positionMs={playback.positionMs}
-              hasDeletions={(edl?.deletions.length ?? 0) > 0}
-              sentences={boot.sentences}
-              onSeek={playback.seek}
-              onNotice={setNotice}
-            />
-          ) : null}
-
-          <Waveform
+          {/*
+            Two peer panels with identical chrome: title on the left, summary plus a
+            收起/展开 button on the right. The video area used to live behind
+            设置 → 显示视频区, which left a whole feature with no on-screen entry point —
+            the only way to find it was to open a menu and guess. Folded by default, so it
+            costs one row, and its summary answers "is this project using video?" without
+            opening anything.
+          */}
+          <VideoPanel
             projectId={boot.projectId}
-            mediaId={boot.mediaId}
-            durationMs={boot.version.duration_ms}
+            versionId={boot.version.id}
             positionMs={playback.positionMs}
-            markers={markers}
-            handles={handles}
-            deletions={edl?.deletions ?? []}
-            hidden={hiddenSpans}
-            captions={boot.sentences.map((sentence) => ({
-              start_ms: sentence.start_ms,
-              end_ms: sentence.end_ms,
-              text: sentence.text,
-              ord: sentence.ord,
-            }))}
-            activeOrd={activeOrd}
-            onCaptionClick={(ord) => {
-              const sentence = boot.sentences.find((item) => item.ord === ord);
-              if (sentence) playSentence(sentence);
-            }}
-            onEdgeCommit={(handle, ms) => void commitEdge(handle, ms)}
-            onSeek={seekAndPoint}
+            hasDeletions={(edl?.deletions.length ?? 0) > 0}
+            sentences={boot.sentences}
+            onSeek={playback.seek}
+            onNotice={setNotice}
           />
 
-          <div className="transport">
-            <button type="button" onClick={playback.playing ? playback.pause : playback.play}>
-              {playback.playing ? "⏸ 暂停" : "▶ 播放"}
-            </button>
-            <button type="button" className="ghost" onClick={playPrevious} title="上一句（[）">
-              ⟨ 上一句
-            </button>
-            <button type="button" className="ghost" onClick={playNext} title="下一句（]）">
-              下一句 ⟩
-            </button>
-            <span className="transport-gap" />
-            <button
-              type="button"
-              className="danger"
-              disabled={!hasSelection || busy}
-              onClick={() => void deleteRange()}
-              title="删除选区（可多句整句删除）"
-            >
-              删除选中
-            </button>
-            <button
-              type="button"
-              className="ghost"
-              disabled={busy || (edl?.deletions.length ?? 0) === 0}
-              onClick={() => void undoDeletion()}
-            >
-              恢复删除
-            </button>
-            <button
-              type="button"
-              disabled={busy || exporting !== null || !edl || edl.deletions.length === 0}
-              onClick={() => void renderExport()}
-              // A disabled button with no reason is indistinguishable from a
-              // broken one — that is how "导出成片 点击后无反应" was reported.
-              title={
-                exporting
-                  ? `正在导出 ${exporting.percent}%`
-                  : !edl
-                    ? "正在计算剪辑方案…"
-                    : edl.deletions.length === 0
-                      ? "还没有删除任何内容：先删掉要剪掉的段落，再导出成片"
-                      : "把当前的删除方案渲染成一个音频文件"
-              }
-            >
-              {exporting ? `导出中 ${exporting.percent}%` : "导出成片"}
-            </button>
-            {rendered ? (
-              <button type="button" className="ghost" onClick={() => setShowOutput((v) => !v)}>
-                {showOutput ? "收起成片" : "试听成片"}
-              </button>
-            ) : null}
-          </div>
-
-          {notice ? <div className="notice">{notice}</div> : null}
-
-          {rendered && showOutput ? (
-            <div className="output-player">
-              <audio src={rendered.url} controls style={{ width: "100%" }} />
-              <p className="muted small">
-                成片时长 {formatClock(rendered.durationMs)}。播放位置相对于成片，不是原始音频。
-              </p>
+          <CollapsiblePanel
+            title="音频剪辑"
+            className="audio-panel"
+            summary={
+              edl ? (
+                <>
+                  成片 {formatClock(edl.output_duration_ms)} / 原始{" "}
+                  {formatClock(edl.original_duration_ms)}
+                  {edl.removed_ms > 0 ? ` · 删除 ${formatClock(edl.removed_ms)}` : ""}
+                </>
+              ) : null
+            }
+          >
+            <div className="stage-top">
+              <span className="clock">{formatTime(playback.positionMs)}</span>
+              <span className="muted small">
+                {boot.version.sentence_count} 句 · {boot.version.token_count} 词 ·{" "}
+                {formatDuration(boot.version.duration_ms)}
+              </span>
+              {edl && edl.segment_count > 1 ? (
+                <span className="muted small">{edl.segment_count} 段</span>
+              ) : null}
+              {edl && edl.clamps.length > 0 ? (
+                <span className="muted small">{edl.clamps.length} 处吸附</span>
+              ) : null}
             </div>
-          ) : null}
+
+            <Waveform
+              projectId={boot.projectId}
+              mediaId={boot.mediaId}
+              durationMs={boot.version.duration_ms}
+              positionMs={playback.positionMs}
+              markers={markers}
+              handles={handles}
+              deletions={edl?.deletions ?? []}
+              hidden={hiddenSpans}
+              captions={boot.sentences.map((sentence) => ({
+                start_ms: sentence.start_ms,
+                end_ms: sentence.end_ms,
+                text: sentence.text,
+                ord: sentence.ord,
+              }))}
+              activeOrd={activeOrd}
+              onCaptionClick={(ord) => {
+                const sentence = boot.sentences.find((item) => item.ord === ord);
+                if (sentence) playSentence(sentence);
+              }}
+              onEdgeCommit={(handle, ms) => void commitEdge(handle, ms)}
+              onSeek={seekAndPoint}
+            />
+
+            <div className="transport">
+              <button type="button" onClick={playback.playing ? playback.pause : playback.play}>
+                {playback.playing ? "⏸ 暂停" : "▶ 播放"}
+              </button>
+              <button type="button" className="ghost" onClick={playPrevious} title="上一句（[）">
+                ⟨ 上一句
+              </button>
+              <button type="button" className="ghost" onClick={playNext} title="下一句（]）">
+                下一句 ⟩
+              </button>
+              <span className="transport-gap" />
+              <button
+                type="button"
+                className="danger"
+                disabled={!hasSelection || busy}
+                onClick={() => void deleteRange()}
+                title="删除选区（可多句整句删除）"
+              >
+                删除选中
+              </button>
+              <button
+                type="button"
+                className="ghost"
+                disabled={busy || (edl?.deletions.length ?? 0) === 0}
+                onClick={() => void undoDeletion()}
+              >
+                恢复删除
+              </button>
+              <button
+                type="button"
+                disabled={busy || exporting !== null || !edl || edl.deletions.length === 0}
+                onClick={() => void renderExport()}
+                // A disabled button with no reason is indistinguishable from a
+                // broken one — that is how "导出成片 点击后无反应" was reported.
+                title={
+                  exporting
+                    ? `正在导出 ${exporting.percent}%`
+                    : !edl
+                      ? "正在计算剪辑方案…"
+                      : edl.deletions.length === 0
+                        ? "还没有删除任何内容：先删掉要剪掉的段落，再导出成片"
+                        : "把当前的删除方案渲染成一个音频文件"
+                }
+              >
+                {exporting ? `导出中 ${exporting.percent}%` : "导出成片"}
+              </button>
+              {rendered ? (
+                <button type="button" className="ghost" onClick={() => setShowOutput((v) => !v)}>
+                  {showOutput ? "收起成片" : "试听成片"}
+                </button>
+              ) : null}
+            </div>
+
+            {rendered && showOutput ? (
+              <div className="output-player">
+                <audio src={rendered.url} controls style={{ width: "100%" }} />
+                <p className="muted small">
+                  成片时长 {formatClock(rendered.durationMs)}。播放位置相对于成片，不是原始音频。
+                </p>
+              </div>
+            ) : null}
+          </CollapsiblePanel>
+
+          {/*
+            The notice stays at stage level, *outside* both panels. Both of them report into
+            it — importing a PSD, binding a speaker, exporting a film — and putting it inside
+            音频剪辑 meant a message raised from the video panel could land below the fold,
+            which is the same as no message at all.
+          */}
+          {notice ? <div className="notice">{notice}</div> : null}
         </section>
       </div>
 

@@ -2264,3 +2264,21 @@ button.small,
   cursor: pointer;
   font-size: 0.82rem;
 }
+
+/* The waveform used to sit directly on the stage, where its own 12px margin separated it
+   from the info row above. Now it is the first thing inside 音频剪辑, and that margin shows
+   up as a gap between the panel's title row and the wave — so drop it there only. */
+.audio-panel .waveform {
+  margin-top: 0;
+}
+
+.audio-panel .stage-top {
+  padding-top: 2px;
+}
+
+/* 视频剪辑 and 音频剪辑 are peers: same chrome, stacked, and only the video one starts
+   folded. Neither may grow past the stage's scroll container. */
+.audio-panel,
+.video-panel {
+  flex: 0 0 auto;
+}
