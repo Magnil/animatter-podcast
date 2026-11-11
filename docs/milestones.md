@@ -78,7 +78,33 @@ apps/web/src/
 **实测**：竖图 1080×1920 进 1440×810 框 `blur_fill` → 模糊底 + 完整居中；4 秒视频刚好铺满；
 两图画廊各 2 秒；空档显示底板。成片 16.4 秒 / 517 KB / 1920×1080。
 
-**还没做**（P3/P4）：头像明暗轨（按说话人切换）、演示稿 `deck`/`slide`、`.pptx` 导入导出。
+**还没做**（P3 / P4）：演示稿 `deck`/`slide`、`.pptx` 导入导出。
+
+### 视频 P3 交付清单（2026-11-11）
+
+```
+d5f2b8c1e6a3  video_template.bindings_json —— 头像位绑到哪个说话人
+
+apps/api/src/animatter/
+  core/video_avatar.py       区间合并（桥接 600ms 的换气）、取反、明暗序列、lit_at
+  media/avatar_track.py      lit/dim 静帧 → concat demuxer → 一条 qtrle RGBA 轨
+  services/video_avatars.py  绑定读写、说话区间（映射到输出时间）、按槽位统计时长
+  media/video.py             AvatarLayer + filtergraph 里的头像 overlay（框之后、字幕之前）
+  services/video_render.py   avatar_tracks / _avatar_layers / _avatar_stills / _base_background
+apps/web/src/
+  VideoPanel.tsx             头像位行：说话人下拉 + 「N 段 · 时长」
+  api.ts                     VideoAvatar / videoAvatars / bindVideoAvatar
+```
+
+**实测**（真实项目 583 句版本里说话人交替最密的 14 秒）：6 次切换全部落在期望时刻（误差 <
+1 帧）；静帧在 3000/8000/11000 ms 的明暗与 `lit_at()` 一致；成片 14.0 秒 / 199 KB。
+明暗轨生成成本：600 秒 / 1200 段 → **1.5 秒、55 MB**。
+
+**顺手修掉 P1 的 dim bug**：旧实现按照片矩形压暗，把头像组自己的白承板一起压灰，兜出一个灰
+方块。现在用「去掉 smart object 的组」做底、只压颜色或 alpha 变了的像素；只比颜色会漏掉白色
+描边（那里底图 RGB 纯白、alpha 0），出来满身白点。承板角落实测 `(129,128,128)` → `(252,247,244)`。
+
+**还没做**（P4）：演示稿 `deck`/`slide`、`.pptx` 导入导出。
 
 
 
@@ -89,12 +115,12 @@ M0 ✅ 骨架          M1 ✅ 转写闭环       M2a ✅ 热词库
 M2b ✅ LLM 校对     M2c ⏸  影子测试(推迟)  M3 ✅ 校正台 UI
 M4 ✅ 剪辑+时间轴   M5a ✅ 字幕导出       M5b ✅ 文稿(md)
 M6 ⬜ 稳定性
-工作台 ✅   时间轴对齐 ✅   视频 P1 ✅   P2 ✅（2026-11-11）
+工作台 ✅   时间轴对齐 ✅   视频 P1 ✅   P2 ✅   P3 ✅（2026-11-11）
 ```
 
-**验证规模（2026-11-11，P2 收尾）**：后端 952 用例通过 / 1 skipped / 3 deselected，
-`mypy --strict` 87 个源文件零错误，`ruff` 干净；前端 219 条 `node --test` 用例，
-`tsc --noEmit` 与 `vite build` 干净；真机跑通「导入素材 → 拖到时间轴 → 静帧 → 导出 16.4 秒成片」。
+**验证规模（2026-11-11，P3 收尾）**：后端 1017 用例通过 / 1 skipped / 3 deselected，
+`mypy --strict` 90 个源文件零错误，`ruff` 干净；前端 219 条 `node --test` 用例，
+`tsc --noEmit` 与 `vite build` 干净；真机跑通「绑定说话人 → 明暗随切换变化 → 导出 14 秒成片」。
 
 > 这张表 2026-11-05 之后四天没更新，期间一直把 M5b 记成「待做」，而它已经落地
 > （`c3226fb` feat: ShowNotes and 文稿 generation）。**里程碑是自报状态，不是从代码推断的，

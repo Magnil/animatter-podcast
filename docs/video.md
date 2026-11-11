@@ -543,7 +543,7 @@ dim PNG 和 lit PNG 轮流出现（`§19.5` 的明暗轨），ffmpeg 不需要�
 | 1d 渲染管线 + 静帧 | `media/video.py`、`media/subtitle_ass.py`、`services/video_render.py` | ✅ 静帧 ≈200ms；实测 60s 素材 14.19s |
 | 1e 导出 | `POST /video/export`、`GET /video/exports/{id}/file` | ✅ 走后台任务 + 进度轮询 |
 
-**还没做**（P3 起）：头像明暗轨（按说话人切换）、演示稿 `deck`/`slide`、`.pptx` 导入导出。
+**还没做**（P3 完成后）：演示稿 `deck`/`slide`、`.pptx` 导入导出。
 
 **P2 完成状态**（2026-11-11，四个 gate 全绿：pytest 952 / ruff / mypy 87 / tsc + npm test 219）：
 
@@ -568,8 +568,40 @@ dim PNG 和 lit PNG 轮流出现（`§19.5` 的明暗轨），ffmpeg 不需要�
 实测过会炸（1200 段区间 → 79 KB 表达式 → CreateProcess 上限），前者只随段数增长、不随片长
 增长。空档用**底图自身的框内裁剪**填充，这样 overlay 永远不透明且永远对齐。
 
+**P3 完成状态**（2026-11-11，四个 gate 全绿：pytest 1017 / ruff / mypy 90 / tsc + npm test 219）：
+
+| 子项 | 落在哪 | 状态 |
+|---|---|---|
+| 3a 头像位绑定说话人 | models.py + 迁移 d5f2b8c1e6a3、services/video_avatars.py、GET /versions/{id}/video/avatars、PUT /projects/{id}/video/avatars/{slot} | ✅ 绑定存**独立的列**，重编译 PSD 不会丢 |
+| 3b 明暗轨生成 | core/video_avatar.py、media/avatar_track.py | ✅ concat demuxer + qtrle；600 秒 / 1200 段 → **1.5 秒**、55 MB |
+| 3c 接进渲染 | media/video.py（AvatarLayer）、services/video_render.py（vatar_tracks） | ✅ 有绑定时自动切到 ackground_bare.png，轨叠在框之后、字幕之前 |
+| 3d 前端 | VideoPanel.tsx 的头像位行，pi.ts 的 ideoAvatars/indVideoAvatar | ✅ 下拉绑定 + 「N 段 · 时长」，绑定到不说话的人显示「0 段」 |
+
+实测（真实项目 er_1m6v2q5javqm1j82xsg，说话人交替最密的 14 秒：0,1,0,0,1,0,1,1,0,0,1）：
+
+| 检查 | 结果 |
+|---|---|
+| 切换时刻 | 逐帧量亮度，6 次跳变全部落在期望时刻（440/3600/5800/10000/10960/13680 ms），误差 < 1 帧 |
+| 首尾对位 | 第一个 lit 段从 440 ms 开始，最后一个 dim 段到 13680 ms 结束，轨道总长 = 成片总长 |
+| 静帧预览 | 3000 ms 两个都暗、8000 ms 彼方亮马小褂暗、11000 ms 同 —— 与 lit_at() 一致 |
+| 成片 | 14.0 秒、199 KB、1920×1080 h264 |
+| 绑定往返 | PUT 返回 	urns=148 / lit_ms=1636114 / share=0.4427，与逐句统计一致 |
+
+**这一步顺手修掉了 P1 遗留的 dim bug。** 原来的 dim_photo() 按**照片的矩形**压暗，而那个矩形
+底下压着头像组自己的白色承板 —— 暗头像背后兜出一个灰方块（§19.9 里列的第一种错法，当时只在
+手工对比图里验过 lit/dim 两张 PNG，没有在真实渲染里看）。现在改成先合成一张「去掉 smart object
+的组」当作底，把**颜色或 alpha 变了**的像素当成照片本体，只压这些像素。两个细节都是量出来的：
+只比颜色会漏掉白色描边（底图在那里的 RGB 是纯白、alpha 是 0，于是「没变」），出来整个人像撒白点；
+加上 alpha 比较后，vatar*_dim.png 的承板角落从 (129,128,128) 回到 (252,247,244)。
+
 **建议第一刀切在 P1。** 它已经能产出「一条有背景、有字幕、能上传」的视频，是这个功能的
 八成价值；素材框和头像是在这个骨架上加层，演示稿是最后的锦上添花。
+
+**头像亮暗为什么是「一条轨」而不是「一堆 overlay」。** 直觉做法是一个头像一个 overlay 加
+enable='between(t,a,b)+...' 拼出所有说话区间。实测这条路会死：1000 段区间拼出来的表达式把
+命令行撑到 79KB，ffmpeg 进程根本起不来。改成每个头像先生成一条自己的明暗轨（见 §19.5），
+filtergraph 里就永远只有 4 个头像位，与实际段数无关。P3 的实测值：14 秒 / 6 段 → 441 字符，
+一条一小时的片子也还是这个量级。
 
 ## 19.11 会咬人的地方（按咬人概率排）
 
@@ -618,6 +650,24 @@ dim PNG 和 lit PNG 轮流出现（`§19.5` 的明暗轨），ffmpeg 不需要�
 15. **静帧预览只能声明覆盖它的那一段。** 把 plan 里的 `input_index` 直接传进两输入的预览
     命令，会得到 `Error binding filtergraph inputs/outputs: Invalid argument`——这个报错既没提
     素材框也没提预览。预览要重新编号为 0。
+16. **头像「暗」不能按照片矩形压。** 那个矩形底下压着头像组自己的白承板，压下去就兜出一个灰
+    方块。要先把「去掉 smart object 的组」合成一张底，**颜色或 alpha 变了**的像素才算照片本体。
+    只比颜色会漏掉白色描边（那里底图的 RGB 是纯白、alpha 是 0，于是「没变」），出来满身白点。
+    实测承板角落 `(129,128,128)` → `(252,247,244)`。
+17. **concat demuxer 把每个 duration 向上取整到整帧。** 1.500 秒在 25fps 下变成 1.520。逐段取整
+    会在几百段之后累积成秒级漂移，所以要**累计取整**：每一段写的是「两个取整后边界之差」。
+    另外最后一段必须**再列一次**（不带 duration），否则它的时长不被采纳——实测 3.00 秒的脚本
+    只出 2.56 秒。
+18. **concat 脚本里的路径必须是绝对路径。** demuxer 相对的是**脚本所在目录**，不是进程工作
+    目录，写相对路径会静默指到 `工作目录/data/...`，报出来是一句笼统的「视频渲染失败」。
+19. **concat 脚本不能带 BOM。** 带 BOM 时报的是 `Line 1: unknown keyword 'file'`——它点名的是
+    关键字而不是编码，很容易去查路径。
+20. **头像轨要用 qtrle 而不是 PNG 编码。** 同为无损，PNG 编码 600 秒 / 1200 段要 5.9 秒、
+    **338 MB**；qtrle 只要 **1.5 秒、55 MB**。区别是 PNG 每帧存一张完整无损帧。
+21. **`BoxChain.input_count` 曾经是假的。** 它读 `len(self.sources)`，而 `sources` 在媒体层永远
+    是空列表（路径在服务层），所以恒为 0。P1/P2 没人读它所以没暴露；P3 要在这个数之后编号头像
+    输入，才发现算出来的是 `[2:v]` 而实际是 `[2:v]`/`[3:v]`——差一位的后果是 ffmpeg 报
+    `Error binding filtergraph inputs/outputs`，既没提头像也没提框。现在由 segments 自己数。
 
 ## 19.12 需要你拍板的四件事
 

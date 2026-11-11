@@ -1699,3 +1699,60 @@ P1 能导出一条有背景、有字幕的片子，但素材框是空的——�
 - 前端 219 passed（新增 17 条：落点、拖动、缩放、命中、视图跟随），`tsc` 与 `vite build` 干净。
 - 真机 16.4 秒项目：竖图 1080×1920 进 1440×810 框 `blur_fill` → 模糊底 + 完整居中；4 秒视频
   刚好铺满；两图画廊各 2 秒（前后帧颜色不同）；空档显示底板；成片 517 KB。
+
+## 头像亮暗：绑定、明暗轨、以及两个 P1 遗留 bug（2026-11-11）
+
+```
+apps/api/src/animatter/
+  core/video_avatar.py       区间合并（桥接 600ms 换气）、取反、明暗序列、lit_at
+  media/avatar_track.py      lit/dim 静帧 → concat demuxer → 一条 qtrle RGBA 轨
+  services/video_avatars.py  绑定读写、说话区间（映射到输出时间）、按槽位统计时长
+  media/video.py             AvatarLayer + filtergraph 里的头像 overlay
+  services/video_render.py   avatar_tracks / _avatar_layers / _avatar_stills / _base_background
+apps/api/alembic/versions/d5f2b8c1e6a3_avatar_bindings.py  video_template.bindings_json
+apps/web/src/VideoPanel.tsx  头像位行：说话人下拉 + 「N 段 · 时长」
+```
+
+**绑定必须存在自己的列里，不能塞进 `slots_json`。** `slots_json` 每次编译都从 PSD 重写，绑定
+放在里面的话，用户重新导入一次同一份 PSD（改了个颜色，很平常）就会静默丢失，症状是几轮之后
+「头像不跟着说话了」而界面上没有任何提示。
+
+**一个头像一条明暗轨，不是一堆 overlay。** `enable='between(t,a,b)+...'` 在 1000 段时把命令行
+撑到 79KB，ffmpeg 起不来（Windows 32,767）。改成把「亮」「暗」两张小 PNG 按说话区间用 concat
+demuxer 拼成一条 236×249 的 RGBA 小视频，整条只 overlay 一次。实测 14 秒 / 6 段 → 图 441 字符。
+
+**如果绑了人，底图要换成 `background_bare.png`。** `background.png` 里压着 PSD 自己的照片，
+暗头像会是「亮照片上盖一层暗」，变成暗得不够。切换是安全的：裸底 + 四个亮 PNG 按槽位重合成，
+和 `background.png` **逐像素相同（0 个差异）**，所以在没人绑定之前画面完全不变。
+
+**修掉 P1 的 dim bug：暗头像背后有个灰方块。** `dim_photo()` 按照片矩形压暗，而那个矩形底下
+压着头像组自己的白色承板。现在先用「去掉 smart object 的组」合成一张底，把**颜色或 alpha 变了**
+的像素当成照片本体，只压这些。两次修正都是量出来的：只比颜色时白色描边被漏掉（底图在那里的
+RGB 是纯白、alpha 是 0，所以「没变」），整个人像撒白点；加上 alpha 比较后承板角落从
+`(129,128,128)` 回到 `(252,247,244)`。
+
+**修掉 P1 的第二个 bug：`BoxChain.input_count` 恒为 0。** 它读 `len(self.sources)`，而 `sources`
+在媒体层永远是空列表（真路径在服务层）。P1/P2 没人读它所以没暴露；P3 要在这个数之后编号头像
+输入，算出来是 `[2:v]` 而实际是 `[2:v]`/`[3:v]`，差一位的后果是
+`Error binding filtergraph inputs/outputs: Invalid argument`——既没提头像也没提框。现在由
+segments 自己数。
+
+### 量出来的四条 concat demuxer 规矩
+
+1. **每个 duration 向上取整到整帧**（1.500 秒 → 1.520 @25fps），所以是**累计取整**：每段写的是
+   两个取整后边界之差，否则几百段之后会漂移成秒级。
+2. **最后一段要再列一次**（不带 duration），否则它的时长不被采纳——实测 3.00 秒的脚本只出 2.56 秒。
+3. **路径必须是绝对的**：demuxer 相对的是脚本所在目录，不是进程工作目录。
+4. **不能带 BOM**：带了会报 `Line 1: unknown keyword 'file'`，点名关键字而不是编码。
+
+用 **qtrle** 而不是 PNG 编码：同为无损，600 秒 / 1200 段 PNG 要 5.9 秒 / **338 MB**，qtrle 只要
+**1.5 秒 / 55 MB**。
+
+### 验证
+
+- 后端 1017 passed / 1 skipped / 3 deselected，`ruff` 干净，`mypy --strict` 90 files（新增 65 条：
+  区间算术 25、轨道与 concat 10、绑定与区间 19、图形与真编码 9、dim 掩膜 2）。
+- 前端 219 passed，`tsc` 与 `vite build` 干净。
+- 真机 14 秒项目（583 句版本里说话人交替最密的 10 句，0/1/0/0/1/0/1/1/0/0/1）：逐帧量亮度，
+  6 次切换全部落在期望时刻（440 / 3600 / 5800 / 10000 / 10960 / 13680 ms），误差 < 1 帧；
+  静帧在 3000 / 8000 / 11000 ms 的明暗与 `lit_at()` 一致；成片 199 KB、1920×1080。
