@@ -219,7 +219,21 @@ def delete_slide(session: Session, settings: object, slide_id: str) -> None:
     purge_images(session, settings, deck_id, [slide_id])
     # Re-number so ``ord`` stays dense: a gap is harmless to the query but makes every
     # later "move up/down" off by one in a way that is invisible in the UI.
+    #
+    # Parked first, like ``move_slide``, for the same reason: ``(deck_id, ord)`` is unique and
+    # a single flush applies the updates in an arbitrary order, so renumbering rows at 1 and 2
+    # down to 0 and 1 can run 2→1 first and collide with the row still at 1. Measured in the
+    # full suite as ``UNIQUE constraint failed: slide.deck_id, slide.ord`` — and it only
+    # reproduces when the deck *already* had a gap, which is why it took a whole-suite run.
     rest = list_slides(session, deck_id)
+    # ``max(...) + 1``, not ``len(rest)``: a deck that already had a gap can hold the ords
+    # 1 and 2 with only two rows, and parking at ``len + index`` would then land on a slot
+    # that is still occupied. Measured — same constraint, different parameters.
+    park = max((item.ord for item in rest), default=-1) + 1
+    for index, item in enumerate(rest):
+        if item.ord != index:
+            item.ord = park + index
+    session.flush()
     for index, item in enumerate(rest):
         if item.ord != index:
             item.ord = index
