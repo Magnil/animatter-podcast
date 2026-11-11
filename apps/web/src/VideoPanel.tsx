@@ -24,6 +24,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   api,
+  type Sentence,
   type SpeakerInfo,
   type VideoAvatar,
   type VideoItem,
@@ -31,6 +32,7 @@ import {
   type VideoTimeline,
 } from "./api";
 import { AssetLibrary } from "./AssetLibrary";
+import { DeckPanel } from "./DeckPanel";
 import { formatDuration, formatTime } from "./format";
 import { VideoTrack } from "./VideoTrack";
 import {
@@ -49,6 +51,9 @@ interface Props {
   /** Playhead on the **original** timeline; the preview is asked for output time. */
   positionMs: number;
   hasDeletions: boolean;
+  /** Sentences of this version — the deck's proofreading pane and its page starts. */
+  sentences: Sentence[];
+  onSeek: (ms: number) => void;
   onNotice: (message: string) => void;
 }
 
@@ -74,6 +79,8 @@ export function VideoPanel({
   versionId,
   positionMs,
   hasDeletions,
+  sentences,
+  onSeek,
   onNotice,
 }: Props): React.JSX.Element {
   const [template, setTemplate] = useState<VideoTemplate | null>(null);
@@ -342,8 +349,41 @@ export function VideoPanel({
     }
   };
 
-  /** Turn the selected block into a gallery, or add the current asset to it. */
-  const doMakeGallery = async (item: VideoItem, assetId: string): Promise<void> => {
+  /**
+   * Create a slide block covering one page's stretch (P4).
+   *
+   * The edges are **not** snapped: the page's own ``start_ms`` is already a sentence start
+   * (it came from one), and snapping again would move the page switch off the sentence it
+   * was generated from. The end is the next page's start, which is also a sentence start.
+   */
+  const doInsertSlideBlock = async (
+    deckId: string,
+    startMs: number,
+    endMs: number,
+  ): Promise<void> => {
+    if (!timeline) return;
+    if (endMs <= startMs) {
+      onNotice("这一页的时长是 0，先给下一页一个更晚的起点");
+      return;
+    }
+    try {
+      const created = await api.addVideoItem(versionId, {
+        kind: "slide",
+        start_ms: startMs,
+        end_ms: endMs,
+        deck_id: deckId,
+        fit: "contain",
+        snap: false,
+      });
+      setSelected(created);
+      await load();
+      onNotice(`已放进素材框 ${formatTime(startMs)}–${formatTime(endMs)}`);
+    } catch (caught) {
+      onNotice(caught instanceof Error ? caught.message : String(caught));
+    }
+  };
+
+  /** Turn the selected block into a gallery, or add the current asset to it. */  const doMakeGallery = async (item: VideoItem, assetId: string): Promise<void> => {
     let members: { asset_id: string; weight?: number }[] = [];
     try {
       members = item.kind === "gallery" ? (JSON.parse(item.gallery_json) as typeof members) : [];
@@ -675,6 +715,21 @@ export function VideoPanel({
               onNotice(message);
             }}
           />
+
+          <details className="video-deck-section" open={false}>
+            <summary>演示稿（从字幕分页，可逐页改）</summary>
+            <DeckPanel
+              projectId={projectId}
+              versionId={versionId}
+              sentences={sentences}
+              positionMs={positionMs}
+              onNotice={onNotice}
+              onSeek={onSeek}
+              onInsertBlock={(deckId, startMs, endMs) =>
+                void doInsertSlideBlock(deckId, startMs, endMs)
+              }
+            />
+          </details>
 
           <div className="edl-actions">
             <button

@@ -884,6 +884,57 @@ export const api = {
     return (await response.json()) as VideoAsset;
   },
 
+  // --- deck (P4, AGENTS.md §19.6) -------------------------------------
+
+  /** The project's deck, or `null` before one has been generated. */
+  deck: (projectId: string) => request<Deck | null>(`/api/projects/${projectId}/deck`),
+
+  /**
+   * Pages from the transcript. No LLM call, so this is instant and free.
+   *
+   * `chapters` is passed in rather than read server-side because chapters are never
+   * persisted: they come back from the ShowNotes run and live only in the UI's memory.
+   */
+  generateDeck: (
+    versionId: string,
+    options: {
+      replace?: boolean;
+      chapters?: { heading: string; start_ms: number }[];
+    } = {},
+  ) =>
+    request<Deck>(`/api/versions/${versionId}/deck/generate`, {
+      method: "POST",
+      body: JSON.stringify({
+        replace: options.replace ?? true,
+        chapters: options.chapters ?? [],
+      }),
+    }),
+
+  updateSlide: (
+    slideId: string,
+    body: { title?: string; body?: string; layout?: string; start_ms?: number },
+  ) =>
+    request<DeckSlide>(`/api/slides/${slideId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
+  moveSlide: (slideId: string, toOrd: number) =>
+    request<DeckSlide[]>(`/api/slides/${slideId}/move`, {
+      method: "POST",
+      body: JSON.stringify({ to_ord: toOrd }),
+    }),
+
+  deleteSlide: (slideId: string) =>
+    request<void>(`/api/slides/${slideId}`, { method: "DELETE" }),
+
+  /**
+   * The page's PNG. The server draws it on demand at the media box's size, so the film never
+   * rescales it — a resampled slide is the one thing that must not happen to text.
+   */
+  slideImageUrl: (imageUrl: string, width: number, height: number) =>
+    `${imageUrl}?width=${Math.round(width)}&height=${Math.round(height)}`,
+
   deleteVideoAsset: (assetId: string) =>
     request<void>(`/api/video/assets/${assetId}`, { method: "DELETE" }),
 
@@ -896,6 +947,8 @@ export const api = {
       fit?: string;
       snap?: boolean;
       asset_id?: string;
+      deck_id?: string;
+      slide_id?: string;
       gallery_json?: string;
     },
   ) =>
@@ -927,7 +980,6 @@ export const api = {
   /** Every avatar slot with its speaker and how much of the film it talks over (P3). */
   videoAvatars: (versionId: string) =>
     request<VideoAvatar[]>(`/api/versions/${versionId}/video/avatars`),
-
   /**
    * Bind one slot to a speaker, or clear it with `null`.
    *
@@ -1138,6 +1190,28 @@ export interface VideoItem {
   slide_id: string | null;
   gallery_json: string;
   orphaned: boolean;
+}
+
+/** One page of the deck (P4). */
+export interface DeckSlide {
+  id: string;
+  ord: number;
+  title: string;
+  body: string;
+  /** `title` | `title_body` | `quote` */
+  layout: string;
+  /** Sentence ord this page came from — what the editor jumps to. */
+  source_ord: number;
+  /** Original-timeline start; a slide block snaps to this. */
+  start_ms: number;
+  image_url: string;
+}
+
+export interface Deck {
+  id: string;
+  project_id: string;
+  title: string;
+  slides: DeckSlide[];
 }
 
 export interface VideoTimeline {

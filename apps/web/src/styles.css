@@ -2148,3 +2148,119 @@ button.small,
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
+
+/* P4: deck panel. The list is narrow and fixed-width so the preview and the edit fields
+   keep a stable position while paging through 10–40 slides; a fluid list makes the whole
+   panel jump on every selection change. */
+.deck-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.deck-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.deck-body {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 12px;
+}
+
+.deck-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 460px;
+  overflow-y: auto;
+}
+
+.deck-list button {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 0.78rem;
+  color: var(--text);
+}
+
+.deck-list button.active {
+  border-color: var(--accent);
+  background: var(--accent-weak, rgba(46, 84, 168, 0.08));
+}
+
+.deck-list-ord {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.deck-list-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deck-list-time {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.deck-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 16:9 so the preview has the same shape as the media box. contain rather than a fixed
+   width: a 1440-wide PNG in a 700 px column would be downscaled by the browser anyway. */
+.deck-preview {
+  width: 100%;
+  max-width: 720px;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.deck-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.deck-source {
+  font-size: 0.78rem;
+  color: var(--muted);
+  border-top: 1px dashed var(--border);
+  padding-top: 6px;
+}
+
+.deck-source p {
+  margin: 6px 0 0;
+  line-height: 1.6;
+}
+
+.video-deck-section {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.video-deck-section summary {
+  cursor: pointer;
+  font-size: 0.82rem;
+}

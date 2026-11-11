@@ -1271,6 +1271,8 @@ function Desk({
               versionId={boot.version.id}
               positionMs={playback.positionMs}
               hasDeletions={(edl?.deletions.length ?? 0) > 0}
+              sentences={boot.sentences}
+              onSeek={playback.seek}
               onNotice={setNotice}
             />
           ) : null}
