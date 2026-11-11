@@ -52,6 +52,25 @@ class TemplateView:
     slots: dict[str, object]
 
     def as_dict(self) -> dict[str, object]:
+        """The template as the browser needs it.
+
+        ``slots.texts`` is the **resolved** list — PSD defaults with the user's edits applied
+        — because that is what the film will show, and showing the defaults while the render
+        uses the overrides is how a UI ends up lying about its own output.
+
+        Avatar art URLs point at the *effective* files, so a replaced photo is visible in
+        the panel without the browser having to know that overrides exist.
+        """
+        from animatter.services import video_edits
+
+        slots = dict(self.slots)
+        slots["texts"] = video_edits.resolved_texts(self.row)
+        avatars = slots.get("avatars")
+        if isinstance(avatars, list):
+            replaced = video_edits.edits_of(self.row)["photos"]
+            slots["avatars"] = [
+                _avatar_view(self.row, item, replaced) for item in avatars if isinstance(item, dict)
+            ]
         return {
             "id": self.row.id,
             "status": self.row.status,
@@ -62,9 +81,40 @@ class TemplateView:
             "box_fit_default": self.row.box_fit_default,
             "background_url": asset_url(self.row.project_id, self.row.background_path, self.row.status),
             "overlay_url": asset_url(self.row.project_id, self.row.overlay_path, self.row.status),
-            "slots": self.slots,
+            "slots": slots,
             "compiled_at": self.row.compiled_at,
         }
+
+
+def _avatar_view(
+    row: VideoTemplate, slot: dict[str, object], replaced: dict[str, object]
+) -> dict[str, object]:
+    """One avatar slot: the compiled fields, plus URLs for its *effective* art.
+
+    The compiled ``lit_path``/``dim_path`` are left as they are rather than replaced by URLs.
+    Two consumers read this list — the settings panel wants URLs, and the tests (plus the
+    export path) assert that the compiled files exist at the paths the compile wrote. Renaming
+    would have forced both to change, and the paths are the honest description of what is on
+    disk; the URLs are the browser's view of the same thing.
+    """
+    from animatter.services import video_edits
+
+    name = str(slot.get("name") or "")
+    lit = str(slot.get("lit_path") or "")
+    dim = str(slot.get("dim_path") or "")
+    replacement = video_edits.photo_paths(row, slot)
+    if replacement is not None:
+        lit, dim = str(replacement[0]), str(replacement[1])
+    merged = dict(slot)
+    merged["name"] = name
+    # The *effective* paths, so a replaced photo is also correct for a caller that reads the
+    # slot list instead of the avatars endpoint.
+    merged["lit_path"] = str(lit)
+    merged["dim_path"] = str(dim)
+    merged["lit_url"] = asset_url(row.project_id, lit, row.status)
+    merged["dim_url"] = asset_url(row.project_id, dim, row.status)
+    merged["photo_replaced"] = name in replaced
+    return merged
 
 
 def asset_url(project_id: str, path: str, status: str) -> str:
@@ -267,15 +317,23 @@ def asset_path(session: Session, project_id: str, name: str) -> Path:
     able to read the database through the "serve the template PNG" route. This is a
     local single-user app, but a route that serves arbitrary files is a bug regardless
     of who is calling it.
+
+    Two directories are searched: the compile output, and its ``edits/`` subdirectory,
+    where a replaced avatar photo is written. Both are inside the template's own build
+    directory, so the same ``.name`` guard covers both — and a replacement cannot be served
+    by a path that reaches outside them.
     """
     row = get(session, project_id)
     if row is None or not row.background_path:
         raise AppError("template_not_compiled", "模板还没编译好", status=409)
 
-    candidate = Path(row.background_path).parent / Path(name).name
-    if not candidate.is_file():
-        raise AppError("template_asset_missing", f"模板里没有 {name}", status=404)
-    return candidate
+    base = Path(row.background_path).parent
+    safe = Path(name).name
+    for folder in (base, base / "edits"):
+        candidate = folder / safe
+        if candidate.is_file():
+            return candidate
+    raise AppError("template_asset_missing", f"模板里没有 {name}", status=404)
 
 
 def box_rect_of(row: VideoTemplate) -> dict[str, int]:

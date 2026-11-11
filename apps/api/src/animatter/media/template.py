@@ -21,7 +21,18 @@ What the compile produces
 * ``overlay.png`` — the layers that must sit **above** the box content. Measured on
   the sample file, the frame stroke (``内框描边``, ink bbox 311,267–2248,1366) overlaps
   the content rect (320,278–2240,1358), so it cannot live in the background.
-* slot geometry — the content rect, avatar slots (ring + photo + name), text slots.
+* slot geometry — the content rect, avatar slots, and the **text slots** we draw.
+* ``avatar<N>_frame.png`` / ``avatar<N>_mask.png`` — the ring without any photo, and the
+  photo's own pixel mask. Together they are what lets a slot's **photo be replaced**: the
+  new image is clipped by the mask and composited onto the frame, at any size, without
+  knowing anything about the PSD (§19.12).
+
+**Every visible text layer except the logotype becomes a slot.** Measured on the sample:
+the poster's ``logo`` and ``会客厅`` are *pixel* layers, so they stay artwork; ``EP.23``,
+the title, four avatar names and the footer are *type* layers, and each one now comes out of
+the background and is drawn by :mod:`animatter.media.text_overlay` instead. That is what
+makes 期号 / 当期标题 / 头像名 editable at all — a text layer left in the composite can never
+be changed, because the composite is a PNG.
 
 Cost, measured on ``samples/播客模板.psd`` (2560×1440, 58 layers):
 
@@ -46,8 +57,10 @@ import numpy as np
 from PIL import Image
 from psd_tools import PSDImage
 
+from animatter.core import textslot
 from animatter.errors import AppError
 from animatter.log import get_logger
+from animatter.media.fonts import EPISODE_FONT, NAME_FONT, TITLE_FONT
 
 log = get_logger(__name__)
 
@@ -125,26 +138,55 @@ class Rect:
 
 @dataclass(frozen=True)
 class AvatarSlot:
-    """One avatar position, with the pieces the renderer needs separately."""
+    """One avatar position, with the pieces the renderer needs separately.
+
+    ``frame`` + ``mask`` are the pair that makes the photo replaceable: the frame is the ring
+    and plate with *no* photo and *no* name, and the mask says which pixels belonged to the
+    photo. A replacement image is cover-fitted into ``mask_rect``, clipped by the mask and
+    composited onto the frame — the result is the same picture the PSD shows, with a
+    different face. Without the split, "change the avatar" would mean shipping a new PSD.
+    """
 
     name: str
     rect: Rect
-    #: The photo's box **relative to** ``rect``, so the dim pass can be applied to
-    #: the small lit PNG without re-deriving anything.
+    #: The photo's box **relative to** ``rect``. Kept for the dim pass and for the default
+    #: render; the authoritative shape is ``mask_rect``, which is the *visible* photo after
+    #: the ring clips it.
     photo: Rect
-    #: The name as it appears in the PSD. Read-only: it is flattened into the
-    #: background as artwork (PSD text cannot be rewritten), and P3 draws the
-    #: speaker's name itself.
+    #: The name as it appears in the PSD. Only the **default text** of the name slot now —
+    #: it is no longer baked into any PNG, so the user can rewrite it.
     label: str
     lit_path: str = ""
     dim_path: str = ""
+    #: Ring + plate, no photo, no name. What a replacement image is composited onto.
+    frame_path: str = ""
+    #: One-channel PNG: 255 where the PSD's photo showed through the ring.
+    mask_path: str = ""
+    #: The mask's bounding box **relative to** ``rect`` — where a replacement is fitted.
+    mask_rect: Rect = Rect(0, 0, 0, 0)
+    #: The avatar's name text slot key (``avatar:<group>``), when it has one.
+    name_key: str = ""
 
 
 @dataclass(frozen=True)
 class TextSlot:
-    name: str
+    """One piece of text we draw, with everything needed to draw it again.
+
+    ``key`` is the stable address the user's overrides are stored under. It is derived from
+    the role and the PSD's own names, never from an index, so a recompile cannot silently
+    move an edit onto a different piece of text.
+    """
+
+    key: str
+    role: str
+    label: str
     rect: Rect
     text: str
+    #: Effective pixels at the compiled canvas size.
+    font_size: int
+    colour: str
+    font: str
+    name: str = ""
 
 
 @dataclass
@@ -171,11 +213,25 @@ class CompiledTemplate:
                     "label": slot.label,
                     "lit_path": slot.lit_path,
                     "dim_path": slot.dim_path,
+                    "frame_path": slot.frame_path,
+                    "mask_path": slot.mask_path,
+                    "mask_rect": slot.mask_rect.as_dict(),
+                    "name_key": slot.name_key,
                 }
                 for slot in self.avatars
             ],
             "texts": [
-                {"name": slot.name, "rect": slot.rect.as_dict(), "text": slot.text}
+                {
+                    "key": slot.key,
+                    "role": slot.role,
+                    "label": slot.label,
+                    "name": slot.name,
+                    "rect": slot.rect.as_dict(),
+                    "text": slot.text,
+                    "font_size": slot.font_size,
+                    "colour": slot.colour,
+                    "font": slot.font,
+                }
                 for slot in self.texts
             ],
             "notes": list(self.notes),
@@ -304,6 +360,62 @@ def find_avatar_groups(layers: list[Any], media_group: Any) -> list[Any]:
     return found
 
 
+def text_layers_anywhere(layers: list[Any]) -> list[Any]:
+    """Every visible type layer, including ones nested inside groups.
+
+    ``find_text_layers`` only looked at the top level because P1 only needed to *report* the
+    text it found. Now every one of them has to come out of the background — the four avatar
+    names live inside avatar groups, and leaving them in would give the user two names for
+    each guest: the one they can edit and the baked one underneath.
+    """
+    found: list[Any] = []
+    stack: list[Any] = list(layers)
+    while stack:
+        layer = stack.pop()
+        if not layer.visible:
+            continue
+        if layer.is_group():
+            stack.extend(list(layer))
+            continue
+        if getattr(layer, "kind", "") == "type" and bbox_to_rect(layer.bbox) is not None:
+            found.append(layer)
+    return found
+
+
+def avatar_of_text(layer: Any, avatar_groups: list[Any]) -> str | None:
+    """Which avatar group this type layer belongs to, if any.
+
+    Walking ``parent`` rather than comparing bboxes: a name plate may sit slightly *outside*
+    its group's rect (the sample's ``嘉宾名`` is 3 px above it), so a geometric test would
+    attribute it to nothing and leave it baked into the poster.
+    """
+    ids = {id(group): layer_name(group) for group in avatar_groups}
+    parent = getattr(layer, "parent", None)
+    while parent is not None:
+        if id(parent) in ids:
+            return ids[id(parent)]
+        parent = getattr(parent, "parent", None)
+    return None
+
+
+def effective_scale(layer: Any) -> float:
+    """The layer's transform scale (``xx`` of its affine matrix), 1.0 when absent.
+
+    Photoshop bakes a scale into a text layer when it is resized with the transform tool
+    instead of by editing the point size. On the sample, the avatar names carry 0.849 — so
+    the PSD reports 25 px for a name that is drawn at 21.2 px, and using the raw number makes
+    every guest's name a fifth too large.
+    """
+    transform = getattr(layer, "transform", None)
+    if not transform:
+        return 1.0
+    try:
+        value = float(transform[0])
+    except (TypeError, ValueError, IndexError):
+        return 1.0
+    return value if 0.05 < value <= 8.0 else 1.0
+
+
 def find_text_layers(layers: list[Any]) -> list[Any]:
     return [
         layer
@@ -316,9 +428,13 @@ def find_text_layers(layers: list[Any]) -> list[Any]:
 
 
 def make_background_filter(
-    media_group: Any, content: list[Any], avatars: list[Any], overlay: list[Any]
+    media_group: Any,
+    content: list[Any],
+    avatars: list[Any],
+    overlay: list[Any],
+    texts: list[Any] | None = None,
 ) -> Any:
-    """What belongs in the poster: everything except box content, avatars, overlay.
+    """What belongs in the poster: everything except box content, avatars, overlay, text.
 
     The overlay layers have to be excluded here as well as drawn on top. In the PSD
     the frame stroke sits *above* the media group, so removing it from the background
@@ -326,16 +442,26 @@ def make_background_filter(
     Photoshop shows. Leaving it in both places is not: a semi-transparent stroke
     composited twice is visibly darker along the border, and the content region
     stops being a clean plate.
+
+    ``texts`` are excluded for a different reason: text that stays in the composite can
+    never be edited, because the composite is a PNG. Every visible type layer is drawn by
+    :mod:`animatter.media.text_overlay` on top instead — see §19.12.
     """
     content_ids = {id(child) for child in content}
     avatar_ids = {id(group) for group in avatars}
     overlay_ids = {id(layer) for layer in overlay}
+    text_ids = {id(layer) for layer in (texts or [])}
 
     def keep(layer: Any) -> bool:
         if not layer.visible:
             return False
         ident = id(layer)
         if ident in avatar_ids or ident in content_ids or ident in overlay_ids:
+            return False
+        # Any type layer, wherever it sits — including the names inside avatar groups.
+        if getattr(layer, "kind", "") == "type":
+            return False
+        if ident in text_ids:
             return False
         # A descendant of the media group that is not the plate is content, even
         # when nested deeper than the direct children checked above.
@@ -462,10 +588,184 @@ def dim_photo(
     return Image.fromarray(array.astype(np.uint8), "RGBA")
 
 
+def photo_mask_of(frame: Image.Image, with_photo: Image.Image) -> np.ndarray:
+    """Which pixels belong to the photo, given the same group composited both ways.
+
+    Computed rather than read from the PSD: the photo's *rect* is not the photo. On the
+    sample, the smart object's bbox is 213×213 but the ring clips it to a 202×202 circle, so
+    treating the rect as the shape leaves a square of face outside the circle.
+
+    Alpha counts as well as colour, for the same reason ``photo_mask`` says: the photo's line
+    art is white and the frame's own pixels are white too, so a colour-only comparison reads
+    those as unchanged and leaves a speckled outline.
+    """
+    a = np.array(with_photo.convert("RGBA")).astype(int)
+    b = np.array(frame.convert("RGBA")).astype(int)
+    colour_delta = np.abs(a[:, :, :3] - b[:, :, :3]).sum(axis=2)
+    mask: np.ndarray = (colour_delta > 6) | (np.abs(a[:, :, 3] - b[:, :, 3]) > 6)
+    return mask
+
+
+def mask_bbox(mask: np.ndarray) -> Rect | None:
+    """The bounding box of a boolean mask, or ``None`` when it is empty."""
+    ys, xs = np.nonzero(mask)
+    if len(xs) == 0:
+        return None
+    left, right = int(xs.min()), int(xs.max()) + 1
+    top, bottom = int(ys.min()), int(ys.max()) + 1
+    return Rect(x=left, y=top, w=right - left, h=bottom - top)
+
+
+def mask_png(mask: np.ndarray) -> Image.Image:
+    """An 8-bit mask as a greyscale PNG (255 = the photo's pixels)."""
+    return Image.fromarray((mask.astype(np.uint8) * 255), "L")
+
+
 def resize(image: Image.Image, width: int, height: int) -> Image.Image:
     if image.size == (width, height):
         return image
     return image.resize((width, height), Image.Resampling.LANCZOS)
+
+
+def _style_of(layer: Any) -> Any:
+    """The first style run's data, or ``None``.
+
+    ``psd_tools`` parses engine data into its own ``Dict`` type, which is **not** a ``dict``
+    subclass. Any ``isinstance(x, dict)`` guard around these values silently fails and the
+    caller gets the default — which is how every text slot came out black while the PSD was
+    reporting real colours. Use mapping access only, never a type check.
+    """
+    try:
+        return layer.engine_dict["StyleRun"]["RunArray"][0]["StyleSheet"]["StyleSheetData"]
+    except (AttributeError, KeyError, IndexError, TypeError):
+        return None
+
+
+def _colour_of(layer: Any) -> str:
+    """The layer's fill colour as ``#rrggbb`` (see ``textslot.colour_from_values``).
+
+    The values are ``[alpha, red, green, blue]`` — verified against the composite rather
+    than trusted from the docs: ``EP.23``'s ``[1.0, 0.098, 0.278, 0.729]`` renders as
+    ``#1947ba`` in the PSD, which is red=0.098, green=0.278, blue=0.729.
+    """
+    sheet = _style_of(layer)
+    if sheet is None:
+        return "#000000"
+    fill = sheet.get("FillColor")
+    if not fill:
+        return "#000000"
+    values = fill.get("Values")
+    if not values:
+        return "#000000"
+    return textslot.colour_from_values(list(values))
+
+
+def _run_count_of(layer: Any) -> int:
+    """How many style runs the layer's text has.
+
+    The sample's title has three: 「《罗小黑战记2》」blue, 「独家专访」red, 「六年磨一剑背后的
+    苦与乐」mixed again. We draw **one** colour per slot — the first run's — because the
+    override model has to answer "which run does the user's colour apply to?", and "the whole
+    slot" is the only answer that stays sane when the text itself is rewritten. The count is
+    reported so the UI can say so instead of the user noticing the red went blue.
+    """
+    try:
+        runs = layer.engine_dict["StyleRun"]["RunArray"]
+    except (AttributeError, KeyError, TypeError):
+        return 0
+    return len(list(runs)) if runs else 0
+
+
+def _font_size_of(layer: Any) -> float:
+    sheet = _style_of(layer)
+    if sheet is None:
+        return 0.0
+    try:
+        return float(sheet.get("FontSize") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _text_of(layer: Any) -> str:
+    """The layer's default text, one line per paragraph.
+
+    Photoshop stores a paragraph break as ``\r``, and the sample's title uses ``\r\r``
+    between speakers (a blank line). Collapsing those would run three speakers together.
+    """
+    raw = str(getattr(layer, "text", "") or "")
+    lines = [line.strip() for line in raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    while lines and not lines[0]:
+        lines.pop(0)
+    while lines and not lines[-1]:
+        lines.pop()
+    return "\n".join(lines)
+
+
+#: Which family each role starts with. The design calls for 数黑 on the title and the avatar
+#: names, Baigo on the episode number — 数黑 is a display face and Baigo is a condensed
+#: numeral face, and using one for both made the number look like part of the title.
+_DEFAULT_FONT: dict[str, str] = {
+    textslot.ROLE_TITLE: TITLE_FONT,
+    textslot.ROLE_EPISODE: EPISODE_FONT,
+    textslot.ROLE_AVATAR_NAME: NAME_FONT,
+    textslot.ROLE_NOTE: TITLE_FONT,
+}
+
+
+def _text_slots(
+    text_layers: list[Any],
+    avatar_groups: list[Any],
+    *,
+    factor: float,
+    canvas_w: int,
+    canvas_h: int,
+    content: textslot.Box | None = None,
+) -> list[TextSlot]:
+    """Classify the type layers and reduce them to drawable slots."""
+    candidates: list[textslot.Candidate] = []
+    for layer in text_layers:
+        rect = bbox_to_rect(layer.bbox)
+        if rect is None:
+            continue
+        candidates.append(
+            textslot.Candidate(
+                name=layer_name(layer),
+                text=_text_of(layer),
+                box=textslot.Box(x=rect.x, y=rect.y, w=rect.w, h=rect.h),
+                font_size=_font_size_of(layer) * effective_scale(layer),
+                colour=_colour_of(layer),
+                avatar=avatar_of_text(layer, avatar_groups),
+            )
+        )
+
+    # ``classify`` needs the PSD's own canvas to decide what counts as the header band;
+    # the compiled ``factor`` is applied afterwards, to the boxes and the point sizes.
+    slots = textslot.classify(
+        candidates, canvas_w=canvas_w, canvas_h=canvas_h, content=content
+    )
+
+    out: list[TextSlot] = []
+    for slot in slots:
+        out.append(
+            TextSlot(
+                key=slot.key,
+                role=slot.role,
+                label=slot.label,
+                rect=scale_rect(
+                    Rect(x=slot.box.x, y=slot.box.y, w=slot.box.w, h=slot.box.h), factor
+                ),
+                text=slot.text,
+                # ``slot.font_size`` is already the *effective* PSD size (point size × the
+                # layer's transform scale), so only the canvas factor is left to apply.
+                font_size=textslot.scaled_size(slot.font_size, 1.0, factor),
+                colour=slot.colour,
+                font=_DEFAULT_FONT.get(slot.role, TITLE_FONT),
+                name=next(
+                    (item.name for item in candidates if item.text == slot.text), ""
+                ),
+            )
+        )
+    return out
 
 
 # --- the compile --------------------------------------------------------
@@ -505,7 +805,9 @@ def compile_template(psd_path: Path, out_dir: Path) -> CompiledTemplate:
     media_group, media_rect = find_media_group(layers, canvas_w=psd.width, canvas_h=psd.height)
     plate, content = split_plate_and_content(media_group, media_rect)
     avatar_groups = find_avatar_groups(layers, media_group)
-    text_layers = find_text_layers(layers)
+    # Every visible type layer, nested ones included — the avatar names live inside their
+    # groups, and a name left in the composite can never be edited (§19.12).
+    text_layers = text_layers_anywhere(layers)
 
     notes: list[str] = []
     hidden_avatars = [
@@ -550,7 +852,12 @@ def compile_template(psd_path: Path, out_dir: Path) -> CompiledTemplate:
     overlay_ids = {id(layer) for layer in overlay_layers}
     bare_path = out_dir / "background_bare.png"
     resize(
-        composite(psd, make_background_filter(media_group, content, avatar_groups, overlay_layers)),
+        composite(
+            psd,
+            make_background_filter(
+                media_group, content, avatar_groups, overlay_layers, text_layers
+            ),
+        ),
         TARGET_W,
         TARGET_H,
     ).save(bare_path)
@@ -569,11 +876,30 @@ def compile_template(psd_path: Path, out_dir: Path) -> CompiledTemplate:
         group_rect = bbox_to_rect(group.bbox)
         if group_rect is None:
             continue
-        lit = group.composite(alpha=0.0).convert("RGBA")
+        # Name-free: the name is a text slot now, so keeping it in the PNG would give the
+        # user two names for every guest — the editable one and the baked one underneath.
+        lit = group.composite(
+            layer_filter=lambda layer: layer.kind != "type", alpha=0.0
+        ).convert("RGBA")
         lit_path = out_dir / f"avatar{index}_lit.png"
         dim_path = out_dir / f"avatar{index}_dim.png"
         lit.save(lit_path)
         photo_rect = avatar_photo_rect(group, group_rect)
+
+        # The replaceable-photo pair (§19.12): the ring/plate without any photo, plus the
+        # mask saying which pixels the photo covered. A new image is cover-fitted into the
+        # mask's bbox, clipped by the mask, composited onto the frame — so swapping a face
+        # needs no PSD, no Photoshop and no knowledge of the template.
+        frame_img = group.composite(
+            layer_filter=lambda layer: layer.kind not in ("type", "smartobject"), alpha=0.0
+        ).convert("RGBA")
+        frame_path = out_dir / f"avatar{index}_frame.png"
+        frame_path.write_bytes(b"")
+        frame_img.save(frame_path)
+        covered = photo_mask_of(frame_img, lit)
+        clipped = mask_bbox(covered)
+        mask_path = out_dir / f"avatar{index}_mask.png"
+        mask_png(covered).save(mask_path)
         # The photo's own pixels, computed by compositing the group without it. Dimming the
         # photo's *rect* instead greys the white plate underneath it — a visible grey box
         # behind the circle, which is the first of the three dimming mistakes in §19.9.
@@ -595,6 +921,10 @@ def compile_template(psd_path: Path, out_dir: Path) -> CompiledTemplate:
                 label=label,
                 lit_path=str(lit_path),
                 dim_path=str(dim_path),
+                frame_path=str(frame_path),
+                mask_path=str(mask_path),
+                mask_rect=clipped or photo_rect,
+                name_key=f"avatar:{layer_name(group)}",
             )
         )
         # Flatten it in for P1: it keeps the poster looking like the PSD until
@@ -604,15 +934,30 @@ def compile_template(psd_path: Path, out_dir: Path) -> CompiledTemplate:
     background_path = out_dir / "background.png"
     flat.save(background_path)
 
-    texts = [
-        TextSlot(
-            name=layer_name(layer),
-            rect=scale_rect(rect, factor),
-            text=str(getattr(layer, "text", "") or "").replace("\r", "\n").strip(),
+    texts = _text_slots(
+        text_layers,
+        avatar_groups,
+        factor=factor,
+        canvas_w=psd.width,
+        canvas_h=psd.height,
+        content=textslot.Box(
+            x=media_rect.x, y=media_rect.y, w=media_rect.w, h=media_rect.h
+        ),
+    )
+
+    # Matched by layer name, not by position: ``_text_slots`` reorders (episode first, then
+    # title, then names and notes by geometry) and ``text_layers`` is in PSD stack order.
+    runs = {layer_name(layer): _run_count_of(layer) for layer in text_layers}
+    multicolour = [slot.label for slot in texts if runs.get(slot.name, 0) > 1]
+    if multicolour:
+        notes.append(
+            f"{'、'.join(multicolour)} 在 PSD 里有多段不同颜色，现在统一按第一段的颜色绘制"
         )
-        for layer in text_layers
-        if (rect := bbox_to_rect(layer.bbox)) is not None
-    ]
+
+    if not any(slot.role == textslot.ROLE_TITLE for slot in texts):
+        notes.append("没找到当期标题的文字层，标题需要在界面上手动输入")
+    if not any(slot.role == textslot.ROLE_EPISODE for slot in texts):
+        notes.append("没找到期号的文字层，期号需要在界面上手动输入")
 
     box = even_rect(scale_rect(media_rect, factor))
     if (box.w, box.h) != (scale_rect(media_rect, factor).w, scale_rect(media_rect, factor).h):

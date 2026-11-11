@@ -127,6 +127,7 @@ def build_filtergraph(
     offset_ms: int = 0,
     box: box_track.BoxChain | None = None,
     avatars: list[AvatarLayer] | None = None,
+    text: Layer | None = None,
     out_label: str = "vout",
 ) -> str:
     """Assemble the video filtergraph.
@@ -149,6 +150,12 @@ def build_filtergraph(
     The ``setsar=1`` on each branch is not cosmetic: the compiled PNGs carry no pixel
     aspect metadata, and a mismatch makes the ``overlay`` filter silently scale the
     layer, so the box lands a few pixels off from where the confirm screen showed it.
+
+    ``text`` is the editable-text overlay (§19.12), applied **after** the avatars and before
+    the subtitles. That position is the whole reason it is a separate argument rather than one
+    more entry in ``layers``: an avatar's own rect contains its name plate, so a text layer
+    drawn first is covered by the avatar PNG and the names vanish. Measured on the sample —
+    group 头像1 starts at y=200 and its name sits at y=202, inside it.
 
     ``offset_ms`` exists for the still preview. A still at 6 s is a *frame from 6 s*,
     and ``ass`` decides what to draw from the frame's timestamp — so asking ffmpeg to
@@ -205,6 +212,23 @@ def build_filtergraph(
             f"eof_action={'pass' if avatar.is_video else 'repeat'}:format=auto[{label}]"
         )
         current = label
+
+    if text is not None:
+        # Its input number follows the avatars', for the same reason theirs follows the box's.
+        text_input = (
+            1
+            + len(layers)
+            + (box.input_count if box is not None else 0)
+            + len(avatars or [])
+        )
+        parts.append(
+            f"[{current}]scale={width}:{height},setsar=1[textbase];"
+            f"[{text_input}:v]scale={text.width or width}:{text.height or height},setsar=1"
+            f"{'' if text.is_video else shift}[textimg];"
+            f"[textbase][textimg]overlay=x={text.x}:y={text.y}:"
+            f"eof_action={'pass' if text.is_video else 'repeat'}:format=auto[withtext]"
+        )
+        current = "withtext"
 
     if subtitle_path is not None:
         parts.append(f"[{current}]ass=filename='{escape_filter_path(subtitle_path)}'[{out_label}]")
@@ -271,6 +295,7 @@ def render(
     box_segments: list[box_track.BoxSegment] | None = None,
     box_sources: list[Path] | None = None,
     avatars: list[AvatarLayer] | None = None,
+    text: Layer | None = None,
     subtitles: Path | None = None,
     preset: str = PRESET,
     crf: str = CRF,
@@ -321,6 +346,7 @@ def render(
         subtitle_path=subtitles,
         box=box,
         avatars=avatars,
+        text=text,
     )
     script = target.with_suffix(target.suffix + ".filtergraph")
     script.write_text(graph, encoding="utf-8")
@@ -364,6 +390,18 @@ def render(
                 status=409,
             )
         command += ["-i", str(avatar.path)]
+
+    if text is not None:
+        # Declared as a looping still, like every other static layer: it is one PNG for the
+        # whole film, and ``-t`` keeps ffmpeg from looping it forever.
+        if not text.path.is_file():
+            raise AppError(
+                "text_overlay_missing",
+                "文字图层没生成出来",
+                hint="点一次「生成静帧」重试；如果反复失败，检查字体是否还在。",
+                status=409,
+            )
+        command += ["-loop", "1", "-t", seconds, "-i", str(text.path)]
 
     command += [
         "-filter_complex_script",
@@ -440,6 +478,7 @@ def render_still(
     box_segment: box_track.BoxSegment | None = None,
     box_source: Path | None = None,
     avatars: list[AvatarLayer] | None = None,
+    text: Layer | None = None,
     subtitles: Path | None = None,
 ) -> VideoResult:
     """Composite one frame at ``at_ms`` for the preview (§19.7).
@@ -467,6 +506,7 @@ def render_still(
         offset_ms=max(0, at_ms),
         box=box,
         avatars=avatars,
+        text=text,
     )
     script = target.with_suffix(target.suffix + ".filtergraph")
     script.write_text(graph, encoding="utf-8")
@@ -486,6 +526,8 @@ def render_still(
             command += ["-i", str(avatar.path)]
         else:
             command += ["-loop", "1", "-i", str(avatar.path)]
+    if text is not None:
+        command += ["-loop", "1", "-i", str(text.path)]
 
     command += [
         "-filter_complex_script",

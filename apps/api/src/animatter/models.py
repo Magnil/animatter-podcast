@@ -411,6 +411,13 @@ class VideoTemplate(Base):
     #: Kept on the row rather than inside ``slots_json`` so a recompile (which rewrites
     #: the slots from the PSD) does not silently drop the user's bindings.
     bindings_json: Mapped[str] = mapped_column(Text, default="{}")
+    #: ``{"texts": {<slot key>: {"text","font","colour","size"}},
+    #:   "photos": {<slot name>: <asset id>}}`` — the user's edits to the template's own
+    #: artwork. A third column for the same reason as ``bindings_json``: ``slots_json`` is
+    #: rewritten from the PSD on every compile, so an override stored there would vanish the
+    #: first time the same template was re-imported, and the symptom would be "my title went
+    #: back to the designer's placeholder" with nothing to explain it.
+    edits_json: Mapped[str] = mapped_column(Text, default="{}")
     status: Mapped[str] = mapped_column(String(16), default="pending")
     #: Human-readable reason for ``status == 'failed'``. A compile can fail on a
     #: file psd-tools cannot parse, and "failed" alone sends the user nowhere.

@@ -23,12 +23,13 @@ from animatter.config import Settings
 from animatter.db import Database
 from animatter.errors import AppError
 from animatter.log import get_logger
+from animatter.media import fonts
 from animatter.media.subtitle_ass import SubtitleStyle
 from animatter.models import Render, VideoItem
 from animatter.services import clipping as clipping_service
 from animatter.services import video as video_service
 from animatter.services import video_assets as asset_service
-from animatter.services import video_avatars
+from animatter.services import video_avatars, video_edits
 from animatter.services import video_render as video_render_service
 from animatter.services import video_templates as template_service
 
@@ -68,6 +69,32 @@ class TemplateOut(BaseModel):
 
 class TemplateOptionsIn(BaseModel):
     box_fit_default: str | None = None
+
+
+class TextEditIn(BaseModel):
+    """Change one text slot. Every field optional; an empty string clears the override.
+
+    ``font_size`` is clamped, not trusted: the field comes from a number input a user can
+    type ``99999`` into, and a 5-digit point size makes Pillow allocate a face metres tall
+    and takes the request thread with it.
+    """
+
+    text: str | None = Field(default=None, max_length=500)
+    font: str | None = Field(default=None, max_length=120)
+    colour: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    font_size: int | None = Field(default=None, ge=6, le=400)
+
+
+class AvatarPhotoIn(BaseModel):
+    """``asset_id: null`` restores the PSD's own photo."""
+
+    asset_id: str | None = None
+
+
+class FontListOut(BaseModel):
+    families: list[str]
+    preferred: list[str]
+    faces: int
 
 
 @router.get("/projects/{project_id}/video/template", response_model=TemplateOut | None)
@@ -147,6 +174,76 @@ def update_template_options(
     view = template_service.view(session, project_id)
     assert view is not None
     return TemplateOut(**view.as_dict())  # type: ignore[arg-type]
+
+
+@router.patch("/projects/{project_id}/video/template/texts/{key}", response_model=TemplateOut)
+def edit_template_text(
+    project_id: str,
+    key: str,
+    payload: TextEditIn,
+    session: Session = Depends(_session_dependency),
+) -> TemplateOut:
+    """Override one text slot's content / font / colour / size.
+
+    The slot key is stable across recompiles, so a browser holding an edit form open survives
+    one. What it cannot survive is a template swap to a different PSD — that raises
+    ``template_slot_unknown`` instead of writing an override nobody would ever see.
+    """
+    video_edits.update_text(
+        session,
+        project_id,
+        key=key,
+        edit=video_edits.TextEdit(
+            text=payload.text,
+            font=payload.font,
+            colour=payload.colour,
+            font_size=payload.font_size,
+        ),
+    )
+    session.commit()
+    view = template_service.view(session, project_id)
+    assert view is not None
+    return TemplateOut(**view.as_dict())  # type: ignore[arg-type]
+
+
+@router.put(
+    "/projects/{project_id}/video/template/avatars/{slot}/photo", response_model=TemplateOut
+)
+def set_avatar_photo(
+    project_id: str,
+    slot: str,
+    payload: AvatarPhotoIn,
+    request: Request,
+    session: Session = Depends(_session_dependency),
+) -> TemplateOut:
+    """Replace (or restore) one avatar slot's photo.
+
+    Composited here rather than at render time: it needs PIL and the compiled frame/mask
+    pair, and doing it once per edit means the export's avatar track keeps reading a plain
+    PNG. ``asset_id: null`` restores the PSD's own photo by dropping the override.
+    """
+    settings: Settings = request.app.state.settings
+    video_edits.set_photo(session, settings, project_id, slot=slot, asset_id=payload.asset_id)
+    session.commit()
+    view = template_service.view(session, project_id)
+    assert view is not None
+    return TemplateOut(**view.as_dict())  # type: ignore[arg-type]
+
+
+@router.get("/fonts", response_model=FontListOut)
+def list_fonts() -> FontListOut:
+    """Every family this machine can draw, for the font picker.
+
+    Discovered from the filesystem rather than from a hard-coded list, because the fonts this
+    design needs (数黑, Baigo) are not installed — they live in 字由's download store, which
+    no font registry knows about. See ``animatter.media.fonts``.
+    """
+    faces = fonts.discover()
+    return FontListOut(
+        families=fonts.families(),
+        preferred=[name for name in video_edits.PREFERRED_FONTS if fonts.resolve(name) is not None],
+        faces=len(faces),
+    )
 
 
 @router.get("/projects/{project_id}/video/template/asset/{name}")

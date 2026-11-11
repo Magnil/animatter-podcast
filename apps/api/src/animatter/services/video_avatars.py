@@ -142,7 +142,15 @@ def _slots_of(row: VideoTemplate) -> list[dict[str, Any]]:
 
 
 def bound_slots(session: Session, row: VideoTemplate) -> list[SlotBinding]:
-    """Every avatar slot with its geometry and its speaker, bound or not."""
+    """Every avatar slot with its geometry and its speaker, bound or not.
+
+    ``lit_path``/``dim_path`` are the **effective** art: the compiled PNGs, unless the user
+    replaced this slot's photo, in which case the replacement pair. Deciding it here rather
+    than at each render site is what keeps the preview, the avatar track and the export from
+    disagreeing — the same reason ``_base_background`` exists.
+    """
+    from animatter.services import video_edits
+
     bindings = bindings_of(row)
     out: list[SlotBinding] = []
     for slot in _slots_of(row):
@@ -152,6 +160,9 @@ def bound_slots(session: Session, row: VideoTemplate) -> list[SlotBinding]:
         dim = str(slot.get("dim_path") or "")
         if not name or not lit or not dim:
             continue
+        replaced = video_edits.photo_paths(row, slot)
+        if replaced is not None:
+            lit, dim = str(replaced[0]), str(replaced[1])
         out.append(
             SlotBinding(
                 name=name,
