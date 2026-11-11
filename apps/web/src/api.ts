@@ -1144,6 +1144,8 @@ export interface VideoRect {
 
 export interface VideoAvatarSlot {
   name: string;
+  /** What the user calls it: 「主播1」/「嘉宾2」, derived from which side it sits on. */
+  label_name: string;
   rect: VideoRect;
   photo: VideoRect;
   /** The PSD's own name plate text — now only the **default** for this slot's name. */

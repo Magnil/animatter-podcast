@@ -2368,6 +2368,15 @@ button.small,
   pointer-events: none;
 }
 
+/* The colour hint shows a literal `**` and a colour; keep it readable in the narrow column. */
+.template-texts + .section-note code,
+.section-note code {
+  padding: 0 3px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.06);
+  font-size: 0.94em;
+}
+
 /* --- video: preview left, one tabbed settings column right ----------------- */
 .video-stage {
   display: grid;

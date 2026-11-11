@@ -68,9 +68,14 @@ class TemplateView:
         avatars = slots.get("avatars")
         if isinstance(avatars, list):
             replaced = video_edits.edits_of(self.row)["photos"]
-            slots["avatars"] = [
+            views = [
                 _avatar_view(self.row, item, replaced) for item in avatars if isinstance(item, dict)
             ]
+            # Hosts first, then guests — the same order the text rows use. `slots_json` is in PSD
+            # stack order (bottom-up), so the two lists would otherwise contradict each other.
+            slots["avatars"] = sorted(
+                views, key=lambda item: (str(item.get("label_name") or ""), str(item.get("name")))
+            )
         return {
             "id": self.row.id,
             "status": self.row.status,
@@ -102,11 +107,19 @@ def _avatar_view(
     name = str(slot.get("name") or "")
     lit = str(slot.get("lit_path") or "")
     dim = str(slot.get("dim_path") or "")
+    # The name plate is an editable text slot now, so the row has to show its **resolved** value.
+    # `slot["label"]` is what the compile recorded, and after a rename it went stale — the panel
+    # read 「主播1 彼方」 while the film showed 马小褂.
+    resolved = {
+        str(item.get("key")): str(item.get("text") or "")
+        for item in video_edits.resolved_texts(row)
+    }
     replacement = video_edits.photo_paths(row, slot)
     if replacement is not None:
         lit, dim = str(replacement[0]), str(replacement[1])
     merged = dict(slot)
     merged["name"] = name
+    merged["label"] = resolved.get(f"avatar:{name}", str(slot.get("label") or ""))
     # The *effective* paths, so a replaced photo is also correct for a caller that reads the
     # slot list instead of the avatars endpoint.
     merged["lit_path"] = str(lit)

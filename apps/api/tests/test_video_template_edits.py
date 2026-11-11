@@ -97,7 +97,7 @@ def test_the_title_slot_arrives_with_the_psd_defaults(
 ) -> None:
     _project_id, _version_id, body = imported
     title = _by_role(body, "title")
-    assert str(title["text"]).startswith("《罗小黑战记2》独家专访")
+    assert str(title["text"]).startswith("《罗小黑战记2》**独家专访**")
     assert title["font_size"] > 0
     assert str(title["colour"]).startswith("#")
     assert title["font"], "the slot must name a font, or the picker starts blank"

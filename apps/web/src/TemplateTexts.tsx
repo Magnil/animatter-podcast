@@ -29,6 +29,12 @@ interface Props {
   onNotice: (message: string) => void;
 }
 
+/**
+ * The accent colour, spelled out for the hint. It is the design's red, measured from the PSD's
+ * own second style run (#f9485c on the episode number, the title and the footer).
+ */
+const ACCENT_TEXT = "#f9485c";
+
 /** Roles the user can edit, in the order the poster reads them. */
 const EDITABLE: VideoTextSlot["role"][] = ["episode", "title", "avatar_name", "note"];
 
@@ -98,9 +104,12 @@ export function TemplateTexts({ projectId, template, onTemplate, onNotice }: Pro
             className={isName ? "template-text-row is-name" : "template-text-row"}
             data-slot={slot.key}
           >
+            {/*
+              The server's label, not the role: 「主播1」/「嘉宾2」/「页脚」 are names the compile
+              derived, and 「头像名」 would have told every row the same thing.
+            */}
             <span className="template-text-label" title={`${ROLE_LABEL[slot.role]} · ${slot.name}`}>
-              {slot.role === "note" ? slot.label : ROLE_LABEL[slot.role]}
-              {isName ? <small>{slot.label.replace("头像名 · ", "")}</small> : null}
+              {slot.label}
             </span>
             <input
               // Remounted when the server's text changes, so clearing a field visibly goes
@@ -150,6 +159,13 @@ export function TemplateTexts({ projectId, template, onTemplate, onNotice }: Pro
           </div>
         );
       })}
+
+      {rows.some((slot) => slot.text.includes("**")) ? (
+        <p className="section-note">
+          用 <b>**</b> 把要变色的字括起来，例如 <code>EP.**23**</code>：括号里的是红
+          （{ACCENT_TEXT}），外面是本色。两边不成对就按普通文字显示。
+        </p>
+      ) : null}
 
       {content.length > 0 ? (
         <p className="section-note">

@@ -113,11 +113,11 @@ class PreparedVideo:
     duration_ms: int
     #: Empty unless at least one avatar slot is bound to a speaker who talks.
     avatars: list[AvatarTrack] = field(default_factory=list)
-    #: The slots that stayed **unbound**: one static photo each, for the whole film. Needed
-    #: because any bound slot switches the base to ``background_bare.png``, which has every
-    #: avatar stripped out — so without these the unbound faces vanish (a real defect: on the
-    #: sample's 4 slots and 2 speakers, half the faces disappeared from every frame).
-    avatar_statics: list[video_media.AvatarLayer] = field(default_factory=list)
+    #: Deliberately **absent**: a slot with no binding leaves its frame empty. Replacing the
+    #: face with a stale PSD photo would contradict the binding the user just cleared — the
+    #: sample's 4 slots with 2 speakers must show 2 faces and 2 empty frames, not 4 faces.
+    #: ``_base_background`` already switches to ``background_bare.png`` whenever a track exists,
+    #: which is what makes the empty frames possible at all.
 
     @property
     def background_path(self) -> Path:
@@ -204,7 +204,6 @@ def prepare(
         audio_path=audio,
         duration_ms=edl.output_duration_ms,
         avatars=tracks,
-        avatar_statics=static_avatar_layers(session, template, tracks),
     )
 
 
@@ -251,6 +250,7 @@ def text_png_for(
     work_dir: Path,
     width: int,
     height: int,
+    visible_avatars: set[str] | None = None,
 ) -> Path | None:
     """Draw the editable text for this template, or ``None`` when it has none.
 
@@ -264,10 +264,13 @@ def text_png_for(
     """
     from animatter.services import video_edits
 
-    slots = video_edits.draw_slots(template)
+    slots = video_edits.draw_slots(template, visible_avatars=visible_avatars)
     if not slots:
         return None
-    target = work_dir / f"text-{video_edits.signature(template)}.png"
+    # The visible-avatar set is part of the name: binding or unbinding changes which names are
+    # drawn, and without it the cached PNG would keep the old set under an unchanged key.
+    hidden = "-" if visible_avatars is None else f"-{len(visible_avatars)}"
+    target = work_dir / f"text-{video_edits.signature(template)}{hidden}.png"
     if target.is_file():
         return target
     return overlay_media.render(target=target, width=width, height=height, slots=slots)
@@ -377,40 +380,6 @@ def _avatar_layers(
     return layers
 
 
-def static_avatar_layers(
-    session: Session, template: VideoTemplate, tracks: list[AvatarTrack]
-) -> list[video_media.AvatarLayer]:
-    """The photo of every avatar slot that has **no** track, for the whole film.
-
-    Required because of which base background gets used: any bound slot switches the poster to
-    ``background_bare.png``, which has all four avatar groups stripped out. Without this list,
-    a project that binds two speakers shows two avatars and two empty holes — measured on the
-    sample's own still, and not a new bug: ``_base_background`` has behaved this way since P3,
-    it simply had no test that looked at an unbound slot's pixels.
-
-    Empty when nothing is bound, in which case ``_base_background`` returns the normal
-    ``background.png`` with all four photos already in it, and this would double-draw them.
-    """
-    if not tracks:
-        return []
-    bound = {track.name for track in tracks}
-    out: list[video_media.AvatarLayer] = []
-    for slot in video_avatars.bound_slots(session, template):
-        if slot.name in bound:
-            continue
-        out.append(
-            video_media.AvatarLayer(
-                path=slot.lit_path,
-                x=slot.x,
-                y=slot.y,
-                width=slot.width,
-                height=slot.height,
-                is_video=False,
-            )
-        )
-    return out
-
-
 def _avatar_stills(
     tracks: list[AvatarTrack], *, at_ms: int
 ) -> list[video_media.AvatarLayer]:
@@ -516,6 +485,7 @@ def preview_still(
         work_dir=out_dir,
         width=template.canvas_w or 1920,
         height=template.canvas_h or 1080,
+        visible_avatars={track.name for track in tracks} or None,
     )
     target = out_dir / (
         f"still-{at_ms:09d}-"
@@ -561,10 +531,7 @@ def preview_still(
         box=box_chain,
         box_segment=box_segment,
         box_source=box_source,
-        avatars=[
-            *_avatar_stills(tracks, at_ms=at_ms),
-            *static_avatar_layers(session, template, tracks),
-        ],
+        avatars=_avatar_stills(tracks, at_ms=at_ms),
         text=None if text_png is None else video_media.Layer(path=text_png, x=0, y=0),
         subtitles=out_dir / "preview.ass" if burn_subtitles else None,
     )
@@ -608,6 +575,10 @@ def _still_digest(
         # new title left every still byte-identical and the browser kept showing the old
         # frame under an unchanged URL (§19.11 trap 24).
         video_edits.signature(template),
+        # Which names get drawn depends on which slots are bound, so binding alone changes the
+        # text layer. ``lit`` below has the same information but only for the slots that have a
+        # track — a slot whose name is hidden because it has *no* track is invisible there.
+        ",".join(sorted(track.name for track in tracks)) or "-",
         segment,
         lit,
     ]
@@ -683,6 +654,7 @@ def _video_signature(prepared: PreparedVideo, options: ExportOptions) -> str:
         # Text and avatar-photo overrides (§19.12). Reusing an export across an edit
         # would otherwise hand back a film with the old title, silently.
         video_edits.signature(prepared.template),
+        ",".join(sorted(track.name for track in prepared.avatars)) or "-",
         str(prepared.duration_ms),
         hashlib.sha256(
             ";".join(
@@ -792,6 +764,7 @@ def _encode(
         work_dir=out,
         width=prepared.template.canvas_w or 1920,
         height=prepared.template.canvas_h or 1080,
+        visible_avatars={track.name for track in prepared.avatars} or None,
     )
 
     video_media.render(
@@ -805,15 +778,12 @@ def _encode(
         box=box_chain,
         box_segments=None if plan.empty else plan.segments,
         box_sources=None if plan.empty else plan.sources,
-        avatars=[
-            *_avatar_layers(
-                settings,
-                prepared.avatars,
-                duration_ms=prepared.duration_ms,
-                work_dir=out,
-            ),
-            *prepared.avatar_statics,
-        ],
+        avatars=_avatar_layers(
+            settings,
+            prepared.avatars,
+            duration_ms=prepared.duration_ms,
+            work_dir=out,
+        ),
         text=None if text_png is None else video_media.Layer(path=text_png, x=0, y=0),
         subtitles=subtitles,
     )

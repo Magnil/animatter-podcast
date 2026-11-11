@@ -270,7 +270,9 @@ def test_real_compile_reads_text_slots_without_rewriting_them(compiled: object) 
 
     assert isinstance(compiled, CompiledTemplate)
     texts = {slot.text for slot in compiled.texts}
-    assert "EP.23" in texts
+    # ``**`` is the round-98 colour markup: the PSD draws ``EP.`` blue and ``23`` red, so the
+    # default value carries that split instead of losing it (§19.14.12).
+    assert "EP.**23**" in texts
     # Newlines are normalised so the UI can show them; psd-tools returns ``\r``.
     assert any("\n" in text or len(text) > 10 for text in texts)
 

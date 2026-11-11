@@ -247,13 +247,24 @@ def compiled(tmp_path_factory: pytest.TempPathFactory):
 
 def test_the_sample_produces_the_slots_the_design_expects(compiled) -> None:
     roles = {slot.role: slot for slot in compiled.texts}
-    assert roles[textslot.ROLE_EPISODE].text == "EP.23"
-    assert roles[textslot.ROLE_TITLE].text.startswith("《罗小黑战记2》独家专访")
+    # The PSD itself splits ``EP.`` (blue) from ``23`` (red); the compile keeps that as
+    # markup rather than flattening it to one colour.
+    assert roles[textslot.ROLE_EPISODE].text == "EP.**23**"
+    assert roles[textslot.ROLE_TITLE].text.startswith("《罗小黑战记2》**独家专访**")
     assert roles[textslot.ROLE_EPISODE].font == fonts.EPISODE_FONT
     assert roles[textslot.ROLE_TITLE].font == fonts.TITLE_FONT
     names = [slot for slot in compiled.texts if slot.role == textslot.ROLE_AVATAR_NAME]
     assert len(names) == 4
     assert {slot.text for slot in names} == {"小榕", "呆尾", "马小褂", "彼方"}
+    # What the form calls them: the left column is the hosts, the right column the guests.
+    assert {slot.label for slot in names} == {"主播1", "主播2", "嘉宾1", "嘉宾2"}
+    # The groups' own PSD names are still the keys, so an override survives a recompile.
+    assert {slot.key for slot in names} == {
+        "avatar:头像1",
+        "avatar:头像2",
+        "avatar:头像1 拷贝",
+        "avatar:头像2 拷贝",
+    }
     for slot in names:
         assert slot.font == fonts.NAME_FONT  # 数黑, per the design
 

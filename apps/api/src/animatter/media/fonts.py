@@ -14,10 +14,18 @@ family name can be read out of the file itself. That is what :func:`discover` do
 
 Why not just require the user to install the font
 -------------------------------------------------
-Because on this machine the two fonts the design calls for (阿里妈妈数黑体, Baigo) only exist
-inside 字由's store: the registry reports 175 families, neither of them among them. Treating
-"not in C:/Windows/Fonts" as "missing" would make the feature unusable on the machine it was
+Because the two fonts the design calls for (阿里妈妈数黑体, Baigo) were, on this machine, only
+inside 字由's store: the registry reported 175 families and neither was among them. Treating
+"not in C:/Windows/Fonts" as "missing" would have made the feature unusable on the machine it was
 specified for.
+
+**Both locations are scanned.** Since 2026-11-12 the same two files also exist in the per-user
+Windows font directory (byte-identical, sha256 verified), and :func:`discover` de-duplicates by
+``(family, style)`` with the earlier directory winning — so :func:`resolve` now returns the
+user-directory copy. That is fine and deliberate: the point of scanning several directories is
+that it does not matter *where* the font came from, only that it can be found. It does mean the
+honest claim is "the registry does not know about these fonts, but the filesystem can find them",
+not "they exist nowhere else".
 
 Caching
 -------

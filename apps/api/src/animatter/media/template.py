@@ -57,7 +57,7 @@ import numpy as np
 from PIL import Image
 from psd_tools import PSDImage
 
-from animatter.core import textslot
+from animatter.core import textslot, textspan
 from animatter.errors import AppError
 from animatter.log import get_logger
 from animatter.media.fonts import EPISODE_FONT, NAME_FONT, TITLE_FONT
@@ -136,6 +136,19 @@ class Rect:
         )
 
 
+#: Which side of the canvas an avatar sits on decides what it is called. The sample's four
+#: groups are centred at x=130 and x=1800 of 1920, so the split needs no tuning — but it is
+#: computed per slot rather than from an index, because an index would rename the guests if the
+#: PSD's layer order ever changed.
+SIDE_HOST = "主播"
+SIDE_GUEST = "嘉宾"
+
+
+def avatar_side(center_x: int, canvas_w: int) -> str:
+    """``主播`` for the left column, ``嘉宾`` for the right."""
+    return SIDE_HOST if center_x * 2 < canvas_w else SIDE_GUEST
+
+
 @dataclass(frozen=True)
 class AvatarSlot:
     """One avatar position, with the pieces the renderer needs separately.
@@ -148,6 +161,10 @@ class AvatarSlot:
     """
 
     name: str
+    #: What the user sees: 「主播1」「嘉宾2」. Stable across recompiles because it is derived from
+    #: the group's side and its position within that side, not from ``name`` — which is
+    #: Photoshop's, and on the sample is ``头像1 拷贝``.
+    label_name: str
     rect: Rect
     #: The photo's box **relative to** ``rect``. Kept for the dim pass and for the default
     #: render; the authoritative shape is ``mask_rect``, which is the *visible* photo after
@@ -208,6 +225,7 @@ class CompiledTemplate:
             "avatars": [
                 {
                     "name": slot.name,
+                    "label_name": slot.label_name,
                     "rect": slot.rect.as_dict(),
                     "photo": slot.photo.as_dict(),
                     "label": slot.label,
@@ -712,6 +730,130 @@ _DEFAULT_FONT: dict[str, str] = {
 }
 
 
+def _styled_chars(layer: Any) -> list[tuple[str, str]]:
+    """Every character of the layer's text with its run colour, in order.
+
+    The PSD already knows where the colour changes. Measured on the sample: ``EP.23`` is ``EP.``
+    blue + ``23`` red, and the title is ``《罗小黑战记2》`` blue, ``独家专访`` red,
+    ``六年磨一剑背后的`` blue, ``苦与乐`` red. Reading the runs is the only way to get that
+    right; taking the first run's colour gets the first stretch and calls the rest the same.
+
+    Returns ``[]`` when the layer has no usable run data, which the caller reads as "no markup".
+    """
+    try:
+        style_run = layer.engine_dict["StyleRun"]
+        lengths = [int(value) for value in style_run["RunLengthArray"]]
+        array = style_run["RunArray"]
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError):
+        return []
+
+    raw = str(getattr(layer, "text", "") or "")
+    out: list[tuple[str, str]] = []
+    cursor = 0
+    for index, length in enumerate(lengths):
+        try:
+            sheet = array[min(index, len(array) - 1)]["StyleSheet"]["StyleSheetData"]
+        except (KeyError, IndexError, TypeError):
+            break
+        fill = sheet.get("FillColor")
+        values = list(fill.get("Values")) if fill else None
+        colour = textslot.colour_from_values(values) if values else ""
+        for char in raw[cursor : cursor + length]:
+            out.append((char, colour))
+        cursor += length
+    for char in raw[cursor:]:
+        out.append((char, ""))
+    return out
+
+
+def _clean_styled(chars: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Apply ``_text_of``'s cleaning while keeping each character's colour attached.
+
+    The cleaning has to happen *with* the colours, not after them: ``_text_of`` strips each line
+    and drops blank leading/trailing lines, so marking the raw text and reconciling afterwards
+    would put markers around characters that the cleaning is about to remove.
+    """
+    merged: list[tuple[str, str]] = []
+    index = 0
+    while index < len(chars):
+        char, colour = chars[index]
+        if char == "\r":
+            if index + 1 < len(chars) and chars[index + 1][0] == "\n":
+                index += 1
+            merged.append(("\n", colour))
+        else:
+            merged.append((char, colour))
+        index += 1
+
+    lines: list[list[tuple[str, str]]] = [[]]
+    for char, colour in merged:
+        if char == "\n":
+            lines.append([])
+        else:
+            lines[-1].append((char, colour))
+
+    stripped = [_strip_line(line) for line in lines]
+    while stripped and not stripped[0]:
+        stripped.pop(0)
+    while stripped and not stripped[-1]:
+        stripped.pop()
+
+    out: list[tuple[str, str]] = []
+    for position, line in enumerate(stripped):
+        if position:
+            out.append(("\n", ""))
+        out.extend(line)
+    return out
+
+
+def _strip_line(line: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    start = 0
+    end = len(line)
+    while start < end and not line[start][0].strip():
+        start += 1
+    while end > start and not line[end - 1][0].strip():
+        end -= 1
+    return line[start:end]
+
+
+def _with_markup(layer: Any, plain: str) -> str:
+    """Express the PSD's run colours as ``**`` markup over the cleaned text.
+
+    Only when the layer really has **two** colours, and only around the runs that carry the
+    second one. That is what makes ``**`` a faithful encoding of this template rather than a
+    lossy one: the sample's two-colour layers alternate exactly those two, so every accent
+    stretch can be marked and every base stretch left alone.
+
+    One colour, three or more, or unreadable runs → returned unchanged. Inventing a split there
+    would show the user a colour boundary the designer never drew.
+    """
+    chars = _clean_styled(_styled_chars(layer))
+    if not chars:
+        return plain
+    if "".join(char for char, _colour in chars) != plain:
+        return plain  # alignment failed; the plain text is the safe answer
+
+    colours: list[str] = []
+    for _char, colour in chars:
+        if colour and colour.lower() not in {entry.lower() for entry in colours}:
+            colours.append(colour)
+    if len(colours) != 2:
+        return plain
+
+    accent = colours[1]
+    out: list[str] = []
+    inside = False
+    for char, colour in chars:
+        wants = colour.lower() == accent.lower()
+        if wants != inside:
+            out.append(textspan.MARK)
+            inside = wants
+        out.append(char)
+    if inside:
+        out.append(textspan.MARK)
+    return "".join(out)
+
+
 def _text_slots(
     text_layers: list[Any],
     avatar_groups: list[Any],
@@ -720,6 +862,7 @@ def _text_slots(
     canvas_w: int,
     canvas_h: int,
     content: textslot.Box | None = None,
+    avatar_labels: dict[str, str] | None = None,
 ) -> list[TextSlot]:
     """Classify the type layers and reduce them to drawable slots."""
     candidates: list[textslot.Candidate] = []
@@ -730,7 +873,9 @@ def _text_slots(
         candidates.append(
             textslot.Candidate(
                 name=layer_name(layer),
-                text=_text_of(layer),
+                # The markup carries the PSD's own colour split, so the default the UI shows is
+                # exactly what the designer drew — and the user can then move the ``**``.
+                text=_with_markup(layer, _text_of(layer)),
                 box=textslot.Box(x=rect.x, y=rect.y, w=rect.w, h=rect.h),
                 font_size=_font_size_of(layer) * effective_scale(layer),
                 colour=_colour_of(layer),
@@ -741,7 +886,11 @@ def _text_slots(
     # ``classify`` needs the PSD's own canvas to decide what counts as the header band;
     # the compiled ``factor`` is applied afterwards, to the boxes and the point sizes.
     slots = textslot.classify(
-        candidates, canvas_w=canvas_w, canvas_h=canvas_h, content=content
+        candidates,
+        canvas_w=canvas_w,
+        canvas_h=canvas_h,
+        content=content,
+        avatar_labels=avatar_labels,
     )
 
     out: list[TextSlot] = []
@@ -760,9 +909,7 @@ def _text_slots(
                 font_size=textslot.scaled_size(slot.font_size, 1.0, factor),
                 colour=slot.colour,
                 font=_DEFAULT_FONT.get(slot.role, TITLE_FONT),
-                name=next(
-                    (item.name for item in candidates if item.text == slot.text), ""
-                ),
+                name=slot.name,
             )
         )
     return out
@@ -872,6 +1019,22 @@ def compile_template(psd_path: Path, out_dir: Path) -> CompiledTemplate:
     # --- avatars ---------------------------------------------------------
     avatars: list[AvatarSlot] = []
     flat = Image.open(bare_path).convert("RGBA")
+    # Per-side counters, assigned in reading order (top first) so 「主播1」 is the upper left one.
+    # Computed up front rather than inside the loop: the loop runs in PSD stack order, which is
+    # bottom-up, and numbering by that would put 主播1 under 主播2.
+    ordered = sorted(
+        (group for group in avatar_groups if bbox_to_rect(group.bbox) is not None),
+        key=lambda group: (bbox_to_rect(group.bbox).y, bbox_to_rect(group.bbox).x),  # type: ignore[union-attr]
+    )
+    side_counts: dict[str, int] = {SIDE_HOST: 0, SIDE_GUEST: 0}
+    label_names: dict[int, str] = {}
+    for group in ordered:
+        rect = bbox_to_rect(group.bbox)
+        assert rect is not None
+        side = avatar_side(rect.x + rect.w // 2, psd.width)
+        side_counts[side] += 1
+        label_names[id(group)] = f"{side}{side_counts[side]}"
+
     for index, group in enumerate(avatar_groups):
         group_rect = bbox_to_rect(group.bbox)
         if group_rect is None:
@@ -916,6 +1079,7 @@ def compile_template(psd_path: Path, out_dir: Path) -> CompiledTemplate:
         avatars.append(
             AvatarSlot(
                 name=layer_name(group),
+                label_name=label_names.get(id(group), layer_name(group)),
                 rect=target,
                 photo=photo_rect,
                 label=label,
@@ -943,16 +1107,11 @@ def compile_template(psd_path: Path, out_dir: Path) -> CompiledTemplate:
         content=textslot.Box(
             x=media_rect.x, y=media_rect.y, w=media_rect.w, h=media_rect.h
         ),
+        avatar_labels={
+            layer_name(group): label_names.get(id(group), layer_name(group))
+            for group in avatar_groups
+        },
     )
-
-    # Matched by layer name, not by position: ``_text_slots`` reorders (episode first, then
-    # title, then names and notes by geometry) and ``text_layers`` is in PSD stack order.
-    runs = {layer_name(layer): _run_count_of(layer) for layer in text_layers}
-    multicolour = [slot.label for slot in texts if runs.get(slot.name, 0) > 1]
-    if multicolour:
-        notes.append(
-            f"{'、'.join(multicolour)} 在 PSD 里有多段不同颜色，现在统一按第一段的颜色绘制"
-        )
 
     if not any(slot.role == textslot.ROLE_TITLE for slot in texts):
         notes.append("没找到当期标题的文字层，标题需要在界面上手动输入")

@@ -115,10 +115,22 @@ def resolved_texts(row: VideoTemplate) -> list[dict[str, Any]]:
     return out
 
 
-def draw_slots(row: VideoTemplate) -> list[overlay_media.DrawSlot]:
-    """The slots as the renderer wants them."""
+def draw_slots(
+    row: VideoTemplate, *, visible_avatars: set[str] | None = None
+) -> list[overlay_media.DrawSlot]:
+    """The slots as the renderer wants them.
+
+    ``visible_avatars`` is the set of avatar groups that will actually be drawn in the film. A
+    name whose slot is not among them is skipped: an unbound slot disappears, and leaving its name
+    behind puts 「彼方」 where an avatar used to be. ``None`` means "every slot is visible", which
+    is the case when nothing is bound and the full poster is used.
+    """
     out: list[overlay_media.DrawSlot] = []
     for slot in resolved_texts(row):
+        if slot.get("role") == textslot.ROLE_AVATAR_NAME and visible_avatars is not None:
+            group = str(slot.get("key") or "").removeprefix("avatar:")
+            if group and group not in visible_avatars:
+                continue
         # The designer's placeholder inside the box is not drawn: the footage belongs there.
         # It stays in the slot list (the UI says 「框内文字，暂不参与渲染」) but must never reach
         # the overlay, or the film prints 「本期嘉宾——」 over the guest's own picture.

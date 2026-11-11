@@ -29,6 +29,8 @@ import re
 from dataclasses import dataclass
 from typing import Final
 
+from animatter.core import textspan
+
 #: Roles, in the order the UI groups them.
 ROLE_EPISODE: Final[str] = "episode"
 ROLE_TITLE: Final[str] = "title"
@@ -97,12 +99,22 @@ class Slot:
     box: Box
     font_size: float
     colour: str
-    #: Human label for the UI: 「期号」/「当期标题」/「头像名 · 头像1」/the PSD layer name.
+    #: Human label for the UI: 「期号」/「当期标题」/「主播1」/「页脚」.
     label: str
+    #: The PSD layer (or avatar group) this came from. Kept for diagnostics and for matching a
+    #: slot back to its layer — never shown to the user, because Photoshop names an un-renamed
+    #: text layer after the text typed into it.
+    name: str = ""
 
 
 def is_episode_number(text: str) -> bool:
-    stripped = text.strip()
+    """Whether this reads as an episode number, **ignoring colour markup**.
+
+    ``EP.**23**`` is the same episode number as ``EP.23``; the markers are presentation, and a
+    pattern that saw them would fail to match — which is exactly how the episode slot and the
+    title slot swapped places the first time the markup was added.
+    """
+    stripped = textspan.plain(text).strip()
     if not stripped:
         return False
     return any(pattern.match(stripped) for pattern in _EPISODE_PATTERNS)
@@ -129,12 +141,18 @@ def _inside(box: Box, content: Box) -> bool:
     return overlap * 3 >= box.w * box.h
 
 
+#: The band below the content rect, as a fraction of the canvas height. A note down there is the
+#: footer: the sample's sits at y=1031 of 1080 while the box ends at y=767.
+_FOOTER_BAND: Final[float] = 0.9
+
+
 def classify(
     candidates: list[Candidate],
     *,
     canvas_w: int,
     canvas_h: int,
     content: Box | None = None,
+    avatar_labels: dict[str, str] | None = None,
 ) -> list[Slot]:
     """Turn raw type layers into slots with stable keys.
 
@@ -144,6 +162,10 @@ def classify(
 
     ``content`` is the media box, when the caller knows it. Anything inside it becomes
     :data:`ROLE_CONTENT` and is left out of the overlay — see the module docstring.
+
+    ``avatar_labels`` maps an avatar group's PSD name (``头像1 拷贝``) to what the user calls it
+    (``主播1``). Labels are what the form shows; keys stay on the PSD's own names so a user's
+    overrides survive a recompile even if the side logic is ever retuned.
     """
     header: list[Candidate] = []
     others: list[Candidate] = []
@@ -180,6 +202,7 @@ def classify(
                 font_size=episode.font_size,
                 colour=episode.colour,
                 label="期号",
+                name=episode.name,
             )
         )
     if title is not None:
@@ -192,11 +215,21 @@ def classify(
                 font_size=title.font_size,
                 colour=title.colour,
                 label="当期标题",
+                name=title.name,
             )
         )
 
-    for item in sorted(names, key=lambda candidate: (candidate.box.y, candidate.box.x)):
+    # Hosts first, then guests, each top-down. Sorting by geometry alone interleaved the two
+    # columns (主播1, 嘉宾1, 主播2, 嘉宾2); the user reads them as two groups.
+    def _name_order(candidate: Candidate) -> tuple[int, int, int]:
+        shown = (avatar_labels or {}).get(candidate.avatar or "", "")
+        side = 0 if shown.startswith("主播") else 1
+        digits = "".join(char for char in shown if char.isdigit()) or "0"
+        return (side, int(digits), candidate.box.y)
+
+    for item in sorted(names, key=_name_order):
         assert item.avatar is not None  # narrowed by the branch above
+        shown = (avatar_labels or {}).get(item.avatar, item.avatar)
         slots.append(
             Slot(
                 key=f"avatar:{item.avatar}",
@@ -205,21 +238,56 @@ def classify(
                 box=item.box,
                 font_size=item.font_size,
                 colour=item.colour,
-                label=f"头像名 · {item.avatar}",
+                label=shown,
+                name=item.name,
             )
         )
 
+    plain_notes: list[Candidate] = []
     for item in sorted(others, key=lambda candidate: (candidate.box.y, candidate.box.x)):
-        in_box = content is not None and _inside(item.box, content)
+        if content is not None and _inside(item.box, content):
+            slots.append(
+                Slot(
+                    key=f"note:{item.name}",
+                    role=ROLE_CONTENT,
+                    text=item.text,
+                    box=item.box,
+                    font_size=item.font_size,
+                    colour=item.colour,
+                    # Still its layer name: these are the designer's placeholders and the user
+                    # is being told why they are not editable, so the PSD's own name is the
+                    # useful thing to show.
+                    label=item.name or "框内文字",
+                    name=item.name,
+                )
+            )
+        else:
+            plain_notes.append(item)
+
+    # Notes get a **role** name, not their own text. `label = layer.name` was the bug behind
+    # 「页脚」 showing up as 「欢迎大家关注、加群、一键三连！ 详情请见视频简介」: Photoshop names an
+    # un-renamed text layer after what was typed into it, so the form field was labelled with
+    # the value it contains — and the label went stale the moment the value changed.
+    footer_count = 0
+    note_count = 0
+    for item in plain_notes:
+        is_footer = content is None or item.box.y >= canvas_h * _FOOTER_BAND
+        if is_footer:
+            footer_count += 1
+            label = "页脚" if footer_count == 1 else f"页脚{footer_count}"
+        else:
+            note_count += 1
+            label = "其他文字" if note_count == 1 else f"其他文字{note_count}"
         slots.append(
             Slot(
                 key=f"note:{item.name}",
-                role=ROLE_CONTENT if in_box else ROLE_NOTE,
+                role=ROLE_NOTE,
                 text=item.text,
                 box=item.box,
                 font_size=item.font_size,
                 colour=item.colour,
-                label=item.name or "其他文字",
+                label=label,
+                name=item.name,
             )
         )
     return slots

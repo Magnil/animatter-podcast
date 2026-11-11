@@ -583,8 +583,15 @@ export function VideoPanel({
                     const bound = avatars.find((item) => item.name === slot.name);
                     return (
                       <li key={slot.name} className="video-avatar-row">
+                        {/*
+                          `label_name` is what the compile derived from the group's side
+                          (「主播1」/「嘉宾1」). `name` is Photoshop's own layer name, which on this
+                          template is 「头像1 拷贝」 — meaningful to the file, meaningless to the user.
+                          The small line is the PSD's rendered name plate, which is now only the
+                          *default* text of that slot's name field.
+                        */}
                         <span className="video-avatar-name">
-                          {slot.name}
+                          {slot.label_name || slot.name}
                           <small>{slot.label || "（无名牌）"}</small>
                         </span>
                         <select

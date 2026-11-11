@@ -36,6 +36,7 @@ from typing import Final
 from PIL import Image, ImageDraw, ImageFont
 
 from animatter.core import slide as slide_core
+from animatter.core import textspan
 from animatter.errors import AppError
 from animatter.log import get_logger
 from animatter.media import fonts
@@ -122,6 +123,60 @@ def _wrap(
     return lines
 
 
+def _styled(slot: DrawSlot) -> list[tuple[str, str]]:
+    """The slot's text as (character, colour) pairs, with the ``**`` markup resolved."""
+    out: list[tuple[str, str]] = []
+    for segment in textspan.parse(slot.text, base=slot.colour):
+        out.extend((char, segment.colour) for char in segment.text)
+    return out
+
+
+def _colour_lines(
+    styled: list[tuple[str, str]], lines: list[str], *, base: str
+) -> list[list[tuple[str, str]]]:
+    """Map plain wrapped ``lines`` back onto ``styled``.
+
+    Wrapping only ever drops whitespace *between* lines, so one pass over the sequence that
+    skips characters the line does not contain is enough. A mismatch means the two disagree (a
+    future wrapping rule that rewrites text, say); that line is then painted in the slot's base
+    colour rather than mis-painted with every colour shifted by one character.
+    """
+    out: list[list[tuple[str, str]]] = []
+    position = 0
+    for line in lines:
+        target = line.rstrip()
+        chunk: list[tuple[str, str]] = []
+        index = 0
+        ok = True
+        while index < len(target):
+            if position >= len(styled):
+                ok = False
+                break
+            char, colour = styled[position]
+            if char != target[index]:
+                if char.isspace() and char != "\n":
+                    position += 1
+                    continue
+                ok = False
+                break
+            chunk.append((char, colour))
+            position += 1
+            index += 1
+        out.append(chunk if ok else [(char, base) for char in target])
+    return out
+
+
+def _runs(line: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Collapse a coloured line into stretches of one colour."""
+    runs: list[tuple[str, str]] = []
+    for char, colour in line:
+        if runs and runs[-1][1] == colour:
+            runs[-1] = (runs[-1][0] + char, colour)
+        else:
+            runs.append((char, colour))
+    return runs
+
+
 def _line_height(font: ImageFont.FreeTypeFont, size: int) -> int:
     """One line's advance, in pixels.
 
@@ -158,7 +213,9 @@ def _fit(
     size = base_size
     while size >= floor:
         font = ImageFont.truetype(path, size=size, index=0)
-        lines = _wrap(slot.text, width=slot.w, font=font, wrap=slot.wrap)
+        lines = _wrap(
+            textspan.plain(slot.text), width=slot.w, font=font, wrap=slot.wrap
+        )
         widest = max((font.getlength(line) for line in lines), default=0.0)
         total = _line_height(font, size) * max(1, len(lines))
         overflow = max(0.0, widest - limit) + max(0.0, float(total - slot.h))
@@ -211,24 +268,24 @@ def render(
             slot, base_size=slot.font_size, max_width=None if slot.wrap else room
         )
         line_height = _line_height(font, size)
-        fill = _colour(slot.colour)
+        painted = _colour_lines(_styled(slot), lines, base=slot.colour)
         for index, line in enumerate(lines):
             if not line:
                 continue
             y = slot.y + index * line_height
+            # ``x`` advances per run: the accent is *inside* the line, so each stretch is placed
+            # where the previous one ended rather than all at the slot's left edge.
+            width_total = font.getlength(line)
+            # Explicitly float: the alignment branch divides, and an `int` annotation would make
+            # that a type error rather than a centring calculation.
+            x: float = float(slot.x)
             if slot.align == "center":
-                line_width = font.getlength(line)
-                draw.text(
-                    (slot.x + (slot.w - line_width) / 2, y),
-                    line,
-                    font=font,
-                    fill=fill,
-                )
+                x = slot.x + (slot.w - width_total) / 2
             elif slot.align == "right":
-                line_width = font.getlength(line)
-                draw.text((slot.x + slot.w - line_width, y), line, font=font, fill=fill)
-            else:
-                draw.text((slot.x, y), line, font=font, fill=fill)
+                x = slot.x + slot.w - width_total
+            for run_text, run_colour in _runs(painted[index] if index < len(painted) else []):
+                draw.text((x, y), run_text, font=font, fill=_colour(run_colour))
+                x += font.getlength(run_text)
 
     target.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(target)
