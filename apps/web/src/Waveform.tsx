@@ -23,21 +23,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { hasShape, parseEnvelope, peakBetween, type Envelope } from "./envelope";
-import {
-  MIN_VISIBLE_MS,
-  ZOOM_STEP,
-  clampView,
-  hitEdge,
-  initialView,
-  isZoomed,
-  msToX as msToXIn,
-  panTo as panToIn,
-  scrollFraction,
-  shouldRememberView,
-  xToMs as xToMsIn,
-  zoomAt as zoomAtIn,
-  type View,
-} from "./waveView";
+import { MIN_VISIBLE_MS, ZOOM_STEP, hitEdge, isZoomed, msToX as msToXIn, scrollFraction, xToMs as xToMsIn, type View } from "./waveView";
 
 export interface Marker {
   start_ms: number;
@@ -95,27 +81,22 @@ interface Props {
   /** Called once on drop, with the final time. */
   onEdgeCommit: (handle: EdgeHandle, newMs: number) => void;
   onSeek: (ms: number) => void;
-}
-
-/**
- * Zoom/scroll window per media file, kept outside React.
- *
- * The bug this exists for: dragging a sentence boundary re-fetched the
- * transcript, which unmounted the workbench, which rebuilt this component and
- * reset the window to "whole file". The user had to re-zoom after every drag.
- * The mount fix in `App.tsx` removes the cause; this removes the symptom even
- * if something else remounts the component later (project switch, HMR).
- *
- * A plain Map, not storage: a zoom level is not worth persisting across a page
- * reload, and a stale window pointing past the end of a re-imported file would
- * be worse than forgetting.
- */
-const VIEW_MEMORY = new Map<string, View>();
-
-function rememberedView(projectId: string, mediaId: string): View | null {
-  const stored = VIEW_MEMORY.get(`${projectId}:${mediaId}`);
-  if (!stored) return null;
-  return { from: stored.from, to: stored.to };
+  /**
+   * The visible window, **owned by the caller** (`useTimelineView`).
+   *
+   * The video track sits directly above this canvas, and a block has to line up with the
+   * audio underneath it. Two independent windows made the same millisecond appear at two
+   * different x positions depending on which track you last zoomed — so there is one
+   * window, and both tracks are rendered from it.
+   */
+  view: View;
+  /** Total length the window is clamped into. */
+  total: number;
+  onZoom: (anchorMs: number, factor: number) => void;
+  onPan: (from: number) => void;
+  onReset: () => void;
+  /** Keep the playhead inside the window while zoomed — shared with the video track. */
+  onFollowPlayhead: (ms: number) => void;
 }
 
 const CANVAS_HEIGHT = 168;
@@ -137,6 +118,12 @@ export function Waveform({
   onCaptionClick,
   onEdgeCommit,
   onSeek,
+  view,
+  total,
+  onZoom,
+  onPan,
+  onReset,
+  onFollowPlayhead,
 }: Props): React.JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -156,13 +143,7 @@ export function Waveform({
   const [peaks, setPeaks] = useState<Envelope | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [width, setWidth] = useState(800);
-  // Restored from the per-media memory below, so the window survives even a
-  // remount (project switch, hot reload) and not just a re-render.
-  const [view, setView] = useState<View>(() =>
-    initialView(rememberedView(projectId, mediaId), durationMs),
-  );
 
-  const total = Math.max(1, peaks?.durationMs || durationMs || 1);
   const span = Math.max(1, view.to - view.from);
   const zoomed = isZoomed(view, total);
 
@@ -177,53 +158,14 @@ export function Waveform({
     return () => observer.disconnect();
   }, []);
 
-  // Only a *different* media file resets the window. Editing a sentence boundary
-  // changes tokens, not the file, so it must not touch the zoom — re-zooming after
-  // every drag is exactly what the user complained about.
-  //
-  // `durationMs` is in the dependency list but deliberately does *not* reset:
-  // when it merely changes (a re-transcribed version, a relinked file with a
-  // slightly different length) the existing window is clamped into the new range
-  // instead. It used to call `initialView(...)`, which reads the remembered entry
-  // or falls back to "whole file" — so a length change threw away a zoom without
-  // anybody asking for it. Losing the window is only ever acceptable when the
-  // audio is genuinely a different file.
-  const mediaKeyRef = useRef<string | null>(null);
+  const zoomAt = onZoom;
+  const panTo = onPan;
+
+  // The follow rule itself lives in `useTimelineView` (both tracks share the window);
+  // this only says when to apply it.
   useEffect(() => {
-    const key = `${projectId}:${mediaId}`;
-    if (mediaKeyRef.current === key) {
-      setView((current) => clampView(current, total));
-      return;
-    }
-    mediaKeyRef.current = key;
-    setView(initialView(rememberedView(projectId, mediaId), durationMs));
-  }, [projectId, mediaId, durationMs, total]);
-
-  // Remember the window per media file. `App` now keeps the workbench mounted
-  // across reloads, so this is the second line of defence: it also covers the
-  // case where the component really is torn down and rebuilt.
-  useEffect(() => {
-    if (!shouldRememberView(view, total)) {
-      // Full view is the default; remembering it would just be noise.
-      VIEW_MEMORY.delete(`${projectId}:${mediaId}`);
-      return;
-    }
-    VIEW_MEMORY.set(`${projectId}:${mediaId}`, view);
-  }, [projectId, mediaId, view, total]);
-
-  const zoomAt = useCallback(
-    (anchorMs: number, factor: number) => {
-      setView((current) => zoomAtIn(current, total, anchorMs, factor));
-    },
-    [total],
-  );
-
-  const panTo = useCallback(
-    (from: number) => {
-      setView((current) => panToIn(current, total, from));
-    },
-    [total],
-  );
+    onFollowPlayhead(positionMs);
+  }, [positionMs, onFollowPlayhead]);
 
   // Fetch the whole envelope once per media file.
   //
@@ -471,20 +413,6 @@ export function Waveform({
     draw();
   }, [draw]);
 
-  // Keep the playhead in view while zoomed. Without this, playing a long
-  // episode while zoomed in leaves a red line that walked off the screen.
-  useEffect(() => {
-    if (!zoomed) return;
-    setView((current) => {
-      if (positionMs >= current.from && positionMs < current.to) return current;
-      const currentSpan = current.to - current.from;
-      return clampView(
-        { from: positionMs - currentSpan * 0.3, to: positionMs + currentSpan * 0.7 },
-        total,
-      );
-    });
-  }, [positionMs, zoomed, total]);
-
   // Wheel zoom needs a non-passive listener: React's synthetic wheel handler
   // cannot preventDefault, so the page would scroll underneath the zoom.
   useEffect(() => {
@@ -657,7 +585,7 @@ export function Waveform({
             className="ghost small"
             aria-label="显示完整波形"
             disabled={!zoomed}
-            onClick={() => setView({ from: 0, to: total })}
+            onClick={onReset}
           >
             全部
           </button>

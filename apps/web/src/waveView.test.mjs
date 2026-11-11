@@ -12,6 +12,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  followView,
   MIN_VISIBLE_MS,
   clampView,
   hitEdge,
@@ -24,6 +25,39 @@ import {
   xToMs,
   zoomAt,
 } from "./waveView.ts";
+
+// --- playhead follow (shared by both timeline tracks) -----------------
+
+test("followView leaves a window that already contains the playhead alone", () => {
+  const view = { from: 10_000, to: 20_000 };
+  assert.deepEqual(followView(view, 60_000, 15_000), view);
+});
+
+test("followView puts a playhead that ran off the right edge 30% from the left", () => {
+  const view = { from: 10_000, to: 20_000 };
+  const next = followView(view, 60_000, 25_000);
+  assert.equal(next.to - next.from, 10_000);
+  assert.equal(next.from, 25_000 - 3_000);
+});
+
+test("followView clamps at both ends of the file", () => {
+  assert.equal(followView({ from: 10_000, to: 20_000 }, 60_000, 0).from, 0);
+  const atEnd = followView({ from: 10_000, to: 20_000 }, 60_000, 60_000);
+  assert.equal(atEnd.to, 60_000);
+});
+
+test("followView does nothing when fully zoomed out", () => {
+  // The whole file is visible, so there is nowhere to scroll to — returning a new object
+  // here would re-render the tracks on every playback tick for no visual change.
+  const view = { from: 0, to: 60_000 };
+  assert.equal(followView(view, 60_000, 42_000), view);
+});
+
+test("followView never produces a window shorter than the minimum", () => {
+  const next = followView({ from: 0, to: 3_000 }, 60_000, 59_000);
+  assert.ok(next.to - next.from >= MIN_VISIBLE_MS);
+  assert.ok(next.to <= 60_000);
+});
 
 const HOUR = 3_600_000;
 

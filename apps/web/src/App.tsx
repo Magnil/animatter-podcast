@@ -28,6 +28,7 @@ import { ScriptPanel } from "./ScriptPanel";
 import { CleanupDialog, type BatchAction } from "./CleanupDialog";
 import { HotwordPanel } from "./HotwordPanel";
 import { CollapsiblePanel } from "./CollapsiblePanel";
+import { useTimelineView } from "./timelineView";
 import { MenuBar, type Menu } from "./MenuBar";
 import { SentenceList, findActiveSentence, tokenRangeOfSentences, type TokenSelection } from "./SentenceList";
 import { SettingsDialog, type SettingsSection } from "./SettingsDialog";
@@ -230,6 +231,23 @@ function Desk({
     () => api.audioUrl(boot.projectId, boot.mediaId),
     [boot.projectId, boot.mediaId],
   );
+  /**
+   * One zoom/scroll window for both timelines.
+   *
+   * The video track draws the same milliseconds as the waveform above it, so they have to
+   * agree on the window: independent windows put the same instant at two different x
+   * positions, and "where do I drop this asset" turns into guesswork.
+   */
+  const timeline = useTimelineView(boot.projectId, boot.mediaId, boot.version.duration_ms);
+  /**
+   * Whether the whole left column is showing.
+   *
+   * One flag for all three panels, not three: 「热词 / 字幕 / 操作记录」 are one work area
+   * behind one border, and folding it answers "do I need the transcript right now" —
+   * a per-panel memory would let the column come back in a shape nobody asked for.
+   * Not persisted, for the same reason the individual panels are not.
+   */
+  const [drawerOpen, setDrawerOpen] = useState(true);
   const [edl, setEdl] = useState<EdlState | null>(null);
   const [rendered, setRendered] = useState<{ url: string; durationMs: number } | null>(null);
   const [showOutput, setShowOutput] = useState(false);
@@ -1192,7 +1210,24 @@ function Desk({
     <div className="workbench">
       <MenuBar menus={menus} status={`${boot.projectName} · v${boot.version.version}`} />
 
-      <div className="bench-body">
+      <div className={`bench-body${drawerOpen ? "" : " is-drawer-closed"}`}>
+        {/*
+          The handle sits on the sidebar's right border, not in the toolbar: it collapses
+          the column it is attached to, and it stays put in both states so a closed drawer
+          can be reopened without knowing a shortcut. The panels inside already collapse
+          one at a time; this folds the whole column when the transcript is not what you
+          are working on (laying out video, exporting, settings).
+        */}
+        <button
+          type="button"
+          className="drawer-handle"
+          aria-expanded={drawerOpen}
+          aria-label={drawerOpen ? "收起左侧工作区" : "展开左侧工作区"}
+          title={drawerOpen ? "收起左侧工作区" : "展开左侧工作区"}
+          onClick={() => setDrawerOpen((value) => !value)}
+        >
+          {drawerOpen ? "‹" : "›"}
+        </button>
         <aside className="sidebar">
           <HotwordPanel
             projectId={boot.projectId}
@@ -1253,6 +1288,9 @@ function Desk({
             sentences={boot.sentences}
             onSeek={playback.seek}
             onNotice={setNotice}
+            view={timeline.view}
+            onZoom={timeline.zoomAt}
+            onPan={timeline.panTo}
           />
 
           <CollapsiblePanel
@@ -1304,6 +1342,12 @@ function Desk({
               }}
               onEdgeCommit={(handle, ms) => void commitEdge(handle, ms)}
               onSeek={seekAndPoint}
+              view={timeline.view}
+              total={timeline.total}
+              onZoom={timeline.zoomAt}
+              onPan={timeline.panTo}
+              onReset={timeline.reset}
+              onFollowPlayhead={timeline.followPlayhead}
             />
 
             <div className="transport">

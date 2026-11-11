@@ -15,14 +15,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { VideoItem } from "./api";
 import { formatTime } from "./format";
-import {
-  MIN_BLOCK_MS,
-  blockAt,
-  layoutBlock,
-  moveBlock,
-  resizeBlock,
-  type View,
-} from "./videoTimeline";
+import { ZOOM_STEP, xToMs as xToMsIn } from "./waveView";
+import type { View } from "./waveView";
+import { MIN_BLOCK_MS, blockAt, layoutBlock, moveBlock, resizeBlock } from "./videoTimeline";
 
 export interface VideoTrackProps {
   items: VideoItem[];
@@ -36,6 +31,9 @@ export interface VideoTrackProps {
   onSelect: (item: VideoItem | null) => void;
   onMove: (item: VideoItem, startMs: number, endMs: number) => void;
   onDropAsset: (assetId: string, atMs: number) => void;
+  /** Zoom/pan the **shared** window — the same one the audio waveform uses. */
+  onZoom: (anchorMs: number, factor: number) => void;
+  onPan: (from: number) => void;
 }
 
 type Drag =
@@ -56,6 +54,8 @@ export function VideoTrack({
   onSelect,
   onMove,
   onDropAsset,
+  onZoom,
+  onPan,
 }: VideoTrackProps): React.JSX.Element {
   const trackRef = useRef<HTMLDivElement | null>(null);
   const [width, setWidth] = useState(800);
@@ -72,6 +72,35 @@ export function VideoTrack({
     observer.observe(node);
     return () => observer.disconnect();
   }, []);
+
+  /**
+   * Wheel over the track zooms, exactly like the waveform under it.
+   *
+   * A non-passive listener, for the same reason the waveform uses one: React's synthetic
+   * wheel handler cannot `preventDefault`, so the page would scroll underneath the zoom.
+   * Both tracks zoom through the same function on the same window, so a notch anywhere
+   * moves both of them and the block stays above the audio it covers.
+   */
+  useEffect(() => {
+    const node = trackRef.current;
+    if (!node) return;
+    const onWheel = (event: WheelEvent): void => {
+      const span = Math.max(1, view.to - view.from);
+      if (event.shiftKey) {
+        event.preventDefault();
+        onPan(view.from + (event.deltaY + event.deltaX) * (span / Math.max(1, width)));
+        return;
+      }
+      const zoomingOut = event.deltaY > 0;
+      if (zoomingOut && span >= durationMs - 1) return;
+      event.preventDefault();
+      const rect = node.getBoundingClientRect();
+      const x = Math.min(rect.width, Math.max(0, event.clientX - rect.left));
+      onZoom(xToMsIn(x, view, width), event.deltaY > 0 ? 1 / ZOOM_STEP : ZOOM_STEP);
+    };
+    node.addEventListener("wheel", onWheel, { passive: false });
+    return () => node.removeEventListener("wheel", onWheel);
+  }, [durationMs, onPan, onZoom, view, width]);
 
   const toMs = useCallback(
     (clientX: number): number => {

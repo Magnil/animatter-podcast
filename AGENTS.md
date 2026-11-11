@@ -85,7 +85,7 @@ docs/                    本文件拆出来的设计文档
 
 # 前端：在 apps/web 下跑
 npx tsc --noEmit
-npm test                                               # node --test，219 passed
+npm test                                               # node --test，224 passed
 npx vite build
 
 # 启动（仓库根）

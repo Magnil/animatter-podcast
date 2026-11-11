@@ -36,15 +36,8 @@ import { CollapsiblePanel } from "./CollapsiblePanel";
 import { DeckPanel } from "./DeckPanel";
 import { formatDuration, formatTime } from "./format";
 import { VideoTrack } from "./VideoTrack";
-import {
-  galleryCaption,
-  lengthCaption,
-  dropRange,
-  orphanedBlocks,
-  summaryLine,
-  viewAround,
-  type View,
-} from "./videoTimeline";
+import type { View } from "./waveView";
+import { lengthCaption, dropRange, orphanedBlocks, summaryLine } from "./videoTimeline";
 
 interface Props {
   projectId: string;
@@ -56,7 +49,27 @@ interface Props {
   sentences: Sentence[];
   onSeek: (ms: number) => void;
   onNotice: (message: string) => void;
+  /**
+   * The **shared** zoom/scroll window — the same one the audio waveform uses.
+   *
+   * A separate window here was the whole 「不知道素材该放哪」 problem: the video track drew
+   * its own 0–60 s window while the waveform underneath drew 0–61 min, so the block above
+   * a given centimetre of screen was a different moment than the audio below it.
+   */
+  view: View;
+  onZoom: (anchorMs: number, factor: number) => void;
+  onPan: (from: number) => void;
 }
+
+/** The four things that used to be stacked; they are tabs now. */
+const VIDEO_TABS: { id: TabId; label: string; hint: string }[] = [
+  { id: "template", label: "模板", hint: "素材框尺寸、头像绑定、框内默认填充" },
+  { id: "subtitle", label: "字幕", hint: "烧进画面的字幕字号与底部留白" },
+  { id: "library", label: "素材库", hint: "导入图片/视频，拖到视频轴上" },
+  { id: "deck", label: "演示稿", hint: "从字幕分页，逐页改标题正文" },
+];
+
+type TabId = "template" | "subtitle" | "library" | "deck";
 
 const FITS: { id: string; label: string; hint: string }[] = [
   { id: "blur_fill", label: "模糊填充", hint: "竖图放进 16:9 框：模糊放大作底 + 完整居中" },
@@ -83,6 +96,9 @@ export function VideoPanel({
   sentences,
   onSeek,
   onNotice,
+  view,
+  onZoom,
+  onPan,
 }: Props): React.JSX.Element {
   const [template, setTemplate] = useState<VideoTemplate | null>(null);
   const [timeline, setTimeline] = useState<VideoTimeline | null>(null);
@@ -98,7 +114,9 @@ export function VideoPanel({
   const [assetRevision, setAssetRevision] = useState(0);
   const [draggingAsset, setDraggingAsset] = useState<string | null>(null);
   const [selected, setSelected] = useState<VideoItem | null>(null);
-  const [view, setView] = useState<View>({ from: 0, to: 60_000 });
+  // Which settings tab is showing. Not persisted: reopening on 模板 is the order the
+  // work happens in (bind the template, then subtitle, then assets, then the deck).
+  const [tab, setTab] = useState<TabId>("template");
   // P3: avatar slots, the speakers they can be bound to, and their talk time.
   const [avatars, setAvatars] = useState<VideoAvatar[]>([]);
   const [speakers, setSpeakers] = useState<SpeakerInfo[]>([]);
@@ -494,113 +512,189 @@ export function VideoPanel({
         <p className="section-note">正在编译模板（约 6 秒）…</p>
       ) : (
         <div className="video-ready">
-          <div className="video-preview-box">
-            {previewUrl ? (
-              <img src={previewUrl} alt={`预览 ${formatTime(previewAt)}`} />
-            ) : (
-              <p className="muted small">还没有预览。把播放头停在想检查的位置，点「生成静帧」。</p>
-            )}
-          </div>
-          <div className="edl-actions">
-            <button type="button" disabled={busy} onClick={() => void doPreview()}>
-              生成静帧
-            </button>
-            <span className="muted small">预览为近似：成片 1080p，字号与位置一致</span>
-          </div>
-
           {/*
-            The style controls live next to the still, not in 设置: the whole point is
-            to nudge a number and look at the frame. Nothing is saved until 导出 — a
-            slider that wrote to the database on every drag would be both slow and a
-            surprise when reopening the project.
+            Preview on the left, one settings column on the right, tabs inside it.
+            Stacking 模板 / 字幕 / 素材库 / 演示稿 vertically pushed the timeline off the
+            bottom of the panel: four sections of settings above the track meant you scrolled
+            past the thing you were aiming at to reach the place you were aiming from.
           */}
-          <div className="video-style">
-            <label className="field">
-              <span>
-                字幕字号 <b>{fontSize}</b>
-              </span>
-              <input
-                type="range"
-                min={28}
-                max={96}
-                step={2}
-                value={fontSize}
-                onChange={(event) => setFontSize(Number(event.target.value))}
-              />
-            </label>
-            <label className="field">
-              <span>
-                底部留白 <b>{marginV}</b> px
-              </span>
-              <input
-                type="range"
-                min={0}
-                max={160}
-                step={4}
-                value={marginV}
-                onChange={(event) => setMarginV(Number(event.target.value))}
-              />
-            </label>
-          </div>
+          {/*
+            The deck tab is a two-pane editor (page list + preview + fields); at 320px its
+            list is squeezed to a column of truncated titles. Widen the settings column for
+            that tab only, rather than making every tab pay for the widest one.
+          */}
+          <div className={`video-stage${tab === "deck" ? " wants-wide" : ""}`}>
+            <div className="video-stage-main">
+              <div className="video-preview-box">
+                {previewUrl ? (
+                  <img src={previewUrl} alt={`预览 ${formatTime(previewAt)}`} />
+                ) : (
+                  <p className="muted small">还没有预览。把播放头停在想检查的位置，点「生成静帧」。</p>
+                )}
+              </div>
+              <div className="edl-actions">
+                <button type="button" disabled={busy} onClick={() => void doPreview()}>
+                  生成静帧
+                </button>
+                <span className="muted small">预览为近似：成片 1080p，字号与位置一致</span>
+              </div>
+            </div>
 
-          <details className="video-box-info">
-            <summary>
-              版式：素材框 {template.box_rect.w}×{template.box_rect.h} ·{" "}
-              {template.slots.avatars?.length ?? 0} 个头像位
-            </summary>
-            <ul>
-              {(template.slots.notes ?? []).map((note, index) => (
-                <li key={index}>{note}</li>
-              ))}
-              {(template.slots.avatars ?? []).map((slot) => {
-                const bound = avatars.find((item) => item.name === slot.name);
-                return (
-                  <li key={slot.name} className="video-avatar-row">
-                    <span className="video-avatar-name">
-                      {slot.name}
-                      <small>{slot.label || "（无名牌）"}</small>
-                    </span>
-                    <select
-                      value={bound?.speaker_id ?? ""}
-                      onChange={(event) =>
-                        void doBind(
-                          slot.name,
-                          event.target.value === "" ? null : Number(event.target.value),
-                        )
-                      }
-                    >
-                      <option value="">不绑定（一直不变）</option>
-                      {speakers.map((speaker) => (
-                        <option key={speaker.local_id} value={speaker.local_id}>
-                          {speaker.name || `说话人 ${speaker.local_id}`}
-                        </option>
-                      ))}
-                    </select>
-                    <small className="video-avatar-talk">
-                      {bound === undefined || bound.speaker_id === null
-                        ? "—"
-                        : bound.turns === 0
-                          ? "0 段（这个人没说话）"
-                          : `${bound.turns} 段 · ${formatDuration(bound.lit_ms)}`}
-                    </small>
-                  </li>
-                );
-              })}
-            </ul>
-            <label className="field">
-              <span>框内默认填充</span>
-              <select
-                value={template.box_fit_default}
-                onChange={(event) => void doDefaultFit(event.target.value)}
-              >
-                {FITS.map((fit) => (
-                  <option key={fit.id} value={fit.id}>
-                    {fit.label} — {fit.hint}
-                  </option>
+            <div className="video-settings">
+              <div className="tabs" role="tablist">
+                {VIDEO_TABS.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={tab === item.id}
+                    className={tab === item.id ? "tab active" : "tab"}
+                    title={item.hint}
+                    onClick={() => setTab(item.id)}
+                  >
+                    {item.label}
+                  </button>
                 ))}
-              </select>
-            </label>
-          </details>
+              </div>
+
+              <div className="video-settings-body">
+                {tab === "template" ? (
+                  <>
+                    <ul className="video-slot-list">
+                      <li className="muted small">
+                        素材框 {template.box_rect.w}×{template.box_rect.h} ·{" "}
+                        {template.slots.avatars?.length ?? 0} 个头像位
+                      </li>
+                      {(template.slots.notes ?? []).map((note, index) => (
+                        <li key={index} className="muted small">
+                          {note}
+                        </li>
+                      ))}
+                  {(template.slots.avatars ?? []).map((slot) => {
+                    const bound = avatars.find((item) => item.name === slot.name);
+                    return (
+                      <li key={slot.name} className="video-avatar-row">
+                        <span className="video-avatar-name">
+                          {slot.name}
+                          <small>{slot.label || "（无名牌）"}</small>
+                        </span>
+                        <select
+                          value={bound?.speaker_id ?? ""}
+                          onChange={(event) =>
+                            void doBind(
+                              slot.name,
+                              event.target.value === "" ? null : Number(event.target.value),
+                            )
+                          }
+                        >
+                          <option value="">不绑定（一直不变）</option>
+                          {speakers.map((speaker) => (
+                            <option key={speaker.local_id} value={speaker.local_id}>
+                              {speaker.name || `说话人 ${speaker.local_id}`}
+                            </option>
+                          ))}
+                        </select>
+                        <small className="video-avatar-talk">
+                          {bound === undefined || bound.speaker_id === null
+                            ? "—"
+                            : bound.turns === 0
+                              ? "0 段（这个人没说话）"
+                              : `${bound.turns} 段 · ${formatDuration(bound.lit_ms)}`}
+                        </small>
+                      </li>
+                    );
+                  })}
+                    </ul>
+                    <label className="field">
+                      <span>框内默认填充</span>
+                      <select
+                        value={template.box_fit_default}
+                        onChange={(event) => void doDefaultFit(event.target.value)}
+                      >
+                        {FITS.map((fit) => (
+                          <option key={fit.id} value={fit.id}>
+                            {fit.label} — {fit.hint}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </>
+                ) : null}
+
+                {tab === "subtitle" ? (
+                  /*
+                    The style controls sit next to the still, not in 设置: the whole point
+                    is to nudge a number and look at the frame. Nothing is saved until
+                    导出 — a slider that wrote to the database on every drag would be both
+                    slow and a surprise when reopening the project.
+                  */
+                  <div className="video-style">
+                    <label className="field">
+                      <span>
+                        字幕字号 <b>{fontSize}</b>
+                      </span>
+                      <input
+                        type="range"
+                        min={28}
+                        max={96}
+                        step={2}
+                        value={fontSize}
+                        onChange={(event) => setFontSize(Number(event.target.value))}
+                      />
+                    </label>
+                    <label className="field">
+                      <span>
+                        底部留白 <b>{marginV}</b> px
+                      </span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={160}
+                        step={4}
+                        value={marginV}
+                        onChange={(event) => setMarginV(Number(event.target.value))}
+                      />
+                    </label>
+                    <p className="section-note">
+                      改完点「生成静帧」看效果。字幕由成片渲染时烧进画面，这里只是预览参数。
+                    </p>
+                  </div>
+                ) : null}
+
+                {tab === "library" ? (
+                  <AssetLibrary
+                    projectId={projectId}
+                    revision={assetRevision}
+                    onDragStateChange={setDraggingAsset}
+                    onAddToBlock={
+                      selected === null ? undefined : (assetId) => void doMakeGallery(selected, assetId)
+                    }
+                    onNotice={(message) => {
+                      // Importing or deleting an asset can change what a block can show, so
+                      // the library and the timeline are refreshed together — but only on a
+                      // *count* change, which the notice text is the cheapest signal for.
+                      if (message.includes("素材")) setAssetRevision((value) => value + 1);
+                      onNotice(message);
+                    }}
+                  />
+                ) : null}
+
+                {tab === "deck" ? (
+                  <DeckPanel
+                    projectId={projectId}
+                    versionId={versionId}
+                    sentences={sentences}
+                    positionMs={positionMs}
+                    onNotice={onNotice}
+                    onSeek={onSeek}
+                    onInsertBlock={(deckId, startMs, endMs) =>
+                      void doInsertSlideBlock(deckId, startMs, endMs)
+                    }
+                  />
+                ) : null}
+              </div>
+            </div>
+          </div>
 
           {orphans.length > 0 ? (
             <div className="video-orphans">
@@ -623,52 +717,6 @@ export function VideoPanel({
             </div>
           ) : null}
 
-          {timeline ? (
-            <VideoTrack
-              items={timeline.items}
-              targets={timeline.grid.targets}
-              durationMs={timeline.grid.duration_ms}
-              view={view}
-              positionMs={positionMs}
-              draggingAssetId={draggingAsset}
-              onSeek={(ms) => setView(viewAround(ms, view, timeline.grid.duration_ms))}
-              onSelect={setSelected}
-              onMove={(item, start, end) => void doMove(item, start, end)}
-              onDropAsset={(assetId, atMs) => void doDropAsset(assetId, atMs)}
-            />
-          ) : null}
-
-          <div className="video-items">
-            {timeline && timeline.items.length === 0 ? (
-              <p className="muted small">
-                还没有素材块。从下面的素材库里把一个文件拖到时间轴上，或者拖给某个句子。
-              </p>
-            ) : (
-              <ul>
-                {(timeline?.items ?? []).map((item) => (
-                  <li
-                    key={item.id}
-                    className={`video-item${item.orphaned ? " is-orphan" : ""}${
-                      selected?.id === item.id ? " is-selected" : ""
-                    }`}
-                    onClick={() => setSelected(item)}
-                  >
-                    <span className="video-item-when">{formatTime(item.start_ms)}</span>
-                    <span className="video-item-len">{lengthCaption(item)}</span>
-                    <span className="muted small">
-                      {item.kind === "gallery"
-                        ? galleryCaption(item, galleryCount(item))
-                        : item.fit}
-                    </span>
-                    <button type="button" className="ghost small" onClick={() => void doDeleteItem(item)}>
-                      删
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-
           {selected ? (
             <div className="video-selected">
               <p className="muted small">
@@ -689,46 +737,26 @@ export function VideoPanel({
                     ))}
                   </select>
                 </label>
+                <button
+                  type="button"
+                  className="ghost small"
+                  onClick={() => void doDeleteItem(selected)}
+                >
+                  删掉这个块
+                </button>
                 {draggingAsset ? null : (
                   <span className="muted small">
-                    拖一个素材到这里可以加进画廊
+                    拖一个素材到下面的视频轴上可以加进画廊
                     {selected.kind === "gallery" ? `（现在 ${galleryCount(selected)} 张）` : ""}
                   </span>
                 )}
               </div>
             </div>
+          ) : timeline && timeline.items.length === 0 ? (
+            <p className="muted small">
+              还没有素材块。从「素材库」标签页把一个文件拖到下面的视频轴上，或者拖给某个句子。
+            </p>
           ) : null}
-
-          <AssetLibrary
-            projectId={projectId}
-            revision={assetRevision}
-            onDragStateChange={setDraggingAsset}
-            onAddToBlock={
-              selected === null ? undefined : (assetId) => void doMakeGallery(selected, assetId)
-            }
-            onNotice={(message) => {
-              // Importing or deleting an asset can change what a block can show, so the
-              // library and the timeline are refreshed together — but only on a *count*
-              // change, which the notice text is the cheapest signal for.
-              if (message.includes("素材")) setAssetRevision((value) => value + 1);
-              onNotice(message);
-            }}
-          />
-
-          <details className="video-deck-section" open={false}>
-            <summary>演示稿（从字幕分页，可逐页改）</summary>
-            <DeckPanel
-              projectId={projectId}
-              versionId={versionId}
-              sentences={sentences}
-              positionMs={positionMs}
-              onNotice={onNotice}
-              onSeek={onSeek}
-              onInsertBlock={(deckId, startMs, endMs) =>
-                void doInsertSlideBlock(deckId, startMs, endMs)
-              }
-            />
-          </details>
 
           <div className="edl-actions">
             <button
@@ -751,6 +779,28 @@ export function VideoPanel({
               </span>
             ) : null}
           </div>
+
+          {/*
+            The track is the **last** row in this panel, so it sits directly above the audio
+            waveform. That adjacency is the feature: the two tracks are one timeline drawn
+            twice from one shared window, and "which second is this block on" is answered by
+            looking straight down rather than by matching numbers between two distant rows.
+          */}
+          <VideoTrack
+            items={timeline?.items ?? []}
+            targets={timeline?.grid.targets ?? []}
+            durationMs={timeline?.grid.duration_ms ?? 0}
+            view={view}
+            positionMs={positionMs}
+            draggingAssetId={draggingAsset}
+            onSeek={onSeek}
+            onSelect={setSelected}
+            onMove={(item, start, end) => void doMove(item, start, end)}
+            onDropAsset={(assetId, atMs) => void doDropAsset(assetId, atMs)}
+            onZoom={onZoom}
+            onPan={onPan}
+          />
+
         </div>
       )}
     </CollapsiblePanel>

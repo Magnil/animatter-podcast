@@ -111,6 +111,28 @@ export function scrollFraction(view: View, total: number): { start: number; size
 }
 
 /**
+ * The window to use after the playhead moves, keeping it on screen while zoomed.
+ *
+ * Purely arithmetic, so it belongs here next to `zoomAt`/`panTo` rather than inside a
+ * React hook: the rule is "if the playhead left the window, put it 30 % from the left
+ * edge", and getting that ratio wrong is invisible in a screenshot but obvious in a
+ * one-line assertion.
+ *
+ * Returns the window unchanged when it already contains the playhead — a follow rule that
+ * re-centres on every frame would fight the user's own panning, and re-centring while the
+ * playhead is 5 % from the edge would yank the view for no reason.
+ */
+export function followView(view: View, total: number, ms: number): View {
+  const safeTotal = Math.max(1, total);
+  // Fully zoomed out: there is nothing to scroll to, and clamping would only ever
+  // rewrite the same window.
+  if (view.to - view.from >= safeTotal - 1) return view;
+  if (ms >= view.from && ms < view.to) return view;
+  const span = view.to - view.from;
+  return clampView({ from: ms - span * 0.3, to: ms + span * 0.7 }, safeTotal);
+}
+
+/**
  * Two edges closer than this in pixels are the same edge.
  *
  * Sentence boundaries are shared — one sentence's `end_ms` is the next one's

@@ -1796,7 +1796,7 @@ button.small,
 
 /* --- video area (docs/frontend.md 搂7.7) ------------------------------------
    Sits above the waveform, collapsed by default. The preview box keeps a 16:9
-   aspect so the layout does not jump when the first still arrives 鈥?a panel that
+   aspect so the layout does not jump when the first still arrives — a panel that
    grows by 400px the moment you click 鐢熸垚闈欏抚 pushes the waveform off-screen. */
 .video-panel {
   gap: 8px;
@@ -1827,33 +1827,9 @@ button.small,
   gap: 8px;
 }
 
-.video-box-info {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 8px;
-}
-
-.video-box-info summary {
-  cursor: pointer;
-  font-size: 0.82rem;
-}
-
-.video-box-info ul {
-  margin: 6px 0;
-  padding-left: 18px;
-  font-size: 0.78rem;
-  color: var(--muted);
-}
-
-/* An orphaned block is not an error state 鈥?it is a block whose audio the user
-   deleted. Red would say "you broke something"; the muted strike-through says
-   "this has no sound any more". */
-.video-item.is-orphan .video-item-len {
-  text-decoration: line-through;
-  color: var(--muted);
-}
-
-.video-items ul,
+/* An orphaned block is not an error state — it is a block whose audio the user deleted.
+   Red would say "you broke something"; a plain list under a warning says "these have no
+   sound any more". */
 .video-orphans ul {
   margin: 0;
   padding: 0;
@@ -1863,21 +1839,11 @@ button.small,
   gap: 4px;
 }
 
-.video-item,
 .video-orphans li {
   display: flex;
   align-items: center;
   gap: 8px;
   font-size: 0.82rem;
-}
-
-.video-item-when {
-  font-variant-numeric: tabular-nums;
-  color: var(--muted);
-}
-
-.video-item-len {
-  font-variant-numeric: tabular-nums;
 }
 
 /* A download that looks like a button: the export finish state has to be
@@ -1979,8 +1945,15 @@ button.small,
    Blocks are drawn at their ORIGINAL width. Drawing the output width would leave a
    gap between two blocks that share a boundary as soon as one loses audio to a cut,
    and a gap reads as "no video here" while the block plays straight through. */
+/* Match the waveform canvas exactly: it is inset by 6px padding + 1px border inside
+   `.waveform`, so the track has to be inset by the same 7px or the two tracks — which
+   draw the same milliseconds — start at different x and the block above a second is not
+   over that second. Measured before: canvas left 452 / width 956, track left 445 /
+   width 970. */
 .video-track-wrap {
   width: 100%;
+  padding: 0 7px;
+  box-sizing: border-box;
 }
 
 .video-track {
@@ -2254,17 +2227,6 @@ button.small,
   line-height: 1.6;
 }
 
-.video-deck-section {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 8px;
-}
-
-.video-deck-section summary {
-  cursor: pointer;
-  font-size: 0.82rem;
-}
-
 /* The waveform used to sit directly on the stage, where its own 12px margin separated it
    from the info row above. Now it is the first thing inside 音频剪辑, and that margin shows
    up as a gap between the panel's title row and the wave — so drop it there only. */
@@ -2281,4 +2243,121 @@ button.small,
 .audio-panel,
 .video-panel {
   flex: 0 0 auto;
+}
+
+/* --- sidebar drawer (M?): the whole left column folds away ----------------
+   The handle sits *on* the sidebar's right border rather than in the toolbar: the thing
+   it collapses is the column it is attached to, and a toolbar button would leave no trace
+   of where the column went. It stays visible in both states — a collapsed drawer whose
+   handle vanished would be impossible to reopen without guessing a keyboard shortcut. */
+.bench-body {
+  position: relative;
+}
+
+.drawer-handle {
+  position: absolute;
+  top: 50%;
+  left: 420px;
+  z-index: 5;
+  width: 14px;
+  height: 64px;
+  transform: translate(-50%, -50%);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 0.62rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.drawer-handle:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* Collapsed: the column goes to 0 width and the handle moves to the left edge.
+   `overflow: hidden` on the sidebar is what makes 0px actually hide the panels; without
+   it the flex children keep their min-content width and the column refuses to close. */
+.bench-body.is-drawer-closed {
+  grid-template-columns: 0 minmax(0, 1fr);
+}
+
+.bench-body.is-drawer-closed .sidebar {
+  padding: 0;
+  border-right: none;
+  visibility: hidden;
+}
+
+/* Closed: the stage owns the full width, so the handle moves to the window edge —
+   but only to the midpoint of its own width, not to 0: centred on 0 it hangs half
+   off-screen (measured left −7 of a 14px handle) and only 7px of it is clickable. */
+.bench-body.is-drawer-closed .drawer-handle {
+  left: 7px;
+}
+
+/* --- video: preview left, one tabbed settings column right ----------------- */
+.video-stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 10px;
+  align-items: start;
+}
+
+.video-stage-main {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.video-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+}
+
+/* The tab strip stays put; only the selected tab's body scrolls. Scrolling the whole
+   column would take the tabs off screen exactly when the user wants a different one. */
+.video-settings-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.video-slot-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* 演示稿 is the one tab that is a two-pane editor rather than a form: a page list, a
+   720×405 preview and three fields. At 320px the list truncates every title to six
+   characters, so that tab — and only that tab — gets a wider column. */
+.video-stage.wants-wide {
+  grid-template-columns: minmax(0, 1fr) 560px;
+}
+
+.video-stage.wants-wide .video-settings-body {
+  max-height: 520px;
+}
+
+/* Narrow window: the settings column would be squeezed under the preview and the
+   preview would lose more width than the column gains. Stack instead. */
+@media (max-width: 1180px) {
+  .video-stage {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
