@@ -170,11 +170,17 @@ def test_real_compile_finds_four_visible_avatars(compiled: object) -> None:
         assert Path(slot.lit_path).is_file()
 
 
-def test_real_compile_notes_the_hidden_avatar_groups(compiled: object) -> None:
+def test_real_compile_keeps_notes_to_actionable_problems(compiled: object) -> None:
+    """``notes`` is the panel's only prose, and it must earn its space (round 99).
+
+    It used to carry 「PSD 里有 4 个隐藏的头像组，未计入版式」 and 「素材框尺寸已取偶到 1440×810」 —
+    both true, both unactionable, and together they pushed the settings off the column. The
+    sample PSD is well-formed, so a compile of it produces **no notes at all**.
+    """
     from animatter.media.template import CompiledTemplate
 
     assert isinstance(compiled, CompiledTemplate)
-    assert any("隐藏的头像组" in note for note in compiled.notes)
+    assert compiled.notes == []
 
 
 def test_real_compile_dim_changes_only_the_photo(compiled: object) -> None:

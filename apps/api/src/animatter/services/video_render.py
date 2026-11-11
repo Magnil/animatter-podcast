@@ -23,6 +23,8 @@ it as the playhead moves without a job row.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -113,6 +115,8 @@ class PreparedVideo:
     duration_ms: int
     #: Empty unless at least one avatar slot is bound to a speaker who talks.
     avatars: list[AvatarTrack] = field(default_factory=list)
+    #: Speaker name per bound avatar group — what each name plate says (round 99).
+    avatar_names: dict[str, str] = field(default_factory=dict)
     #: Deliberately **absent**: a slot with no binding leaves its frame empty. Replacing the
     #: face with a stale PSD photo would contradict the binding the user just cleared — the
     #: sample's 4 slots with 2 speakers must show 2 faces and 2 empty frames, not 4 faces.
@@ -204,6 +208,7 @@ def prepare(
         audio_path=audio,
         duration_ms=edl.output_duration_ms,
         avatars=tracks,
+        avatar_names=video_avatars.name_plates(session, template),
     )
 
 
@@ -251,6 +256,7 @@ def text_png_for(
     width: int,
     height: int,
     visible_avatars: set[str] | None = None,
+    avatar_names: dict[str, str] | None = None,
 ) -> Path | None:
     """Draw the editable text for this template, or ``None`` when it has none.
 
@@ -261,16 +267,24 @@ def text_png_for(
     The file name carries the edit signature, so a changed title produces a different file
     and therefore a different cache key. Same lesson as §19.11 trap 24: an artefact named
     only by position outlives the change that should have replaced it.
+
+    ``avatar_names`` and ``visible_avatars`` are part of the name for the same reason. The
+    name plate now follows the **speaker** (round 99), so renaming 呈AA changes the pixels
+    while the edits blob does not move at all — without this the panel would show the new
+    name and the poster the old one.
     """
     from animatter.services import video_edits
 
-    slots = video_edits.draw_slots(template, visible_avatars=visible_avatars)
+    slots = video_edits.draw_slots(
+        template, visible_avatars=visible_avatars, avatar_names=avatar_names
+    )
     if not slots:
         return None
-    # The visible-avatar set is part of the name: binding or unbinding changes which names are
-    # drawn, and without it the cached PNG would keep the old set under an unchanged key.
     hidden = "-" if visible_avatars is None else f"-{len(visible_avatars)}"
-    target = work_dir / f"text-{video_edits.signature(template)}{hidden}.png"
+    plates = hashlib.sha256(
+        json.dumps(avatar_names or {}, sort_keys=True, ensure_ascii=False).encode()
+    ).hexdigest()[:8]
+    target = work_dir / f"text-{video_edits.signature(template)}{hidden}-{plates}.png"
     if target.is_file():
         return target
     return overlay_media.render(target=target, width=width, height=height, slots=slots)
@@ -480,16 +494,18 @@ def preview_still(
         edl=edl,
     )
     tracks = avatar_tracks(session, template, version, edl)
+    plates = video_avatars.name_plates(session, template)
     text_png = text_png_for(
         template,
         work_dir=out_dir,
         width=template.canvas_w or 1920,
         height=template.canvas_h or 1080,
         visible_avatars={track.name for track in tracks} or None,
+        avatar_names=plates,
     )
     target = out_dir / (
         f"still-{at_ms:09d}-"
-        f"{_still_digest(resolved_style, at_ms, plan, tracks, template, burn_subtitles)}.png"
+        f"{_still_digest(resolved_style, at_ms, plan, tracks, template, burn_subtitles, plates)}.png"
     )
     box_chain: box_track.BoxChain | None = None
     box_segment: box_track.BoxSegment | None = None
@@ -545,6 +561,7 @@ def _still_digest(
     tracks: list[AvatarTrack],
     template: VideoTemplate,
     burn_subtitles: bool,
+    avatar_names: dict[str, str] | None = None,
 ) -> str:
     """A short hash of everything that changes the pixels of one still.
 
@@ -553,8 +570,6 @@ def _still_digest(
     whole timeline — moving a block that is not on screen must not invalidate this picture,
     or every edit would re-render every still.
     """
-    import hashlib
-
     covered = video_box.covering(plan, at_ms=at_ms)
     segment = ""
     if covered is not None:
@@ -579,6 +594,9 @@ def _still_digest(
         # text layer. ``lit`` below has the same information but only for the slots that have a
         # track — a slot whose name is hidden because it has *no* track is invisible there.
         ",".join(sorted(track.name for track in tracks)) or "-",
+        # And what those names **say** is the bound speaker's name (round 99): renaming 呈AA
+        # moves no text edit, so without this the still was byte-identical under the same URL.
+        json.dumps(avatar_names or {}, sort_keys=True, ensure_ascii=False),
         segment,
         lit,
     ]
@@ -644,8 +662,6 @@ def _video_signature(prepared: PreparedVideo, options: ExportOptions) -> str:
     nothing broke. It stops being decorative the moment an export is reused, and then the
     bug would be "I changed the avatar binding and the film did not change", with no error.
     """
-    import hashlib
-
     style = options.style()
     parts = [
         prepared.template.source_sha256,
@@ -655,6 +671,7 @@ def _video_signature(prepared: PreparedVideo, options: ExportOptions) -> str:
         # would otherwise hand back a film with the old title, silently.
         video_edits.signature(prepared.template),
         ",".join(sorted(track.name for track in prepared.avatars)) or "-",
+        json.dumps(prepared.avatar_names, sort_keys=True, ensure_ascii=False),
         str(prepared.duration_ms),
         hashlib.sha256(
             ";".join(
@@ -765,6 +782,7 @@ def _encode(
         width=prepared.template.canvas_w or 1920,
         height=prepared.template.canvas_h or 1080,
         visible_avatars={track.name for track in prepared.avatars} or None,
+        avatar_names=prepared.avatar_names,
     )
 
     video_media.render(

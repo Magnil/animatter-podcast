@@ -93,19 +93,36 @@ def slot_defaults(row: VideoTemplate) -> list[dict[str, Any]]:
     return [item for item in texts if isinstance(item, dict)] if isinstance(texts, list) else []
 
 
-def resolved_texts(row: VideoTemplate) -> list[dict[str, Any]]:
+def resolved_texts(
+    row: VideoTemplate, *, avatar_names: dict[str, str] | None = None
+) -> list[dict[str, Any]]:
     """The defaults with the user's edits layered on top.
 
     This is the single source of truth for "what text will the film show", used by both the
     still preview and the export. Two call sites computing it separately is how the preview
     and the film end up disagreeing about the title.
+
+    ``avatar_names`` is what an avatar's name plate should say, keyed by the PSD group name —
+    that is, **the name of the speaker bound to it** (round 99). The name plate used to be its
+    own editable field, which meant the same 「主播1」 appeared in two places and the poster
+    could show a name that did not belong to the person talking underneath. With the field
+    gone the plate is fully derived: text from the bound speaker, font/size/colour from the
+    PSD. An override stored under ``avatar:<group>`` is therefore **ignored**, not merely
+    outranked — a value that nothing on the screen can edit but that still changes the
+    picture is a ghost, and it would reappear the moment the slot was unbound.
     """
     edits = edits_of(row)["texts"]
     out: list[dict[str, Any]] = []
     for slot in slot_defaults(row):
         key = str(slot.get("key") or "")
-        override = edits.get(key)
         merged = dict(slot)
+        if slot.get("role") == textslot.ROLE_AVATAR_NAME:
+            group = key.removeprefix("avatar:")
+            if avatar_names and group in avatar_names:
+                merged["text"] = avatar_names[group]
+            out.append(merged)
+            continue
+        override = edits.get(key)
         if isinstance(override, dict):
             for field in ("text", "font", "colour", "font_size"):
                 value = override.get(field)
@@ -116,7 +133,10 @@ def resolved_texts(row: VideoTemplate) -> list[dict[str, Any]]:
 
 
 def draw_slots(
-    row: VideoTemplate, *, visible_avatars: set[str] | None = None
+    row: VideoTemplate,
+    *,
+    visible_avatars: set[str] | None = None,
+    avatar_names: dict[str, str] | None = None,
 ) -> list[overlay_media.DrawSlot]:
     """The slots as the renderer wants them.
 
@@ -124,9 +144,11 @@ def draw_slots(
     name whose slot is not among them is skipped: an unbound slot disappears, and leaving its name
     behind puts 「彼方」 where an avatar used to be. ``None`` means "every slot is visible", which
     is the case when nothing is bound and the full poster is used.
+
+    ``avatar_names`` replaces an avatar's name plate with its **speaker's** name (round 99).
     """
     out: list[overlay_media.DrawSlot] = []
-    for slot in resolved_texts(row):
+    for slot in resolved_texts(row, avatar_names=avatar_names):
         if slot.get("role") == textslot.ROLE_AVATAR_NAME and visible_avatars is not None:
             group = str(slot.get("key") or "").removeprefix("avatar:")
             if group and group not in visible_avatars:
@@ -170,13 +192,23 @@ def update_text(
 ) -> VideoTemplate:
     """Store one text override (or clear it, with all-empty fields)."""
     row = template_service.require(session, project_id)
-    known = {str(slot.get("key") or "") for slot in slot_defaults(row)}
-    if key not in known:
+    defaults = {str(slot.get("key") or ""): slot for slot in slot_defaults(row)}
+    if key not in defaults:
         raise AppError(
             "template_slot_unknown",
             f"模板里没有「{key}」这块文字",
             hint="可能是模板重新编译过，刷新页面再试。",
             status=404,
+        )
+    if defaults[key].get("role") == textslot.ROLE_AVATAR_NAME:
+        # The plate says the bound speaker's name (round 99) — there is no field for it, so an
+        # override would be a value nothing could show or clear. Refused loudly rather than
+        # stored and ignored.
+        raise AppError(
+            "template_slot_derived",
+            "头像名字来自绑定的说话人，不能直接改",
+            hint="在头像那一行改绑定，或者先在字幕里把说话人改名。",
+            status=409,
         )
     if edit.font is not None and edit.font.strip() and fonts.resolve(edit.font) is None:
         raise AppError(

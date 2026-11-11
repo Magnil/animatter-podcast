@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from sqlalchemy import select
@@ -50,6 +50,9 @@ FITS = ("contain", "cover", "blur_fill", "stretch")
 class TemplateView:
     row: VideoTemplate
     slots: dict[str, object]
+    #: Speaker name per bound avatar group — what the name plate says (round 99). Resolved by
+    #: :func:`view` because it needs a query; empty when nothing is bound.
+    names: dict[str, str] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, object]:
         """The template as the browser needs it.
@@ -64,12 +67,14 @@ class TemplateView:
         from animatter.services import video_edits
 
         slots = dict(self.slots)
-        slots["texts"] = video_edits.resolved_texts(self.row)
+        slots["texts"] = video_edits.resolved_texts(self.row, avatar_names=self.names)
         avatars = slots.get("avatars")
         if isinstance(avatars, list):
             replaced = video_edits.edits_of(self.row)["photos"]
             views = [
-                _avatar_view(self.row, item, replaced) for item in avatars if isinstance(item, dict)
+                _avatar_view(self.row, item, replaced, self.names)
+                for item in avatars
+                if isinstance(item, dict)
             ]
             # Hosts first, then guests — the same order the text rows use. `slots_json` is in PSD
             # stack order (bottom-up), so the two lists would otherwise contradict each other.
@@ -92,7 +97,10 @@ class TemplateView:
 
 
 def _avatar_view(
-    row: VideoTemplate, slot: dict[str, object], replaced: dict[str, object]
+    row: VideoTemplate,
+    slot: dict[str, object],
+    replaced: dict[str, object],
+    names: dict[str, str],
 ) -> dict[str, object]:
     """One avatar slot: the compiled fields, plus URLs for its *effective* art.
 
@@ -107,12 +115,12 @@ def _avatar_view(
     name = str(slot.get("name") or "")
     lit = str(slot.get("lit_path") or "")
     dim = str(slot.get("dim_path") or "")
-    # The name plate is an editable text slot now, so the row has to show its **resolved** value.
-    # `slot["label"]` is what the compile recorded, and after a rename it went stale — the panel
-    # read 「主播1 彼方」 while the film showed 马小褂.
+    # The name plate is derived from the **binding** now (round 99), so the row has to show
+    # what the plate will say. `slot["label"]` is what the compile recorded — the PSD's own
+    # placeholder — and showing it after binding 马小褂 told the user the wrong name.
     resolved = {
         str(item.get("key")): str(item.get("text") or "")
-        for item in video_edits.resolved_texts(row)
+        for item in video_edits.resolved_texts(row, avatar_names=names)
     }
     replacement = video_edits.photo_paths(row, slot)
     if replacement is not None:
@@ -173,10 +181,16 @@ def require(session: Session, project_id: str) -> VideoTemplate:
 
 
 def view(session: Session, project_id: str) -> TemplateView | None:
+    from animatter.services import video_avatars
+
     row = get(session, project_id)
     if row is None:
         return None
-    return TemplateView(row=row, slots=json.loads(row.slots_json or "{}"))
+    return TemplateView(
+        row=row,
+        slots=json.loads(row.slots_json or "{}"),
+        names=video_avatars.name_plates(session, row),
+    )
 
 
 def sha256_of(path: Path) -> str:

@@ -956,14 +956,12 @@ def compile_template(psd_path: Path, out_dir: Path) -> CompiledTemplate:
     # groups, and a name left in the composite can never be edited (§19.12).
     text_layers = text_layers_anywhere(layers)
 
+    # Notes are **problems**, not commentary (round 99). The panel used to print 「PSD 里有 4 个
+    # 隐藏的头像组，未计入版式」 and 「素材框尺寸已取偶到 1440×810」 above the form: true, unactionable,
+    # and it pushed the settings the user came for off the bottom of the column. What stays is
+    # the set of things that would make the film wrong and that the user can fix — a missing
+    # title or episode number means a slot they must fill by hand.
     notes: list[str] = []
-    hidden_avatars = [
-        layer_name(layer)
-        for layer in layers
-        if layer.is_group() and layer_name(layer).startswith("头像") and not layer.visible
-    ]
-    if hidden_avatars:
-        notes.append(f"PSD 里有 {len(hidden_avatars)} 个隐藏的头像组，未计入版式")
     if plate is None:
         notes.append("素材框里没有铺满整组的底板，框内内容会出现透明")
 
@@ -1119,8 +1117,6 @@ def compile_template(psd_path: Path, out_dir: Path) -> CompiledTemplate:
         notes.append("没找到期号的文字层，期号需要在界面上手动输入")
 
     box = even_rect(scale_rect(media_rect, factor))
-    if (box.w, box.h) != (scale_rect(media_rect, factor).w, scale_rect(media_rect, factor).h):
-        notes.append(f"素材框尺寸已取偶到 {box.w}×{box.h}")
 
     return CompiledTemplate(
         canvas_w=TARGET_W,

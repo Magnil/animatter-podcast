@@ -132,6 +132,36 @@ def set_binding(
     return row
 
 
+def name_plates(session: Session, row: VideoTemplate) -> dict[str, str]:
+    """What each **bound** slot's name plate should say: its speaker's name (round 99).
+
+    The plate used to be an editable text field of its own, which is why the panel showed
+    「主播1」 twice and why the poster could print 「彼方」 over 呈AA's face. Deriving it from the
+    binding makes the two facts one: the plate names whoever is actually in the frame, and
+    renaming a speaker renames the plate.
+
+    Unbound slots are **absent** rather than empty: the caller keeps the PSD's placeholder,
+    which is also what the full poster (nothing bound) is supposed to show. A binding whose
+    speaker row has been deleted is absent for the same reason — printing the local id
+    「说话人3」 would be worse than leaving the designer's name.
+    """
+    bindings = bindings_of(row)
+    if not bindings:
+        return {}
+    names = {
+        speaker.local_id: speaker.name
+        for speaker in session.scalars(
+            select(Speaker).where(Speaker.project_id == row.project_id)
+        ).all()
+    }
+    out: dict[str, str] = {}
+    for slot, local_id in bindings.items():
+        name = str(names.get(local_id) or "").strip()
+        if name:
+            out[slot] = name
+    return out
+
+
 def _slots_of(row: VideoTemplate) -> list[dict[str, Any]]:
     try:
         parsed = json.loads(row.slots_json or "{}")
