@@ -407,6 +407,10 @@ class VideoTemplate(Base):
     box_fit_default: Mapped[str] = mapped_column(String(16), default="blur_fill")
     #: ``{"avatars": [...], "texts": [...]}``; see services/video_templates.py.
     slots_json: Mapped[str] = mapped_column(Text, default="{}")
+    #: ``{"<slot name>": <speaker local_id>}`` — which speaker each avatar slot shows.
+    #: Kept on the row rather than inside ``slots_json`` so a recompile (which rewrites
+    #: the slots from the PSD) does not silently drop the user's bindings.
+    bindings_json: Mapped[str] = mapped_column(Text, default="{}")
     status: Mapped[str] = mapped_column(String(16), default="pending")
     #: Human-readable reason for ``status == 'failed'``. A compile can fail on a
     #: file psd-tools cannot parse, and "failed" alone sends the user nowhere.
