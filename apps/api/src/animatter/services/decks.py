@@ -202,13 +202,21 @@ def update_slide(
     return row
 
 
-def delete_slide(session: Session, slide_id: str) -> None:
+def delete_slide(session: Session, settings: object, slide_id: str) -> None:
+    """Remove one page, its picture, and re-densify ``ord``.
+
+    ``settings`` is a required argument, not an optional one. The PNG lives on disk and the
+    row does not know where — so every caller must be able to say. Leaving it optional meant
+    the natural call site forgot it, and a regenerate-then-preview cycle leaked 62 orphaned
+    PNGs (14 MB) on one 60-page deck before anyone looked at the folder.
+    """
     row = session.get(Slide, slide_id)
     if row is None:
         return
     deck_id = row.deck_id
     session.delete(row)
     session.flush()
+    purge_images(session, settings, deck_id, [slide_id])
     # Re-number so ``ord`` stays dense: a gap is harmless to the query but makes every
     # later "move up/down" off by one in a way that is invisible in the UI.
     rest = list_slides(session, deck_id)
@@ -244,12 +252,62 @@ def move_slide(session: Session, slide_id: str, *, to_ord: int) -> list[Slide]:
     return list_slides(session, row.deck_id)
 
 
-def clear_slides(session: Session, deck_id: str) -> int:
-    """Remove every page of a deck. The deck row survives: its id anchors the image folder."""
+def clear_slides(session: Session, settings: object, deck_id: str) -> int:
+    """Remove every page of a deck *and* every picture in its folder.
+
+    The deck row survives: its id anchors the image folder, and deleting it would orphan the
+    whole directory with nothing left to say where it was.
+
+    Dropping the rows without the files is what 「重新生成」 did — measured 62 orphaned PNGs
+    / 14 MB on a single 60-page deck after one regenerate. Every page id is different after
+    a regenerate, so the old pictures can never be reached again; they are garbage the
+    moment the rows go.
+
+    **The whole directory, not just the ids being deleted.** A per-id purge looks right and
+    leaves the garbage that an *earlier* buggy regenerate already dropped: those ids are no
+    longer in any row, so nothing can name them again. This folder belongs to exactly one
+    deck, and "clear every page" means precisely "empty it" — the id-driven purge is only
+    needed for a single-page delete, where the other pages' pictures must survive.
+    """
     rows = list_slides(session, deck_id)
     session.execute(delete(Slide).where(Slide.deck_id == deck_id))
     session.flush()
+    purge_images(session, settings, deck_id, None)
     return len(rows)
+
+
+def purge_images(
+    session: Session, settings: object, deck_id: str, slide_ids: list[str] | None
+) -> int:
+    """Delete cached pictures. Returns how many files went.
+
+    ``slide_ids=None`` means the whole folder (used when every page is being replaced);
+    a list means only those pages' files, at every cached size — a page is drawn at the
+    editor's preview size *and* at the media box's size (``{id}-{w}x{h}.png``), and clearing
+    only one would leave the other showing the previous text.
+
+    The directory is computed without ``slides_dir`` on purpose — that helper creates the
+    folder, and a purge that creates the folder it is told to empty is a trap for the next
+    reader.
+    """
+    deck = session.get(Deck, deck_id)
+    if deck is None:
+        return 0
+    directory = (
+        project_service.project_root(settings, deck.project_id)  # type: ignore[arg-type]
+        / "video"
+        / "decks"
+        / deck_id
+    )
+    if not directory.is_dir():
+        return 0
+    patterns = [f"{slide_id}-*.png" for slide_id in slide_ids] if slide_ids else ["*.png"]
+    removed = 0
+    for pattern in patterns:
+        for path in directory.glob(pattern):
+            path.unlink(missing_ok=True)
+            removed += 1
+    return removed
 
 
 # --- generation --------------------------------------------------------
@@ -274,7 +332,7 @@ def generate_from_transcript(
     """
     deck = create_deck(session, project_id)
     if replace:
-        clear_slides(session, deck.id)
+        clear_slides(session, settings, deck.id)
 
     pages = plan_pages(sentences)
     pages = _split_at_chapters(pages, chapters or [], total_ms=total_ms)

@@ -193,8 +193,16 @@ def move_slide(
 
 
 @router.delete("/slides/{slide_id}", status_code=204)
-def delete_slide(slide_id: str, session: Session = Depends(_session_dependency)) -> None:
-    deck_service.delete_slide(session, slide_id)
+def delete_slide(
+    slide_id: str, request: Request, session: Session = Depends(_session_dependency)
+) -> None:
+    """Remove one page and its PNG.
+
+    It needs ``settings`` because the picture is a file, not a row — the earlier signature
+    made that easy to forget, and forgetting it is invisible until someone counts the folder.
+    """
+    settings: Settings = request.app.state.settings
+    deck_service.delete_slide(session, settings, slide_id)
     session.commit()
 
 

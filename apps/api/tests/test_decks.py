@@ -256,7 +256,7 @@ def test_deleting_keeps_the_order_dense(
 ) -> None:
     """A gap in ``ord`` makes every later move up/down off by one, invisibly."""
     ids = _three(session, app_settings, project)
-    deck_service.delete_slide(session, ids[1])
+    deck_service.delete_slide(session, app_settings, ids[1])
     deck = deck_service.get_deck(session, project)
     assert deck is not None
     rows = deck_service.list_slides(session, deck.id)
@@ -264,9 +264,61 @@ def test_deleting_keeps_the_order_dense(
     assert [row.ord for row in rows] == [0, 1]
 
 
-def test_deleting_an_unknown_slide_is_a_no_op(session: Session) -> None:
+def test_deleting_a_page_deletes_its_picture(
+    session: Session, app_settings: object, project: str
+) -> None:
+    """The row is the only thing that knows the file's name, so it must go with the row.
+
+    Left behind, the PNG is unreachable forever: nothing else records the slide id, and the
+    next regenerate mints new ids.
+    """
+    ids = _three(session, app_settings, project)
+    deck = deck_service.get_deck(session, project)
+    assert deck is not None
+    deck_service.render_slide(
+        app_settings, project, deck.id, deck_service.list_slides(session, deck.id)[0],
+        width=320, height=180,
+    )
+    before = list(deck_service.slides_dir(app_settings, project, deck.id).glob("*.png"))
+    assert before, "the fixture must have drawn at least one page"
+
+    deck_service.delete_slide(session, app_settings, ids[0])
+    after = list(deck_service.slides_dir(app_settings, project, deck.id).glob("*.png"))
+    assert not [path for path in after if path.name.startswith(f"{ids[0]}-")]
+
+
+def test_deleting_an_unknown_slide_is_a_no_op(
+    session: Session, app_settings: object
+) -> None:
     """Idempotent on purpose: a double-click must not 404 after the first one succeeded."""
-    deck_service.delete_slide(session, "sld_missing")
+    deck_service.delete_slide(session, app_settings, "sld_missing")
+
+
+def test_regenerating_does_not_leave_orphaned_pictures(
+    session: Session, app_settings: object, project: str
+) -> None:
+    """「重新生成」 mints new ids, so every old PNG becomes garbage the moment the rows go.
+
+    Measured before the fix: one regenerate on a 60-page deck left 62 orphaned files
+    (14 MB) that nothing could ever reach again.
+    """
+    deck, first = deck_service.generate_from_transcript(
+        session, app_settings, project, sentences=pages(3), total_ms=3 * (SPAN + GAP)
+    )
+    for view in first:
+        deck_service.render_slide(
+            app_settings, project, deck.id, view.row, width=320, height=180
+        )
+    drawn = list(deck_service.slides_dir(app_settings, project, deck.id).glob("*.png"))
+    assert len(drawn) == 3
+
+    _deck, second = deck_service.generate_from_transcript(
+        session, app_settings, project, sentences=pages(3), total_ms=3 * (SPAN + GAP)
+    )
+    assert {view.row.id for view in second}.isdisjoint({view.row.id for view in first})
+    assert not list(
+        deck_service.slides_dir(app_settings, project, deck.id).glob("*.png")
+    ), "the previous generation's pictures must be gone"
 
 
 # --- rendering ---------------------------------------------------------
