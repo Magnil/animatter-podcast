@@ -22,7 +22,14 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, type VideoItem, type VideoTemplate, type VideoTimeline } from "./api";
+import {
+  api,
+  type SpeakerInfo,
+  type VideoAvatar,
+  type VideoItem,
+  type VideoTemplate,
+  type VideoTimeline,
+} from "./api";
 import { AssetLibrary } from "./AssetLibrary";
 import { formatDuration, formatTime } from "./format";
 import { VideoTrack } from "./VideoTrack";
@@ -84,6 +91,9 @@ export function VideoPanel({
   const [draggingAsset, setDraggingAsset] = useState<string | null>(null);
   const [selected, setSelected] = useState<VideoItem | null>(null);
   const [view, setView] = useState<View>({ from: 0, to: 60_000 });
+  // P3: avatar slots, the speakers they can be bound to, and their talk time.
+  const [avatars, setAvatars] = useState<VideoAvatar[]>([]);
+  const [speakers, setSpeakers] = useState<SpeakerInfo[]>([]);
 
   const load = useCallback(async () => {
     setError(null);
@@ -102,6 +112,34 @@ export function VideoPanel({
   useEffect(() => {
     void load();
   }, [load]);
+
+  /**
+   * Avatar bindings load **separately** from the template.
+   *
+   * They come from two more endpoints (the slot list with talk time, and the project's
+   * speakers), and a project without a template would 404 both — so a failure here must
+   * not overwrite the template error the user actually needs to see.
+   */
+  const loadAvatars = useCallback(async () => {
+    try {
+      const [nextSlots, nextSpeakers] = await Promise.all([
+        api.videoAvatars(versionId),
+        api.speakers(projectId),
+      ]);
+      setAvatars(nextSlots);
+      setSpeakers(nextSpeakers);
+    } catch {
+      setAvatars([]);
+    }
+  }, [projectId, versionId]);
+
+  useEffect(() => {
+    if (template?.status !== "ready") {
+      setAvatars([]);
+      return;
+    }
+    void loadAvatars();
+  }, [template?.status, loadAvatars]);
 
   // Open on the renderer's real defaults instead of hard-coded numbers that would
   // drift the moment the ASS style changes.
@@ -168,6 +206,22 @@ export function VideoPanel({
   const doDefaultFit = async (fit: string): Promise<void> => {
     try {
       setTemplate(await api.updateVideoTemplate(projectId, fit));
+    } catch (caught) {
+      onNotice(caught instanceof Error ? caught.message : String(caught));
+    }
+  };
+
+  /**
+   * Bind one avatar slot, or unbind it.
+   *
+   * The response carries the new talk time, so the row updates from the server instead of
+   * guessing — a slot bound to a speaker who never speaks reports 0 段, and that number is
+   * the only way the user can tell a wrong binding from a broken render.
+   */
+  const doBind = async (slot: string, speakerId: number | null): Promise<void> => {
+    try {
+      const updated = await api.bindVideoAvatar(projectId, slot, versionId, speakerId);
+      setAvatars((current) => current.map((item) => (item.name === slot ? updated : item)));
     } catch (caught) {
       onNotice(caught instanceof Error ? caught.message : String(caught));
     }
@@ -459,11 +513,40 @@ export function VideoPanel({
               {(template.slots.notes ?? []).map((note, index) => (
                 <li key={index}>{note}</li>
               ))}
-              {(template.slots.avatars ?? []).map((slot) => (
-                <li key={slot.name}>
-                  {slot.name}：{slot.label || "（无名牌）"} @ {slot.rect.x},{slot.rect.y}
-                </li>
-              ))}
+              {(template.slots.avatars ?? []).map((slot) => {
+                const bound = avatars.find((item) => item.name === slot.name);
+                return (
+                  <li key={slot.name} className="video-avatar-row">
+                    <span className="video-avatar-name">
+                      {slot.name}
+                      <small>{slot.label || "（无名牌）"}</small>
+                    </span>
+                    <select
+                      value={bound?.speaker_id ?? ""}
+                      onChange={(event) =>
+                        void doBind(
+                          slot.name,
+                          event.target.value === "" ? null : Number(event.target.value),
+                        )
+                      }
+                    >
+                      <option value="">不绑定（一直不变）</option>
+                      {speakers.map((speaker) => (
+                        <option key={speaker.local_id} value={speaker.local_id}>
+                          {speaker.name || `说话人 ${speaker.local_id}`}
+                        </option>
+                      ))}
+                    </select>
+                    <small className="video-avatar-talk">
+                      {bound === undefined || bound.speaker_id === null
+                        ? "—"
+                        : bound.turns === 0
+                          ? "0 段（这个人没说话）"
+                          : `${bound.turns} 段 · ${formatDuration(bound.lit_ms)}`}
+                    </small>
+                  </li>
+                );
+              })}
             </ul>
             <label className="field">
               <span>框内默认填充</span>

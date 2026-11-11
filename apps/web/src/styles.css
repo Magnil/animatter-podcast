@@ -2113,3 +2113,38 @@ button.small,
 .video-style input[type="range"] {
   width: 100%;
 }
+
+/* P3: one row per avatar slot — name, speaker dropdown, and how much it talks.
+   The talk time is the point of the row: a binding to a speaker who never speaks
+   renders as 「0 段」, which is how a wrong binding differs from a broken export. */
+.video-avatar-row {
+  display: grid;
+  grid-template-columns: minmax(96px, 1fr) minmax(120px, 1.2fr) auto;
+  gap: 8px;
+  align-items: center;
+  list-style: none;
+  margin: 4px 0;
+}
+
+.video-box-info ul {
+  padding-left: 0;
+}
+
+.video-avatar-name {
+  display: flex;
+  flex-direction: column;
+  color: var(--text);
+}
+
+.video-avatar-name small {
+  color: var(--muted);
+}
+
+.video-avatar-row select {
+  min-width: 0;
+}
+
+.video-avatar-talk {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}

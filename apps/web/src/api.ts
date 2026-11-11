@@ -924,6 +924,24 @@ export const api = {
   deleteVideoItem: (itemId: string) =>
     request<void>(`/api/video/items/${itemId}`, { method: "DELETE" }),
 
+  /** Every avatar slot with its speaker and how much of the film it talks over (P3). */
+  videoAvatars: (versionId: string) =>
+    request<VideoAvatar[]>(`/api/versions/${versionId}/video/avatars`),
+
+  /**
+   * Bind one slot to a speaker, or clear it with `null`.
+   *
+   * `versionId` is required even though the binding is project-wide: the *talk time* the
+   * response reports is measured on one version, and without it the API would have to
+   * guess which transcript the user is looking at.
+   */
+  bindVideoAvatar: (projectId: string, slot: string, versionId: string, speakerId: number | null) =>
+    request<VideoAvatar>(
+      `/api/projects/${projectId}/video/avatars/${encodeURIComponent(slot)}` +
+        `?version_id=${encodeURIComponent(versionId)}`,
+      { method: "PUT", body: JSON.stringify({ speaker_id: speakerId }) },
+    ),
+
   /** One composited frame at `atMs` on the **output** timeline. */
   videoPreview: (
     versionId: string,
@@ -1065,6 +1083,23 @@ export interface VideoTextSlot {
   name: string;
   rect: VideoRect;
   text: string;
+}
+
+/** One avatar panel slot with its speaker (P3). */
+export interface VideoAvatar {
+  name: string;
+  label: string;
+  x: number;
+  y: number;
+  lit_url: string;
+  dim_url: string;
+  speaker_id: number | null;
+  speaker_name: string;
+  /** How many separate stretches this slot is lit for. */
+  turns: number;
+  lit_ms: number;
+  /** Share of the film's output length, 0–1. */
+  share: number;
 }
 
 export interface VideoTemplate {
