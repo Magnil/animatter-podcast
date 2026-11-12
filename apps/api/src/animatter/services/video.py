@@ -24,7 +24,9 @@ video follows the audio.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -67,11 +69,19 @@ class ItemView:
     item: VideoItem
     output_ms: int
     orphaned: bool
+    #: What the block should be called on the track: the imported file's own name, the
+    #: deck's title, or ``""`` when nothing names it (the UI then falls back to the kind).
+    #:
+    #: Derived on read rather than stored, for the same reason ``output_ms`` is: renaming a
+    #: deck must change what every block of it says, and a copied column would keep saying
+    #: the old name until something happened to rewrite the block.
+    label: str = ""
 
     def as_dict(self) -> dict[str, object]:
         return {
             "id": self.item.id,
             "kind": self.item.kind,
+            "label": self.label,
             "start_ms": self.item.start_ms,
             "end_ms": self.item.end_ms,
             "duration_ms": self.item.end_ms - self.item.start_ms,
@@ -153,12 +163,101 @@ def view_items(
     produces a bug report nobody can reproduce.
     """
     rows = list_items(session, project_id)
+    labels = _labels_for(session, rows)
     views: list[ItemView] = []
     for row in rows:
         interval = Interval(row.start_ms, row.end_ms)
         output = kept_ms(interval, keeps)
-        views.append(ItemView(item=row, output_ms=output, orphaned=output <= 0))
+        views.append(
+            ItemView(
+                item=row,
+                output_ms=output,
+                orphaned=output <= 0,
+                label=labels.get(row.id, ""),
+            )
+        )
     return views
+
+
+#: Name used when a gallery's first member is gone and nothing else can name the block.
+_GALLERY = "画廊"
+
+
+def _labels_for(session: Session, rows: list[VideoItem]) -> dict[str, str]:
+    """Display name per block, in two queries rather than two per block.
+
+    A timeline is redrawn on every drag frame, so the read has to stay flat: collecting the
+    ids first and resolving them in one query each keeps it that way no matter how many
+    blocks a project has.
+    """
+    from animatter.models import Deck, VideoAsset
+
+    asset_ids = {row.asset_id for row in rows if row.asset_id}
+    member_ids: set[str] = set()
+    for row in rows:
+        if row.kind == "gallery":
+            member_ids.update(asset_id for asset_id, _weight in _gallery_members(row.gallery_json))
+    deck_ids = {row.deck_id for row in rows if row.deck_id}
+
+    names: dict[str, str] = {}
+    wanted = asset_ids | member_ids
+    if wanted:
+        for asset in session.scalars(select(VideoAsset).where(VideoAsset.id.in_(wanted))):
+            names[asset.id] = asset.original_name or Path(asset.path).name
+    titles: dict[str, str] = {}
+    if deck_ids:
+        for deck in session.scalars(select(Deck).where(Deck.id.in_(deck_ids))):
+            titles[deck.id] = deck.title
+
+    out: dict[str, str] = {}
+    for row in rows:
+        if row.kind == "slide":
+            out[row.id] = titles.get(row.deck_id or "", "")
+            continue
+        if row.kind == "gallery":
+            members = [
+                names[asset_id]
+                for asset_id, _weight in _gallery_members(row.gallery_json)
+                if asset_id in names
+            ]
+            if not members:
+                out[row.id] = _GALLERY
+            elif len(members) == 1:
+                out[row.id] = members[0]
+            else:
+                out[row.id] = f"{members[0]} 等 {len(members)} 张"
+            continue
+        out[row.id] = names.get(row.asset_id or "", "")
+    return out
+
+
+def _gallery_members(raw: str) -> list[tuple[str, int]]:
+    """``[{"asset_id": …, "weight": …}]`` as pairs, tolerating a half-edited string.
+
+    Duplicated from ``services/video_box._gallery_ids`` on purpose: this module must not
+    import the renderer's planner to answer "what is this block called", and the parse is
+    four lines. The two are pinned together by
+    ``test_a_gallery_block_is_named_after_its_first_picture``.
+    """
+    try:
+        parsed = json.loads(raw or "[]")
+    except ValueError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    out: list[tuple[str, int]] = []
+    for entry in parsed:
+        if not isinstance(entry, dict):
+            continue
+        asset_id = entry.get("asset_id")
+        if not isinstance(asset_id, str) or not asset_id:
+            continue
+        try:
+            weight = int(entry.get("weight") or 1)
+        except (TypeError, ValueError):
+            weight = 1
+        out.append((asset_id, max(1, weight)))
+    return out
 
 
 def _is_orphaned(row: VideoItem) -> bool:

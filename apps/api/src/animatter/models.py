@@ -439,6 +439,14 @@ class VideoAsset(Base):
     #: ``image`` | ``video``
     kind: Mapped[str] = mapped_column(String(16), default="image")
     path: Mapped[str] = mapped_column(Text)
+    #: The name the file had when the user imported it (``开场封面.png``).
+    #:
+    #: Stored because the copy on disk is named by hash — ``b825e065e6cf9826.png`` — which
+    #: makes two imported stills indistinguishable in the library and on the timeline. The
+    #: hash stays the file name (two ``IMG_0001.png`` from different folders must not
+    #: collide, §19.12); this column is what the UI reads. **Empty** means "this row predates
+    #: the column", and the display falls back to the hash name rather than showing nothing.
+    original_name: Mapped[str] = mapped_column(String(200), default="")
     sha256: Mapped[str] = mapped_column(String(64), index=True)
     width: Mapped[int] = mapped_column(Integer, default=0)
     height: Mapped[int] = mapped_column(Integer, default=0)

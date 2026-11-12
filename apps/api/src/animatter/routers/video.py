@@ -344,6 +344,7 @@ class GridOut(BaseModel):
 class ItemOut(BaseModel):
     id: str
     kind: str
+    label: str
     start_ms: int
     end_ms: int
     duration_ms: int
@@ -607,7 +608,11 @@ async def upload_asset(
                         hint="长视频请先剪短再导入。",
                     )
                 handle.write(chunk)
-        row = asset_service.import_asset(session, settings, project_id, staging)
+        # `staging` is named `upload{suffix}`, so the display name must come from the
+        # browser — otherwise every uploaded asset is called 「upload」 in the library.
+        row = asset_service.import_asset(
+            session, settings, project_id, staging, display_name=name
+        )
         session.commit()
     finally:
         shutil.rmtree(staging.parent, ignore_errors=True)

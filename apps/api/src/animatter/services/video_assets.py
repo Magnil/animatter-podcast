@@ -56,11 +56,23 @@ class AssetView:
     url: str
     exists: bool
 
+    @property
+    def name(self) -> str:
+        """What the picker and the timeline call this asset.
+
+        The stored file is named by content hash (``b825e065e6cf9826.png``), so the name on
+        disk says nothing about what the picture *is* — two imported stills then look
+        identical and the user cannot tell which one a block plays (round 104). The original
+        name is kept in its own column; an empty one means a row from before that column
+        existed, and the hash name is the honest fallback.
+        """
+        return self.row.original_name or Path(self.row.path).name
+
     def as_dict(self) -> dict[str, object]:
         return {
             "id": self.row.id,
             "kind": self.row.kind,
-            "name": Path(self.row.path).name,
+            "name": self.name,
             "sha256": self.row.sha256,
             "width": self.row.width,
             "height": self.row.height,
@@ -174,12 +186,19 @@ def import_asset(
     settings: Settings,
     project_id: str,
     source: Path,
+    *,
+    display_name: str | None = None,
 ) -> VideoAsset:
     """Copy one image or clip into the project and register it.
 
     Importing identical bytes returns the existing row: the browser already holds URLs
     for it, and a duplicate would appear twice in the picker with no way to tell which
     one the timeline is using.
+
+    ``display_name`` is what the library will call this asset. It defaults to the source
+    file's own name and only differs on the upload path, where the bytes were first written
+    to ``upload.png`` in a temp directory — the browser's ``File`` name has to be passed in,
+    or every uploaded asset would be called 「upload」.
     """
     if session.get(Project, project_id) is None:
         raise AppError("project_not_found", f"项目 {project_id} 不存在", status=404)
@@ -215,6 +234,11 @@ def import_asset(
         )
     ).first()
     if existing is not None:
+        # A re-import is also the user naming a row that predates ``original_name``, so take
+        # the name if we do not have one yet — without touching the file or the timeline.
+        if not existing.original_name:
+            existing.original_name = (display_name or resolved.name)[:200]
+            session.flush()
         log.info("asset.reused", project=project_id, asset=existing.id, sha256=digest[:12])
         return existing
 
@@ -239,6 +263,9 @@ def import_asset(
         project_id=project_id,
         kind=kind,
         path=str(target),
+        # Kept so the picker can say 「开场封面.png」 instead of 「b825e065….png」. The file
+        # on disk still gets the hash: this is a *label*, never a path.
+        original_name=(display_name or resolved.name)[:200],
         sha256=digest,
         width=width,
         height=height,

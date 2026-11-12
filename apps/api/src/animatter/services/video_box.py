@@ -222,16 +222,40 @@ def _slide_stretches(
     from the gaps between page starts rather than from anything stored per page — inserting
     a page therefore does not require rewriting its neighbour (same reasoning as
     ``core/deck.page_spans``).
+
+    **The block's first page is the one playing at ``item.start_ms``, even when that page
+    started earlier.** Filtering for ``item.start_ms <= page.start_ms`` reads like "the pages
+    inside the block" and is not the same thing: a block placed at 01:10 whose page began at
+    00:05 has no page starting inside it, so the block rendered the *next* page. That is the
+    round-104 report — the user pressed 「放进素材框」 on 开场与节目定位 and the still showed
+    嘉宾介绍. A page owns ``[start, next_start)``, so the page on screen at an instant is the
+    last one starting at or before it.
     """
-    pages = sorted(slide_starts.get(item.deck_id or "", []))
+    pages = sorted(
+        (start, slide_id)
+        for start, slide_id in slide_starts.get(item.deck_id or "", [])
+        if slide_id in slide_images
+    )
     if not pages:
         return []
 
-    inside = [
-        (start, slide_id)
-        for start, slide_id in pages
-        if item.start_ms <= start < item.end_ms and slide_id in slide_images
-    ]
+    # The page already on screen when the block opens. `None` means the block starts before
+    # the deck's first page, where the deck has not begun and the opening page is the next one.
+    opening: tuple[int, str] | None = None
+    for start, slide_id in pages:
+        if start <= item.start_ms:
+            opening = (start, slide_id)
+        else:
+            break
+
+    # Built in two explicit steps: an opening page that started before the block contributes
+    # from the block's own edge, and must not be counted twice by the range filter.
+    inside: list[tuple[int, str]] = []
+    if opening is not None:
+        inside.append((item.start_ms, opening[1]))
+    for start, slide_id in pages:
+        if item.start_ms < start < item.end_ms:
+            inside.append((start, slide_id))
     if not inside:
         return []
 
