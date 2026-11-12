@@ -265,6 +265,69 @@ def test_the_bindings_change_the_still_digest() -> None:
     assert digest() != digest(bindings='{"头像1": 0}')
 
 
+def test_the_box_source_file_name_changes_the_still_digest() -> None:
+    """A slide's PNG is named after its size *and its typefaces* (§19.17).
+
+    So "the deck's font changed" reaches the still only through the file name — the segment's
+    kind, duration and crop are identical. Without this, changing a deck's font left the still
+    byte-identical under an unchanged URL and the browser kept showing the old face: the same
+    trap 24 that the subtitle style is already in the digest for.
+    """
+    template = make_template(PROJECT)
+    segments = [
+        box_track.BoxSegment(
+            input_index=0,
+            duration_ms=10_000,
+            kind=box_track.KIND_IMAGE,
+            fit="contain",
+        )
+    ]
+
+    def digest_for(name: str) -> str:
+        return render._still_digest(
+            SubtitleStyle(),
+            3_000,
+            video_box.BoxPlan(
+                segments=segments,
+                sources=[Path(name)],
+                width=1440,
+                height=810,
+                box_x=240,
+                box_y=209,
+                orphaned=0,
+                empty=False,
+            ),
+            [],
+            template,
+            True,
+        )
+
+    assert digest_for("sld_a-1440x810-microsoft-yahei+microsoft-yahei.png") != digest_for(
+        "sld_a-1440x810-simhei+microsoft-yahei.png"
+    )
+    # The directory is not part of the pixels: a per-run temp path must not move the digest.
+    assert (
+        digest_for("sld_a-1440x810-simhei.png")
+        == render._still_digest(
+            SubtitleStyle(),
+            3_000,
+            video_box.BoxPlan(
+                segments=segments,
+                sources=[Path("/elsewhere/sld_a-1440x810-simhei.png")],
+                width=1440,
+                height=810,
+                box_x=240,
+                box_y=209,
+                orphaned=0,
+                empty=False,
+            ),
+            [],
+            template,
+            True,
+        )
+    )
+
+
 def test_the_avatar_state_at_that_instant_changes_the_still_digest() -> None:
     lit_now = render.AvatarTrack(
         name="头像1",

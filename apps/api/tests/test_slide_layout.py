@@ -37,6 +37,12 @@ def measure(text: str, size: int) -> float:
     return em(text, size)
 
 
+def double_em(text: str, size: int) -> float:
+    """A font twice as wide as :func:`measure` — the标题/正文 case, where the two faces have
+    different metrics and laying the title out with the body's would overflow."""
+    return 2 * em(text, size)
+
+
 def _EM(text: str) -> float:
     """The same fake font, bound to 10 px so ``wrap`` can take it directly."""
     return em(text, 10)
@@ -250,3 +256,52 @@ def test_a_fitting_plan_never_exceeds_the_box(width: int) -> None:
     )
     if plan.body_px > MIN_BODY_PX:
         assert plan.height_px <= 400
+
+
+# --- separate title and body faces (§19.17) -----------------------------
+
+
+def test_the_title_is_wrapped_with_its_own_measurement() -> None:
+    """The title's face is not the body's, and its widths are not interchangeable.
+
+    A title set in a wide face and measured with the body's narrower one wraps to a line that
+    *measures* as fitting and then runs past the box when drawn. With a title face twice as
+    wide, half as many characters fit per line — so the same title that needs two lines in the
+    body's face needs four in its own, and that is what the assertion pins.
+    """
+    title = "一二三四五六七八"
+    same = layout(
+        title=title, body="正文", width=400, height=600, measure=measure, max_body_px=40
+    )
+    wider = layout(
+        title=title,
+        body="正文",
+        width=400,
+        height=600,
+        measure=measure,
+        title_measure=double_em,
+        max_body_px=40,
+    )
+    assert len(wider.title_lines) >= len(same.title_lines)
+    assert len(wider.title_lines) > 1, "the wide face must force the title to wrap"
+
+
+def test_omitting_the_title_measurement_measures_the_title_with_the_body_s_face() -> None:
+    """``None`` is "one font for both", which is what every caller did before this round."""
+    kwargs = {"title": "标题" * 4, "body": "正文" * 10, "width": 500, "height": 400}
+    implicit = layout(measure=measure, **kwargs)
+    explicit = layout(measure=measure, title_measure=measure, **kwargs)
+    assert implicit == explicit
+
+
+def test_the_title_block_is_sized_from_the_wrapped_lines() -> None:
+    """``body_top_px`` counts the title's *own* lines, so a wider title pushes the body down."""
+    narrow = layout(
+        title="一二三四五六七八", body="正文", width=400, height=900,
+        measure=measure, max_body_px=30,
+    )
+    wide = layout(
+        title="一二三四五六七八", body="正文", width=400, height=900,
+        measure=measure, title_measure=double_em, max_body_px=30,
+    )
+    assert wide.body_top_px >= narrow.body_top_px

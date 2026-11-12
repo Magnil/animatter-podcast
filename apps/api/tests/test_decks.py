@@ -277,7 +277,7 @@ def test_deleting_a_page_deletes_its_picture(
     assert deck is not None
     deck_service.render_slide(
         app_settings, project, deck.id, deck_service.list_slides(session, deck.id)[0],
-        width=320, height=180,
+        width=320, height=180, typefaces=("", ""),
     )
     before = list(deck_service.slides_dir(app_settings, project, deck.id).glob("*.png"))
     assert before, "the fixture must have drawn at least one page"
@@ -307,7 +307,7 @@ def test_regenerating_does_not_leave_orphaned_pictures(
     )
     for view in first:
         deck_service.render_slide(
-            app_settings, project, deck.id, view.row, width=320, height=180
+            app_settings, project, deck.id, view.row, width=320, height=180, typefaces=("", "")
         )
     drawn = list(deck_service.slides_dir(app_settings, project, deck.id).glob("*.png"))
     assert len(drawn) == 3
@@ -331,7 +331,7 @@ def test_a_slide_renders_at_the_box_size(
         session, app_settings, project, sentences=pages(1), total_ms=SPAN
     )
     path = deck_service.render_slide(
-        app_settings, project, deck.id, slides[0].row, width=640, height=360
+        app_settings, project, deck.id, slides[0].row, width=640, height=360, typefaces=("", "")
     )
     assert path.is_file()
     assert Image.open(path).size == (640, 360)
@@ -344,11 +344,11 @@ def test_rendering_is_idempotent(
         session, app_settings, project, sentences=pages(1), total_ms=SPAN
     )
     first = deck_service.render_slide(
-        app_settings, project, deck.id, slides[0].row, width=320, height=180
+        app_settings, project, deck.id, slides[0].row, width=320, height=180, typefaces=("", "")
     )
     stamp = first.stat().st_mtime_ns
     second = deck_service.render_slide(
-        app_settings, project, deck.id, slides[0].row, width=320, height=180
+        app_settings, project, deck.id, slides[0].row, width=320, height=180, typefaces=("", "")
     )
     assert second == first
     assert second.stat().st_mtime_ns == stamp, "an unchanged page must not be redrawn"
@@ -367,10 +367,10 @@ def test_the_same_page_drawn_at_a_different_size_is_a_different_file(
         session, app_settings, project, sentences=pages(1), total_ms=SPAN
     )
     small = deck_service.render_slide(
-        app_settings, project, deck.id, slides[0].row, width=320, height=180
+        app_settings, project, deck.id, slides[0].row, width=320, height=180, typefaces=("", "")
     )
     large = deck_service.render_slide(
-        app_settings, project, deck.id, slides[0].row, width=640, height=360
+        app_settings, project, deck.id, slides[0].row, width=640, height=360, typefaces=("", "")
     )
     assert small != large
     assert Image.open(small).size == (320, 180)
@@ -385,10 +385,10 @@ def test_invalidating_clears_every_size(
         session, app_settings, project, sentences=pages(1), total_ms=SPAN
     )
     deck_service.render_slide(
-        app_settings, project, deck.id, slides[0].row, width=320, height=180
+        app_settings, project, deck.id, slides[0].row, width=320, height=180, typefaces=("", "")
     )
     deck_service.render_slide(
-        app_settings, project, deck.id, slides[0].row, width=640, height=360
+        app_settings, project, deck.id, slides[0].row, width=640, height=360, typefaces=("", "")
     )
     deck_service.invalidate(app_settings, project, deck.id, slides[0].row.id)
     assert not list(
@@ -404,14 +404,14 @@ def test_invalidating_forces_a_redraw(
         session, app_settings, project, sentences=pages(1), total_ms=SPAN
     )
     first = deck_service.render_slide(
-        app_settings, project, deck.id, slides[0].row, width=320, height=180
+        app_settings, project, deck.id, slides[0].row, width=320, height=180, typefaces=("", "")
     )
     before = first.read_bytes()
 
     deck_service.update_slide(session, slides[0].row.id, title="全新的标题")
     deck_service.invalidate(app_settings, project, deck.id, slides[0].row.id)
     deck_service.render_slide(
-        app_settings, project, deck.id, slides[0].row, width=320, height=180
+        app_settings, project, deck.id, slides[0].row, width=320, height=180, typefaces=("", "")
     )
     assert first.read_bytes() != before
 
@@ -465,12 +465,12 @@ def test_a_slide_png_is_keyed_by_id_not_by_title(
     )
     a = Path(
         deck_service.render_slide(
-            app_settings, project, deck.id, slides[0].row, width=320, height=180
+            app_settings, project, deck.id, slides[0].row, width=320, height=180, typefaces=("", "")
         )
     )
     b = Path(
         deck_service.render_slide(
-            app_settings, project, deck.id, slides[1].row, width=320, height=180
+            app_settings, project, deck.id, slides[1].row, width=320, height=180, typefaces=("", "")
         )
     )
     assert a != b
