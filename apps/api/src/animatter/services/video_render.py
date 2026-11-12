@@ -43,7 +43,7 @@ from animatter.media import avatar_track, box_track
 from animatter.media import text_overlay as overlay_media
 from animatter.media import video as video_media
 from animatter.media.subtitle_ass import AssCue, SubtitleStyle, write_ass
-from animatter.models import Render, TranscriptVersion, VideoItem, VideoTemplate
+from animatter.models import Media, Render, TranscriptVersion, VideoItem, VideoTemplate
 from animatter.services import clipping as clipping_service
 from animatter.services import projects as project_service
 from animatter.services import subtitles as subtitle_service
@@ -111,7 +111,6 @@ class PreparedVideo:
     box_rect: dict[str, int]
     items: list[VideoItem]
     edl: Edl
-    audio_path: Path
     duration_ms: int
     #: Empty unless at least one avatar slot is bound to a speaker who talks.
     avatars: list[AvatarTrack] = field(default_factory=list)
@@ -141,10 +140,14 @@ def output_dir(settings: Settings, project_id: str) -> Path:
 def _audio_for(
     session: Session, settings: Settings, version: TranscriptVersion, *, lossless: bool
 ) -> Path:
-    """The already-rendered audio for this exact EDL, or a fresh render of it.
+    """The audio for this exact EDL: an earlier export when one exists, otherwise one made now.
 
-    Reusing the audio is the whole point of the ``-c copy`` mux: re-encoding it here
-    would cost another ten-plus minutes and produce a file the user has not approved.
+    Reusing an export is what makes ``-c copy`` cheap *and* what guarantees the film sounds
+    exactly like the audio the user already approved. But requiring that export first was a
+    rule about the app's plumbing, not about the user's work (round 110): someone who only
+    proofread subtitles and then asked for the film got 409 with 「先导出成片音频」. An empty
+    edit means "keep everything", so the render is one ffmpeg call over the whole file — there
+    was never a reason to make the user do it by hand first.
     """
     from animatter.core.edl import edl_signature
 
@@ -168,12 +171,84 @@ def _audio_for(
             continue
         return path
 
-    raise AppError(
-        "audio_not_rendered",
-        "还没有这个版本的成片音频",
-        hint="先在「导出」里导出成片音频，再导出视频。视频会直接复用那条音轨。",
-        status=409,
+    # Nothing exported for this EDL yet, so render one. This is the *only* place the film
+    # pipeline encodes audio on its own; a later export of the same EDL finds this file and
+    # reuses it, so the cost is paid once either way.
+    log.info("video.audio_render", version_id=version.id, lossless=lossless)
+    return _render_audio(session, settings, version, edl=edl, lossless=lossless)
+
+
+def _render_audio(
+    session: Session,
+    settings: Settings,
+    version: TranscriptVersion,
+    *,
+    edl: Edl,
+    lossless: bool,
+) -> Path:
+    """Render the EDL to a file and record a ``Render`` row for it.
+
+    The row is recorded rather than just the file: the audio exporter's cache looks up
+    ``render.out_path`` by EDL signature, so writing one here is what lets a later
+    「导出成片音频」 answer instantly instead of encoding the same thing again.
+    """
+    from animatter.core.edl import edl_signature
+    from animatter.media import render as render_media
+
+    media = session.get(Media, version.media_id)
+    if media is None:
+        raise AppError("media_not_found", "找不到对应的音频", status=404)
+    source = Path(media.path)
+    if not source.is_file():
+        raise AppError(
+            "media_file_missing",
+            "源音频文件不在了",
+            hint="重新导入这期的音频。",
+            status=404,
+        )
+
+    out_dir = project_service.project_root(settings, version.project_id) / "exports"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    suffix = ".wav" if lossless else ".m4a"
+    target = out_dir / f"{version.id}-{edl_signature(edl)[:12]}{suffix}"
+
+    # Committed before ffmpeg starts: the file is the deliverable, and a crash mid-encode
+    # must not leave a row claiming a finished render.
+    record = Render(
+        id=new_id("rnd"),
+        project_id=version.project_id,
+        version_id=version.id,
+        edl_hash=edl_signature(edl),
+        out_path=str(target),
+        duration_ms=edl.output_duration_ms,
+        status="running",
+        progress=0.0,
+        created_at=utcnow_iso(),
     )
+    session.add(record)
+    session.commit()
+
+    try:
+        result = render_media.render(
+            settings.ffmpeg_path,
+            source=source,
+            edl=edl,
+            target=target,
+            sample_rate=media.sample_rate or 44_100,
+            channels=media.channels or 2,
+            lossless=lossless,
+        )
+    except AppError as exc:
+        record.status = "failed"
+        record.error = f"{exc.message}：{exc.hint}"
+        session.commit()
+        raise
+
+    record.status = "done"
+    record.progress = 1.0
+    record.duration_ms = result.duration_ms
+    session.commit()
+    return target
 
 
 def prepare(
@@ -196,7 +271,6 @@ def prepare(
         )
 
     edl = clipping_service.build_edl(session, settings, version)
-    audio = _audio_for(session, settings, version, lossless=lossless_audio)
     items = video_service.list_items(session, project_id)
 
     tracks = avatar_tracks(session, template, version, edl)
@@ -205,7 +279,6 @@ def prepare(
         box_rect=template_service.box_rect_of(template),
         items=items,
         edl=edl,
-        audio_path=audio,
         duration_ms=edl.output_duration_ms,
         avatars=tracks,
         avatar_names=video_avatars.name_plates(session, template),
@@ -734,12 +807,20 @@ def _encode(
     assert isinstance(db, Database)
 
     with db.session() as session:
-        prepared = prepare(
-            session, settings, project_id, version_id, lossless_audio=options.lossless_audio
-        )
+        prepared = prepare(session, settings, project_id, version_id)
         record = session.get(Render, render_id)
         if record is None:
             raise AppError("render_not_found", "导出任务不存在", status=404)
+
+        # Resolved **here**, not in `prepare`: an empty edit has no prior export, so this is
+        # where the audio gets made (§19.23), and making it inside the request that queues the
+        # job would block the UI for the length of the episode.
+        audio = _audio_for(
+            session,
+            settings,
+            clipping_service.get_version(session, version_id),
+            lossless=options.lossless_audio,
+        )
 
         out = output_dir(settings, project_id)
         stem = f"{version_id}-{record.edl_hash[:12]}"
@@ -820,7 +901,7 @@ def _encode(
     result = video_media.mux(
         settings.ffmpeg_path,
         video=silent,
-        audio=prepared.audio_path,
+        audio=audio,
         target=final,
         # Empty unless the user unmuted something (§19.20), which is what keeps the silent
         # case on the `-c copy` path it was designed around.

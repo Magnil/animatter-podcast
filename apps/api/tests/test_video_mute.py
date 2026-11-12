@@ -85,7 +85,6 @@ def prepared(project_id: str, *, items: list[VideoItem] | None = None) -> render
         box_rect={"x": 240, "y": 209, "w": 1440, "h": 810},
         items=items if items is not None else [item(project_id)],
         edl=edl_with(10_000),
-        audio_path=Path("audio.m4a"),
         duration_ms=10_000,
         avatars=[],
     )

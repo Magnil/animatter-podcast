@@ -98,7 +98,6 @@ def prepared(
         box_rect={"x": 240, "y": 209, "w": 1440, "h": 810},
         items=items if items is not None else [make_item(project_id)],
         edl=edl_without_deletions(total),
-        audio_path=Path("audio.m4a"),
         duration_ms=total,
         avatars=avatars or [],
     )

@@ -19,13 +19,16 @@ So the properties worth pinning are not "does ffmpeg produce a file" (that is
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from tests.test_render import make_audio
 
 from animatter.config import Settings
+from animatter.errors import AppError
 from animatter.ids import new_id, utcnow_iso
 from animatter.models import Media, Render
 from animatter.services import clipping as clipping_service
@@ -175,3 +178,161 @@ def test_unknown_render_is_404_not_a_crash(client: TestClient) -> None:
     response = client.get("/api/renders/rnd_does_not_exist")
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "render_not_found"
+
+
+# --- exporting with nothing cut (round 110) -----------------------------
+
+
+def test_empty_edit_still_renders_audio(
+    client: TestClient, session: Session, settings: Settings, monkeypatch
+) -> None:
+    """「允许用户随时导出音频和视频」 — an unedited episode is a valid deliverable.
+
+    Nothing is deleted here, so `build_edl` yields one keep spanning the whole file. That was
+    always renderable; the film export simply refused to try.
+    """
+    from tests.test_corrections import seed_version
+
+    version = seed_version(session, text="一二三四五六七八", sizes=[8])
+    media = session.get(Media, version.media_id)
+    assert media is not None
+    source = make_audio(settings.data_dir / "src.wav", seconds=2.0)
+    media.path = str(source)
+    media.duration_ms = 2000
+    media.sample_rate = 22050
+    media.channels = 1
+    session.commit()
+
+    assert clipping_service.list_deletions(session, version.id) == []
+
+    edl = clipping_service.build_edl(session, settings, version)
+    assert edl.removed_ms == 0
+    assert edl.output_duration_ms == edl.original_duration_ms
+
+    from animatter.services import video_render
+
+    # `_render_audio` commits its own bookkeeping (it has to: the file is a deliverable and the
+    # row must be visible to the next export), so it is called plainly here.
+    path = video_render._render_audio(
+        session, settings, version, edl=edl, lossless=False
+    )
+    assert path.is_file()
+    assert path.stat().st_size > 1000
+
+
+def test_the_self_rendered_audio_is_recorded_for_reuse(
+    client: TestClient, session: Session, settings: Settings
+) -> None:
+    """A later 「导出成片音频」 must find this file, not encode the same thing again."""
+    from tests.test_corrections import seed_version
+
+    from animatter.core.edl import edl_signature
+    from animatter.models import Render
+
+    version = seed_version(session, text="一二三四五六七八", sizes=[8])
+    media = session.get(Media, version.media_id)
+    assert media is not None
+    media.path = str(make_audio(settings.data_dir / "src.wav", seconds=1.0))
+    media.duration_ms = 1000
+    media.sample_rate = 22050
+    media.channels = 1
+    session.commit()
+
+    edl = clipping_service.build_edl(session, settings, version)
+    signature = edl_signature(edl)
+
+    from animatter.services import video_render
+
+    path = video_render._render_audio(
+        session, settings, version, edl=edl, lossless=False
+    )
+
+    row = session.scalars(
+        select(Render).where(Render.version_id == version.id, Render.edl_hash == signature)
+    ).first()
+    assert row is not None
+    assert row.status == "done"
+    assert row.out_path == str(path)
+
+
+def test_a_missing_source_never_produces_a_done_row(
+    client: TestClient, session: Session, settings: Settings
+) -> None:
+    """A `done` row whose file does not exist would turn every later export into a mux 404."""
+    from tests.test_corrections import seed_version
+
+    from animatter.core.edl import edl_signature
+    from animatter.models import Render
+
+    version = seed_version(session, text="一二三四五六七八", sizes=[8])
+    media = session.get(Media, version.media_id)
+    assert media is not None
+    media.path = str(settings.data_dir / "never_existed.wav")
+    media.duration_ms = 1000
+    media.sample_rate = 22050
+    media.channels = 1
+    session.commit()
+
+    edl = clipping_service.build_edl(session, settings, version)
+
+    from animatter.services import video_render
+
+    with pytest.raises(AppError, match="源音频文件不在了"):
+        video_render._render_audio(
+            session, settings, version, edl=edl, lossless=False
+        )
+
+    rows = session.scalars(
+        select(Render).where(Render.version_id == version.id, Render.edl_hash == edl_signature(edl))
+    ).all()
+    assert rows == [], rows
+
+
+def test_queueing_the_film_does_not_render_audio_inline(
+    client: TestClient, session: Session, settings: Settings, monkeypatch
+) -> None:
+    """The POST returns immediately; the episode-length encode belongs to the worker.
+
+    Round 42's defect was a request that held the SQLite write lock for twelve minutes. Moving
+    the audio render into `prepare()` would recreate exactly that.
+    """
+    from tests.test_corrections import seed_version
+
+    version = seed_version(session, text="一二三四五六七八", sizes=[8])
+    media = session.get(Media, version.media_id)
+    assert media is not None
+    media.path = str(make_audio(settings.data_dir / "src.wav", seconds=1.0))
+    media.duration_ms = 1000
+    media.sample_rate = 22050
+    media.channels = 1
+    session.commit()
+
+    # A ready template, copied from the same helper the render tests use: `prepare` refuses to
+    # do anything at all without one, and that refusal would hide which function was reached.
+    from tests.test_video_mute import template as ready_template
+
+    session.add(ready_template(version.project_id))
+    session.commit()
+
+    from animatter.services import video_render
+
+    called: list[str] = []
+
+    def spy(*args: object, **kwargs: object) -> Path:
+        called.append("rendered")
+        raise AssertionError("排队时不应该渲染音频")
+
+    monkeypatch.setattr(video_render, "_render_audio", spy)
+    prepared = video_render.prepare(session, settings, version.project_id, version.id)
+    assert prepared.duration_ms == 1000
+    assert called == []
+
+
+def test_prepared_video_has_no_audio_path() -> None:
+    """The absence is the fix, so it is asserted rather than left implicit."""
+    from dataclasses import fields
+
+    from animatter.services import video_render
+
+    names = {field.name for field in fields(video_render.PreparedVideo)}
+    assert "audio_path" not in names
