@@ -6,6 +6,11 @@ frame for Chrome and no guarantee of identical pixels across GPU/driver versions
 
 The layout arithmetic lives in :mod:`animatter.core.slide` and is tested with a fake font
 there; this module only knows about files, fonts and pixels.
+
+Title and body take **separate families** (round 101). A deck's page is a title and a list of
+points, and those two are different kinds of text; the template tab has set them separately
+since §19.14, so a deck that could not would be the one place in the product where type is
+all-or-nothing.
 """
 
 from __future__ import annotations
@@ -19,11 +24,7 @@ from PIL import Image, ImageDraw, ImageFont
 from animatter.core.slide import SlideLayout, layout
 from animatter.errors import AppError
 from animatter.log import get_logger
-from animatter.media.subtitle_ass import (
-    _FONT_DIRS,
-    _FONT_FILES,
-    find_font,
-)
+from animatter.media import fonts
 
 log = get_logger(__name__)
 
@@ -52,8 +53,10 @@ BODY_COLOUR: Final[tuple[int, int, int]] = (52, 58, 70)
 ACCENT: Final[tuple[int, int, int]] = (46, 84, 168)
 QUOTE_COLOUR: Final[tuple[int, int, int]] = (96, 104, 120)
 
-#: Font family for slides. Deliberately the same family as the subtitles: two different
-#: CJK faces in one film looks like an accident.
+#: Default families. Deliberately the same family as the subtitles: two different CJK faces in
+#: one film looks like an accident. Both are overridable per deck (``deck.title_font`` /
+#: ``deck.body_font``), and the title defaults to the same one so an untouched deck looks
+#: exactly as it did before fonts were settable.
 FONT_FAMILY: Final[str] = "Microsoft YaHei"
 
 LAYOUTS: Final[tuple[str, ...]] = ("title", "title_body", "quote")
@@ -66,38 +69,40 @@ class RenderedSlide:
     height: int
 
 
-def _font_path() -> Path:
-    path = find_font(FONT_FAMILY)
-    if path is None:
-        stems = {
-            item.stem
-            for directory in _FONT_DIRS
-            if directory.is_dir()
-            for item in directory.iterdir()
-            if item.suffix.lower() in {".ttf", ".ttc", ".otf"}
-        }
-        installed = "、".join(sorted(stems)[:8]) or "（一个都没找到）"
-        raise AppError(
-            "slide_font_missing",
-            f"找不到幻灯片要用的字体「{FONT_FAMILY}」",
-            hint=f"装一个中文字体（这台机器上有：{installed}），或把 deck 的字体改成已有的。",
-            status=503,
-        )
-    return path
+def _font_path(family: str) -> Path:
+    """The file to draw ``family`` with, or a 503 naming what *is* available.
+
+    Resolved through :mod:`animatter.media.fonts`, not through
+    ``subtitle_ass.find_font``: the latter only scans ``C:/Windows/Fonts`` and therefore
+    reports 数黑 and Baigo — the two families this product's own templates use, which live in
+    字由's download store — as missing. Offering a font picker whose choices cannot be drawn
+    would be worse than offering none.
+    """
+    face = fonts.resolve(family)
+    if face is not None and face.path.is_file():
+        return face.path
+    installed = "、".join(fonts.families()[:10]) or "（一个都没找到）"
+    raise AppError(
+        "slide_font_missing",
+        f"找不到幻灯片要用的字体「{family}」",
+        hint=f"装一个中文字体（这台机器上有：{installed}），或把演示稿的字体改成已有的。",
+        status=503,
+    )
 
 
-def _load(size: int) -> ImageFont.FreeTypeFont:
+def _load(family: str, size: int) -> ImageFont.FreeTypeFont:
     """A ``FreeTypeFont`` at one size, cached by Pillow's own ``ImageFont`` internals.
 
     ``index=0`` matters for ``.ttc`` collections: ``msyh.ttc`` holds several faces and the
     default index is not guaranteed to be the Regular one, which would silently give the
     deck a different weight from the subtitles.
     """
-    return ImageFont.truetype(str(_font_path()), size=size, index=0)
+    return ImageFont.truetype(str(_font_path(family)), size=size, index=0)
 
 
 def measure_with(font_size: int) -> ImageFont.FreeTypeFont:
-    return _load(font_size)
+    """The default family at one size — a diagnostic hook, not a layout path."""
+    return _load(FONT_FAMILY, font_size)
 
 
 def render(
@@ -108,6 +113,8 @@ def render(
     layout_kind: str = "title_body",
     width: int = DEFAULT_W,
     height: int = DEFAULT_H,
+    title_font: str = FONT_FAMILY,
+    body_font: str = FONT_FAMILY,
 ) -> RenderedSlide:
     """Draw one page and write it as PNG.
 
@@ -129,16 +136,23 @@ def render(
     text_w = width - pad * 2
     text_h = height - pad * 2 - reserve
 
-    fonts: dict[int, ImageFont.FreeTypeFont] = {}
+    # Two caches, keyed by (family, size): the title and the body can be different families,
+    # so a size alone no longer identifies a face.
+    cache: dict[tuple[str, int], ImageFont.FreeTypeFont] = {}
+
+    def font_for(family: str, size: int) -> ImageFont.FreeTypeFont:
+        key = (family, size)
+        font = cache.get(key)
+        if font is None:
+            font = _load(family, size)
+            cache[key] = font
+        return font
 
     def measure(text: str, size: int) -> float:
-        # Cached per size: laying out one page measures the same text dozens of times while
-        # shrinking, and every uncached call re-opens the font file.
-        font = fonts.get(size)
-        if font is None:
-            font = _load(size)
-            fonts[size] = font
-        return float(font.getlength(text))
+        return float(font_for(body_font, size).getlength(text))
+
+    def measure_title(text: str, size: int) -> float:
+        return float(font_for(title_font, size).getlength(text))
 
     if layout_kind == "quote":
         plan = layout(
@@ -148,22 +162,32 @@ def render(
     elif layout_kind == "title":
         plan = layout(
             title=title, body="", width=text_w, height=text_h, measure=measure,
-            max_body_px=40, min_body_px=24,
+            title_measure=measure_title, max_body_px=40, min_body_px=24,
         )
     else:
-        plan = layout(title=title, body=body, width=text_w, height=text_h, measure=measure)
+        plan = layout(
+            title=title, body=body, width=text_w, height=text_h,
+            measure=measure, title_measure=measure_title,
+        )
 
     image = Image.new("RGB", (width, height), BACKGROUND)
     draw = ImageDraw.Draw(image)
 
     if layout_kind == "quote":
-        _draw_quote(draw, plan, fonts, pad=pad, height=height, reserve=reserve)
+        _draw_quote(draw, plan, font_for(body_font, plan.body_px), pad=pad, height=height,
+                    reserve=reserve)
     elif layout_kind == "title":
         _draw_title_only(
-            draw, plan, fonts, pad=pad, width=width, height=height, reserve=reserve
+            draw, plan, font_for(title_font, plan.title_px),
+            pad=pad, width=width, height=height, reserve=reserve,
         )
     else:
-        _draw_title_body(draw, plan, fonts, pad=pad)
+        _draw_title_body(
+            draw, plan,
+            title_font=font_for(title_font, plan.title_px),
+            body_font=font_for(body_font, plan.body_px),
+            pad=pad,
+        )
 
     target.parent.mkdir(parents=True, exist_ok=True)
     image.save(target, format="PNG")
@@ -173,12 +197,12 @@ def render(
 def _draw_title_body(
     draw: ImageDraw.ImageDraw,
     plan: SlideLayout,
-    fonts: dict[int, ImageFont.FreeTypeFont],
     *,
+    title_font: ImageFont.FreeTypeFont,
+    body_font: ImageFont.FreeTypeFont,
     pad: int,
 ) -> None:
     y = pad
-    title_font = fonts.setdefault(plan.title_px, _load(plan.title_px))
     title_line_h = int(plan.title_px * 1.45)
     for line in plan.title_lines:
         draw.text((pad, y), line, font=title_font, fill=TITLE_COLOUR)
@@ -191,7 +215,6 @@ def _draw_title_body(
             [pad, rule_y, pad + int(plan.body_px * 3.2), rule_y + max(3, plan.body_px // 12)],
             fill=ACCENT,
         )
-    body_font = fonts.setdefault(plan.body_px, _load(plan.body_px))
     y = pad + plan.body_top_px
     for line in plan.body_lines:
         draw.text((pad, y), line, font=body_font, fill=BODY_COLOUR)
@@ -201,7 +224,7 @@ def _draw_title_body(
 def _draw_title_only(
     draw: ImageDraw.ImageDraw,
     plan: SlideLayout,
-    fonts: dict[int, ImageFont.FreeTypeFont],
+    font: ImageFont.FreeTypeFont,
     *,
     pad: int,
     width: int,
@@ -209,7 +232,6 @@ def _draw_title_only(
     reserve: int,
 ) -> None:
     """A section break: the title alone, centred in the space the subtitle leaves."""
-    font = fonts.setdefault(plan.title_px, _load(plan.title_px))
     line_h = int(plan.title_px * 1.45)
     block_h = len(plan.title_lines) * line_h
     y = (height - reserve - block_h) // 2
@@ -228,14 +250,13 @@ def _draw_title_only(
 def _draw_quote(
     draw: ImageDraw.ImageDraw,
     plan: SlideLayout,
-    fonts: dict[int, ImageFont.FreeTypeFont],
+    font: ImageFont.FreeTypeFont,
     *,
     pad: int,
     height: int,
     reserve: int,
 ) -> None:
     """A pull quote: a thick accent rule on the left, centred above the subtitle."""
-    font = fonts.setdefault(plan.body_px, _load(plan.body_px))
     block_h = len(plan.body_lines) * plan.leading_px
     y = max(pad, (height - reserve - block_h) // 2)
     left = pad + int(plan.body_px * 1.2)
@@ -248,4 +269,5 @@ def _draw_quote(
 
 def font_table() -> dict[str, tuple[str, ...]]:
     """Exposed for the same reason the subtitle module has one: tests and diagnostics."""
-    return dict(_FONT_FILES)
+    return {family: (font, ) for family, font in ((FONT_FAMILY, str(_font_path(FONT_FAMILY))),)}
+

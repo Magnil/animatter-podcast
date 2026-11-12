@@ -466,6 +466,12 @@ class Deck(Base):
     #: JSON list of user-facing strings produced by the generation run (a dropped page, a
     #: merged page, a failed block). Empty for a clean run.
     warnings_json: Mapped[str] = mapped_column(Text, default="[]")
+    #: Typeface for the page title and for the body points, set separately (§19.17).
+    #: **Empty means "the renderer's default"**, deliberately not a font name: an untouched deck
+    #: then keeps following ``slide_render.FONT_FAMILY`` if that default ever changes, and a
+    #: migration does not have to write a machine-specific family into every existing row.
+    title_font: Mapped[str] = mapped_column(String(120), default="")
+    body_font: Mapped[str] = mapped_column(String(120), default="")
     created_at: Mapped[str] = mapped_column(String(32))
 
 

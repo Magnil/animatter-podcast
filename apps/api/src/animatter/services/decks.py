@@ -13,6 +13,7 @@ the move path rewrites through a temporary offset instead of a direct swap.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,7 +26,7 @@ from animatter.core.script import Chapter, ScriptSentence
 from animatter.errors import AppError
 from animatter.ids import new_id, utcnow_iso
 from animatter.log import get_logger
-from animatter.media import slide_render
+from animatter.media import fonts, slide_render
 from animatter.models import Deck, Slide
 from animatter.services import projects as project_service
 
@@ -65,17 +66,64 @@ def slides_dir(settings: object, project_id: str, deck_id: str) -> Path:
 
 
 def image_path(
-    settings: object, project_id: str, deck_id: str, slide_id: str, *, width: int, height: int
+    settings: object,
+    project_id: str,
+    deck_id: str,
+    slide_id: str,
+    *,
+    width: int,
+    height: int,
+    typefaces: tuple[str, str],
 ) -> Path:
-    """Where one page's PNG lives, **keyed by the size it was drawn at**.
+    """Where one page's PNG lives, **keyed by the size and the typefaces it was drawn at**.
 
     The size has to be part of the name. A slide is drawn at the media box's exact pixel
     size so the overlay never rescales it, but the same deck is also asked for a small
     preview by the editor — and caching by slide id alone served the 1267×712 PNG to a
     1440×810 box. The overlay then upscaled it, which is precisely the soft text this
     design exists to avoid, and the text visibly ran past the box's right edge.
+
+    The fonts are in the name for the same reason (§19.17), and ``typefaces`` is therefore
+    **already resolved** — an unset deck is spelled as the family it will actually draw in,
+    so "unset" and "explicitly the default" are the same file rather than two copies of the
+    same pixels. A slug collision between two families is caught by ``set_fonts``, which
+    empties the folder whenever the effective pair changes.
     """
-    return slides_dir(settings, project_id, deck_id) / f"{slide_id}-{width}x{height}.png"
+    title_font, body_font = _resolve_typefaces(typefaces)
+    tag = f"{_slug(title_font)}+{_slug(body_font)}"
+    return slides_dir(settings, project_id, deck_id) / f"{slide_id}-{width}x{height}-{tag}.png"
+
+
+def _resolve_typefaces(typefaces: tuple[str, str]) -> tuple[str, str]:
+    """Map the "unset" spelling (``""``) onto the family that will actually be drawn.
+
+    One place, so the cache key and the drawing cannot disagree: if the file name kept ``""``
+    while the pixels were drawn in 微软雅黑, ``set_fonts`` would see a change on every request
+    and empty the folder continuously.
+    """
+    return (
+        typefaces[0] or slide_render.FONT_FAMILY,
+        typefaces[1] or slide_render.FONT_FAMILY,
+    )
+
+
+def _slug(family: str) -> str:
+    """A font family as a safe file-name fragment.
+
+    Spaces and ``+`` are the two characters that matter here: the family is user data (字由's
+    store has names like 「Slidefu」 and 「Alimama ShuHeiTi」), and ``+`` is already the
+    separator between the two roles.
+    """
+    cleaned = "".join(char if char.isalnum() else "-" for char in family.strip().lower())
+    slug = cleaned.strip("-")[:24]
+    if not slug:
+        # An all-symbol family name (not 数黑's characters, which are ``isalnum``, but a name
+        # made of 「·」 and the like). A stable digest keeps the tag unique instead of
+        # collapsing every such family onto the same file name — and stable across processes,
+        # which ``hash()`` is not.
+        digest = hashlib.sha256(family.encode("utf-8")).hexdigest()[:8]
+        slug = f"x{digest}"
+    return slug
 
 
 # --- reading -----------------------------------------------------------
@@ -101,6 +149,85 @@ def require_deck(session: Session, project_id: str) -> Deck:
 
 def get_deck_by_id(session: Session, deck_id: str) -> Deck | None:
     return session.get(Deck, deck_id)
+
+
+def deck_fonts(deck: Deck) -> tuple[str, str]:
+    """The ``(title_font, body_font)`` this deck draws with, defaults resolved.
+
+    Empty means "unset" on the row, and the renderer's default is what an unset deck gets.
+    Resolving here rather than in the router keeps one definition of the default: the image
+    route, the film and the panel all read the same pair.
+    """
+    return (
+        deck.title_font or slide_render.FONT_FAMILY,
+        deck.body_font or slide_render.FONT_FAMILY,
+    )
+
+
+def set_fonts(
+    session: Session,
+    settings: object,
+    deck: Deck,
+    *,
+    title_font: str | None = None,
+    body_font: str | None = None,
+) -> Deck:
+    """Change the deck's typefaces and throw away every stale PNG.
+
+    The pictures *must* go, at every size. The file name carries the pair (§19.17), so a font
+    change already lands on a new path — but the *old* files would then be unreachable garbage
+    that ``purge_images`` is the only thing to collect, and a page whose font was changed back
+    would be served from a stale picture. Trap 24 in §19.11 is the same failure one level up:
+    an unchanged URL showing old pixels.
+
+    ``settings`` is explicit for the same reason ``delete_slide``'s is: the PNG lives on disk
+    and the row does not know where, so every caller must be able to say.
+
+    ``None`` means "leave as is"; the empty string means "back to the default", which is why
+    the argument that clears is not the same as the argument that is absent.
+
+    The purge is keyed on the **effective** pair, not on the stored strings: picking the
+    default family explicitly from the picker changes no pixel, and dropping 30 pages' worth
+    of PNGs (and re-drawing them) for a no-op is exactly the kind of hidden cost that makes a
+    UI feel slow.
+    """
+    before = deck_fonts(deck)
+    if title_font is not None:
+        deck.title_font = _checked_font(title_font)
+    if body_font is not None:
+        deck.body_font = _checked_font(body_font)
+    if deck_fonts(deck) == before:
+        return deck
+    session.flush()
+    purge_images(session, settings, deck.id, None)
+    log.info(
+        "deck.fonts",
+        deck=deck.id,
+        title=deck.title_font or "-",
+        body=deck.body_font or "-",
+    )
+    return deck
+
+
+def _checked_font(family: str) -> str:
+    """Reject a family this machine cannot draw, *before* the row is written.
+
+    Accepting it would store a deck that 503s on every preview and every export, with the
+    error only surfacing later on a render path that has no way to ask the user to choose
+    again. The picker only offers drawable families, so this is a guard against a stale UI or
+    a hand-made request, not against the normal flow.
+    """
+    name = family.strip()
+    if not name:
+        return ""
+    if not fonts.draws_chinese(name):
+        available = "、".join(fonts.chinese_families()[:8]) or "（一个都没找到）"
+        raise AppError(
+            "slide_font_unusable",
+            f"「{name}」画不了中文",
+            hint=f"换一个能画中文的字体，这台机器上有：{available}…",
+        )
+    return name
 
 
 def get_slide(session: Session, slide_id: str) -> Slide | None:
@@ -436,13 +563,24 @@ def render_slide(
     *,
     width: int,
     height: int,
+    typefaces: tuple[str, str],
 ) -> Path:
-    """Draw one page at the media box's size and return the PNG path."""
-    target = image_path(settings, project_id, deck_id, row.id, width=width, height=height)
+    """Draw one page at the media box's size and return the PNG path.
+
+    ``typefaces`` is ``(title_font, body_font)`` and is **required**, with no default. A
+    default here would be the exact bug this round is about: every caller that forgot it
+    would draw the page in the renderer's default and the cache would happily serve it, so a
+    deck set in 数黑 would silently export in 微软雅黑 and nothing would look wrong until
+    someone compared the preview with the film.
+    """
+    target = image_path(
+        settings, project_id, deck_id, row.id, width=width, height=height, typefaces=typefaces
+    )
     if target.is_file():
         # Same inputs, same pixels: a re-render would only cost time. The file is keyed by
-        # slide id and invalidated by `invalidate` below, never by mtime guessing.
+        # slide id, size and typefaces, and invalidated by `invalidate` / `set_fonts`.
         return target
+    title_font, body_font = _resolve_typefaces(typefaces)
     slide_render.render(
         target=target,
         title=row.title,
@@ -450,6 +588,8 @@ def render_slide(
         layout_kind=row.layout,
         width=width,
         height=height,
+        title_font=title_font,
+        body_font=body_font,
     )
     return target
 
@@ -473,6 +613,7 @@ def render_all(
     *,
     width: int,
     height: int,
+    typefaces: tuple[str, str],
 ) -> dict[str, Path]:
     """Render every page at one size, keyed by slide id.
 
@@ -482,7 +623,7 @@ def render_all(
     out: dict[str, Path] = {}
     for row in list_slides(session, deck_id):
         out[row.id] = render_slide(
-            settings, project_id, deck_id, row, width=width, height=height
+            settings, project_id, deck_id, row, width=width, height=height, typefaces=typefaces
         )
     return out
 

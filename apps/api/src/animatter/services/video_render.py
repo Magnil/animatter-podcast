@@ -574,9 +574,16 @@ def _still_digest(
     segment = ""
     if covered is not None:
         found = covered[0]
+        # ``covered[1]`` is the *file* the segment draws. Its **name** carries facts the rest of
+        # this digest cannot see: a slide's PNG is named after the size and the typefaces it was
+        # drawn with (§19.17), so changing a deck's font produces a new name for the same
+        # instant. Without it the still kept its old name and the browser kept the old picture —
+        # the exact "I changed it and the preview did not move" failure trap 24 is about.
+        # Name only, not the full path: the file lives under a data dir that differs per test
+        # run, and a digest that moves with the temp directory is not about the pixels.
         segment = (
             f"{found.kind}/{found.fit}/{found.duration_ms}/"
-            f"{found.crop}/{found.loop}/{covered[1]}"
+            f"{found.crop}/{found.loop}/{Path(covered[1]).name}"
         )
     lit = ",".join(f"{track.name}@{int(lit_at(track.lit, at_ms))}" for track in tracks)
     parts = [

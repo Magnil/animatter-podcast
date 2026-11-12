@@ -78,6 +78,11 @@ TITLE_FONT: Final[str] = "Alimama ShuHeiTi"
 EPISODE_FONT: Final[str] = "Baigo"
 NAME_FONT: Final[str] = "Alimama ShuHeiTi"
 
+#: A common character and a private-use code point used only to tell "this face has Chinese"
+#: from "this face draws .notdef". See :func:`draws_chinese`.
+_CJK_SAMPLE: Final[str] = "中"
+_NOTDEF_SAMPLE: Final[str] = "\ue000"
+
 
 @dataclass(frozen=True)
 class FontFace:
@@ -149,6 +154,8 @@ def _fingerprint(files: list[Path]) -> tuple[int, int]:
 
 
 _cache: tuple[tuple[int, int], list[FontFace]] | None = None
+#: Same key as ``_cache``; invalidated together with it.
+_cjk_cache: tuple[tuple[int, int], list[str]] | None = None
 
 
 def discover() -> list[FontFace]:
@@ -180,6 +187,62 @@ def discover() -> list[FontFace]:
 def families() -> list[str]:
     """Distinct family names, for the picker."""
     return sorted({face.family for face in discover()}, key=str.lower)
+
+
+def draws_chinese(family: str) -> bool:
+    """True when ``family`` actually has Chinese glyphs.
+
+    Being installed is not the same as being able to draw 中文: 68 of the 105 families on this
+    machine are Latin-only or icon faces. A slide set in one of those renders a page of blank
+    boxes, and the user blames the app rather than the font they picked — so a picker for
+    Chinese text has to ask this, not just ``resolve()``.
+
+    Two signatures, because neither is universal: the glyph's box differs from U+E000's (the
+    private-use .notdef box) for most faces, and 中's advance width differs for the rest.
+    ~0.04 s for the whole machine, cached beside :func:`discover`.
+    """
+    return family in chinese_families()
+
+
+def chinese_families() -> list[str]:
+    """Families that can draw Chinese — what a font picker for 中文 should offer."""
+    global _cjk_cache
+    faces = discover()
+    # The key comes from ``discover()``'s own fingerprint, so installing a font invalidates
+    # this list too. Reading ``_cache`` directly is deliberate: recomputing the fingerprint
+    # means another full directory scan on every picker request.
+    key = _cache[0] if _cache is not None else (0, 0)
+    if _cjk_cache is not None and _cjk_cache[0] == key:
+        return _cjk_cache[1]
+
+    names: list[str] = []
+    for face in faces:
+        if not _readable(face.family):
+            # One 字由 download reports its family as 「?????-??」 — PIL could not decode the
+            # name table. It draws fine, but nobody can select a string they cannot read, and
+            # it would sit at the top of an alphabetically sorted picker.
+            continue
+        try:
+            font = ImageFont.truetype(str(face.path), 24, index=0)
+            if (
+                font.getbbox(_CJK_SAMPLE) != font.getbbox(_NOTDEF_SAMPLE)
+                or font.getlength(_CJK_SAMPLE) != font.getlength(_NOTDEF_SAMPLE)
+            ):
+                names.append(face.family)
+        except Exception:  # pragma: no cover - a font file Pillow cannot open
+            continue
+    unique = sorted(set(names), key=str.lower)
+    _cjk_cache = (key, unique)
+    log.info("fonts.chinese", families=len(unique), total=len(families()))
+    return unique
+
+
+def _readable(family: str) -> bool:
+    """False for a family name that is mostly undecoded bytes (``?????-??``)."""
+    stripped = family.strip()
+    if not stripped:
+        return False
+    return stripped.count("?") * 2 < len(stripped)
 
 
 def resolve(family: str, *, bold: bool | None = None) -> FontFace | None:

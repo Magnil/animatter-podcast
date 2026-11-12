@@ -204,6 +204,7 @@ def layout(
     width: int,
     height: int,
     measure: Measure,
+    title_measure: Measure | None = None,
     max_body_px: int = MAX_BODY_PX,
     min_body_px: int = MIN_BODY_PX,
 ) -> SlideLayout:
@@ -213,16 +214,23 @@ def layout(
     shrinks it too if its own block does not fit. Returns the *smallest* size that fits,
     never smaller than ``min_body_px`` — at that point the page is over-full and the honest
     outcome is a layout that overflows slightly, not 9 px text.
+
+    ``title_measure`` exists because the title and the body can be set in **different
+    fonts**, and a font's widths are not interchangeable: 数黑 at 60 px is wider than
+    微软雅黑 at 60 px, so wrapping the title with the body's measurement would produce a
+    line that measures as fitting and then runs past the box when drawn. ``None`` means
+    "same font for both", which is what every caller did before fonts became settable.
     """
     body_text = body.strip()
     title_text = title.strip()
+    title_check = title_measure if title_measure is not None else measure
 
     size = max_body_px
     chosen: SlideLayout | None = None
     while size >= min_body_px:
         candidate = _try_layout(
             title=title_text, body=body_text, width=width, height=height, measure=measure,
-            body_px=size,
+            title_measure=title_check, body_px=size,
         )
         if candidate.height_px <= height:
             chosen = candidate
@@ -233,7 +241,7 @@ def layout(
         # and therefore fixable. Silently dropping lines would not be.
         chosen = _try_layout(
             title=title_text, body=body_text, width=width, height=height, measure=measure,
-            body_px=min_body_px,
+            title_measure=title_check, body_px=min_body_px,
         )
     return chosen
 
@@ -245,17 +253,20 @@ def _try_layout(
     width: int,
     height: int,
     measure: Measure,
+    title_measure: Measure,
     body_px: int,
 ) -> SlideLayout:
     body_lines = wrap(body, max_width=width, measure=_at(measure, body_px))
     body_leading = int(body_px * LEADING)
 
     title_px = min(MAX_TITLE_PX, max(MIN_TITLE_PX, int(body_px * TITLE_RATIO)))
-    title_lines = title_lines_for(title, max_width=width, measure=_at(measure, title_px))
+    title_lines = title_lines_for(title, max_width=width, measure=_at(title_measure, title_px))
     # The title must not eat the page: if it wraps past two lines, bring it down.
     while len(title_lines) > 2 and title_px > MIN_TITLE_PX:
         title_px = max(MIN_TITLE_PX, int(title_px * 0.85))
-        title_lines = title_lines_for(title, max_width=width, measure=_at(measure, title_px))
+        title_lines = title_lines_for(
+            title, max_width=width, measure=_at(title_measure, title_px)
+        )
 
     title_block = len(title_lines) * int(title_px * LEADING)
     gap = int(body_px * TITLE_GAP) if title_lines else 0

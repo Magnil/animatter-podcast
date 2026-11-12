@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from animatter.config import Settings
 from animatter.core.deck import PagePlan, plan_pages, settle_pages
 from animatter.errors import AppError
+from animatter.media import fonts
 from animatter.providers.http import build_client
 from animatter.services import clipping as clipping_service
 from animatter.services import deck_outline
@@ -60,6 +61,12 @@ class DeckOut(BaseModel):
     source: str = "transcript"
     #: Non-fatal problems with the generated pages, already in user-facing Chinese.
     warnings: list[str] = Field(default_factory=list)
+    #: The typefaces the pages are drawn with, **already resolved** (an unset deck reports the
+    #: renderer's default rather than ``""``). The panel's pickers bind to these, and a picker
+    #: whose value is the empty string would show a blank option instead of the face the
+    #: preview is actually in.
+    title_font: str = ""
+    body_font: str = ""
 
 
 class ChapterIn(BaseModel):
@@ -89,6 +96,22 @@ class SlideMoveIn(BaseModel):
     to_ord: int = Field(ge=0)
 
 
+class DeckFontsIn(BaseModel):
+    """Set the deck's typefaces. Absent means "leave it", ``""`` means "back to default"."""
+
+    title_font: str | None = Field(default=None, max_length=120)
+    body_font: str | None = Field(default=None, max_length=120)
+
+
+class FontListOut(BaseModel):
+    #: Families that can draw Chinese — what the deck's pickers offer. The template tab uses
+    #: the wider ``/api/fonts`` list, which also contains the design's Latin-only faces.
+    families: list[str]
+    #: The current pair, resolved, so the pickers can show it even if it is not in ``families``.
+    title_font: str
+    body_font: str
+
+
 def _out(
     deck: object,
     slides: list[deck_service.SlideView],
@@ -97,6 +120,7 @@ def _out(
     warnings: list[str] | None = None,
 ) -> DeckOut:
     row = deck
+    title_font, body_font = deck_service.deck_fonts(row)  # type: ignore[arg-type]
     return DeckOut(
         id=row.id,  # type: ignore[attr-defined]
         project_id=project_id,
@@ -108,6 +132,8 @@ def _out(
             if warnings is not None
             else deck_service.stored_warnings(row)  # type: ignore[arg-type]
         ),
+        title_font=title_font,
+        body_font=body_font,
     )
 
 
@@ -125,6 +151,66 @@ def get_deck(
         return None
     deck, slides = pair
     return _out(deck, slides, project_id)
+
+
+@router.patch("/projects/{project_id}/deck", response_model=DeckOut)
+def patch_deck_fonts(
+    project_id: str,
+    payload: DeckFontsIn,
+    request: Request,
+    session: Session = Depends(_session_dependency),
+) -> DeckOut:
+    """Set the deck's title and body typefaces, independently.
+
+    ``PATCH`` on the deck rather than on a slide: type is deck-wide, the way a presentation's
+    master is. A per-slide font would make the deck inconsistent page to page, which is the one
+    thing a slide deck must not be.
+
+    Every PNG is dropped as a side effect (``deck_service.set_fonts``) — the file name does
+    not contain the fonts the caller just chose unless the deck is re-rendered, and a stale
+    picture under an unchanged URL is the failure mode this codebase has already paid for once.
+    """
+    settings: Settings = request.app.state.settings
+    deck = deck_service.get_deck(session, project_id)
+    if deck is None:
+        raise AppError(
+            "deck_missing",
+            "这个项目还没有演示稿",
+            hint="先在「演示稿」里生成一份，再选字体。",
+            status=404,
+        )
+    deck_service.set_fonts(
+        session,
+        settings,
+        deck,
+        title_font=payload.title_font,
+        body_font=payload.body_font,
+    )
+    session.commit()
+    pair = deck_service.view(session, project_id)
+    assert pair is not None
+    return _out(pair[0], pair[1], project_id)
+
+
+@router.get("/projects/{project_id}/deck/fonts", response_model=FontListOut)
+def list_deck_fonts(
+    project_id: str, session: Session = Depends(_session_dependency)
+) -> FontListOut:
+    """Families this deck can be set in, plus the pair it is set in now.
+
+    Chinese-capable only. The template tab's ``/api/fonts`` is the whole machine's list,
+    because a poster's decorative face may legitimately be Latin-only — but every character of
+    a slide is Chinese, and a face without the glyphs draws a page of empty boxes.
+    """
+    deck = deck_service.get_deck(session, project_id)
+    title_font, body_font = (
+        deck_service.deck_fonts(deck) if deck is not None else ("", "")
+    )
+    return FontListOut(
+        families=fonts.chinese_families(),
+        title_font=title_font,
+        body_font=body_font,
+    )
 
 
 @router.post("/versions/{version_id}/deck/generate", response_model=DeckOut, status_code=201)
@@ -294,6 +380,9 @@ def slide_image(
     row = deck_service.get_slide(session, slide_id)
     if row is None or row.deck_id != deck_id:
         raise AppError("slide_missing", "这一页不存在", status=404)
+    deck = deck_service.get_deck_by_id(session, deck_id)
+    if deck is None:
+        raise AppError("deck_missing", "演示稿不存在", status=404)
     path = deck_service.render_slide(
         settings,
         project_id,
@@ -301,5 +390,6 @@ def slide_image(
         row,
         width=width or 1440,
         height=height or 810,
+        typefaces=deck_service.deck_fonts(deck),
     )
     return FileResponse(path, media_type="image/png")

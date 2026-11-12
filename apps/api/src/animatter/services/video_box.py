@@ -37,7 +37,7 @@ from animatter.core.video_box import split_gallery
 from animatter.errors import AppError
 from animatter.log import get_logger
 from animatter.media import box_track
-from animatter.models import Slide, VideoAsset, VideoItem
+from animatter.models import Deck, Slide, VideoAsset, VideoItem
 from animatter.services import decks as slide_service
 from animatter.services import video_assets as asset_service
 
@@ -446,6 +446,8 @@ def _slide_tables(
         starts[deck_id] = [(row.start_ms, row.id) for row in rows]
         if settings is None:
             continue
+        deck = session.get(Deck, deck_id)
+        typefaces = slide_service.deck_fonts(deck) if deck is not None else ("", "")
         for row in rows:
             images[row.id] = slide_service.render_slide(
                 settings,
@@ -454,6 +456,7 @@ def _slide_tables(
                 row,
                 width=width,
                 height=height,
+                typefaces=typefaces,
             )
     return images, starts
 
