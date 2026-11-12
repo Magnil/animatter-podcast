@@ -1079,7 +1079,12 @@ export const api = {
 
   exportVideo: (
     versionId: string,
-    options: { burn_subtitles?: boolean; font_name?: string; font_size?: number } = {},
+    options: {
+      burn_subtitles?: boolean;
+      font_name?: string;
+      font_size?: number;
+      margin_v?: number;
+    } = {},
   ) =>
     request<VideoExport>(`/api/versions/${versionId}/video/export`, {
       method: "POST",
@@ -1087,6 +1092,19 @@ export const api = {
     }),
 
   videoExport: (exportId: string) => request<VideoExport>(`/api/video/exports/${exportId}`),
+
+  /**
+   * The finished film, as bytes.
+   *
+   * A plain `fetch` rather than `request()`: the body is an MP4, not JSON. The URL the
+   * status endpoint returns is already same-origin (``/api/video/exports/{id}/file``), so
+   * the browser's `download` attribute can name the file and no server header is involved.
+   */
+  videoExportBlob: async (url: string): Promise<Blob> => {
+    const response = await fetch(url);
+    if (!response.ok) throw await failure(response, "下载成片视频失败");
+    return response.blob();
+  },
 };
 
 export const mediaIdFromVersion = (versionId: string): string => versionId;

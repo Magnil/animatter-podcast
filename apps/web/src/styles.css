@@ -1846,22 +1846,9 @@ button.small,
   font-size: 0.82rem;
 }
 
-/* A download that looks like a button: the export finish state has to be
-   clickable without inventing a second button style. */
-.button-link {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 10px;
-  border: 1px solid var(--accent);
-  border-radius: 6px;
-  color: var(--accent);
-  text-decoration: none;
-  font-size: 0.82rem;
-}
-
-.button-link:hover {
-  background: color-mix(in oklab, var(--accent) 12%, transparent);
-}
+/* `.button-link` (a download styled as a button) is gone: it existed only for the
+   「下载成片」 link in the video panel, which round 102 moved to the 导出 menu and turned
+   into a real save. Nothing else used it. */
 
 /* --- asset library (P2) ---------------------------------------------------
    A horizontal strip, not a sidebar: it is used in short bursts (import, drag,

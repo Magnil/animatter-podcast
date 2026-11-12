@@ -21,6 +21,7 @@ import {
 import { loadAllSentences } from "./transcriptLoad";
 import { hiddenSpans as hiddenWordSpans, tokenAt } from "./transcript";
 import { isTerminal, percentOf, pollDelayMs, renderEta } from "./renderProgress";
+import { filmFilename, videoExportEntry } from "./videoExport";
 import { HistoryPanel } from "./HistoryPanel";
 import { NewProjectDialog } from "./NewProjectDialog";
 import { SubtitlePanel } from "./SubtitlePanel";
@@ -253,6 +254,38 @@ function Desk({
   const [showOutput, setShowOutput] = useState(false);
   /** Set while an export is encoding in the background; the button shows it. */
   const [exporting, setExporting] = useState<{ id: string; percent: number } | null>(null);
+  /**
+   * The audio export's subtitle style, which the 字幕 tab edits and the *film* export uses.
+   *
+   * It lives here, not in `VideoPanel`, because the two consumers are now in two places: the
+   * tab renders the two sliders, and the 导出 menu renders the entry that encodes with them.
+   * Leaving the numbers in the panel and exporting with the renderer's defaults would
+   * silently ignore the slider — the user nudges 字号 to 72, the still frame obeys, and the
+   * film comes back at 52.
+   *
+   * Seeded from `GET /video/subtitle-style` rather than hard-coded, so it does not drift the
+   * moment the ASS style changes. A failed fetch is ignored: 52/56 are the same defaults the
+   * renderer falls back to.
+   */
+  const [fontSize, setFontSize] = useState(52);
+  const [marginV, setMarginV] = useState(56);
+  useEffect(() => {
+    void api
+      .videoSubtitleStyle()
+      .then((style) => {
+        setFontSize(style.font_size);
+        setMarginV(style.margin_v);
+      })
+      .catch(() => undefined);
+  }, []);
+  /**
+   * The film export in flight, mirroring `exporting`.
+   *
+   * A separate flag rather than one shared one: a 14-minute x264 encode must not disable
+   * 「导出成片音频」, and the two have different labels. Both are polled with the same
+   * `percentOf` / `pollDelayMs` / `renderEta` helpers, which is the part worth sharing.
+   */
+  const [film, setFilm] = useState<{ id: string; percent: number } | null>(null);
 
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [loadOpen, setLoadOpen] = useState(false);
@@ -782,6 +815,61 @@ function Desk({
     }
   }, [boot.version.id, pollRender, run, say, settings?.export_format]);
 
+  /**
+   * Queue the film, wait for it, then **save it** and keep no URL.
+   *
+   * The save is what makes moving this to the menu worth doing: from the 导出 menu the
+   * natural end of the action is a file on disk, not a download link inside a panel that may
+   * be collapsed by the time the encode finishes (a one-hour film is ~14 minutes of x264).
+   *
+   * Keeping the URL instead would mean deciding when it goes stale, and it can go stale
+   * without the EDL changing — moving a material block changes the film but not the audio —
+   * so the menu would happily offer a film that no longer matches the timeline on screen.
+   * One-shot removes the question instead of answering it badly.
+   */
+  const exportFilm = useCallback(async () => {
+    let queued: { id: string } | null = null;
+    await run("导出成片视频", async () => {
+      queued = await api.exportVideo(boot.version.id, {
+        burn_subtitles: true,
+        font_size: fontSize,
+        margin_v: marginV,
+      });
+    });
+    if (queued === null) return; // queueing failed; `run` already reported it
+
+    const start: { id: string } = queued;
+    setFilm({ id: start.id, percent: 0 });
+    const startedAt = Date.now();
+    let lastShown = -1;
+    try {
+      for (;;) {
+        const state = await api.videoExport(start.id);
+        if (state.status === "failed") throw new Error(state.error ?? "导出成片视频失败");
+        if (state.status === "done") {
+          setFilm({ id: state.id, percent: 100 });
+          const blob = await api.videoExportBlob(state.url);
+          saveBlob(blob, filmFilename(boot.projectName, new Date()));
+          say(`成片视频已保存（${formatClock(state.duration_ms)}）`);
+          return;
+        }
+        const percent = percentOf(state.progress);
+        if (percent !== lastShown) {
+          lastShown = percent;
+          setFilm({ id: state.id, percent });
+          // Same wording rule as the audio export: 「正在」 plus a moving percentage is the
+          // only thing that distinguishes a 14-minute encode from a dead menu item.
+          say(`正在导出成片视频… ${percent}%（${renderEta(Date.now() - startedAt, state.progress)}）`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, pollDelayMs(Date.now() - startedAt)));
+      }
+    } catch (caught) {
+      setNotice(describe(caught));
+    } finally {
+      setFilm(null);
+    }
+  }, [boot.projectName, boot.version.id, fontSize, marginV, run, say, setNotice]);
+
   // The filler pair is mutually exclusive: once one of them has been applied the
   // other has nothing left to act on. Both states are derived from the counts the
   // menu already loads, so this costs no extra request. `?? 0` because the record
@@ -1058,6 +1146,18 @@ function Desk({
             disabled: exporting !== null || !edl || edl.deletions.length === 0,
             onSelect: () => void renderExport(),
           },
+          {
+            // The film export used to be a button inside `视频剪辑` (round 102). It is a
+            // delivery, and every other delivery is in this menu — so it comes here, right
+            // under the audio export, which is the order the work happens in.
+            id: "render-video",
+            ...videoExportEntry({
+              hasEdl: edl !== null,
+              deletionCount: edl?.deletions.length ?? 0,
+              exportingPercent: film?.percent ?? null,
+            }),
+            onSelect: () => void exportFilm(),
+          },
           "separator",
           {
             id: "fmt-m4a",
@@ -1096,6 +1196,8 @@ function Desk({
       boot.version.id,
       cleanupCounts,
       edl,
+      exportFilm,
+      film,
       lastArchive,
       onReload,
       reloadCleanupCounts,
@@ -1284,8 +1386,11 @@ function Desk({
             projectId={boot.projectId}
             versionId={boot.version.id}
             positionMs={playback.positionMs}
-            hasDeletions={(edl?.deletions.length ?? 0) > 0}
             sentences={boot.sentences}
+            fontSize={fontSize}
+            marginV={marginV}
+            onFontSize={setFontSize}
+            onMarginV={setMarginV}
             onSeek={playback.seek}
             onNotice={setNotice}
             view={timeline.view}
@@ -1378,24 +1483,13 @@ function Desk({
               >
                 恢复删除
               </button>
-              <button
-                type="button"
-                disabled={busy || exporting !== null || !edl || edl.deletions.length === 0}
-                onClick={() => void renderExport()}
-                // A disabled button with no reason is indistinguishable from a
-                // broken one — that is how "导出成片 点击后无反应" was reported.
-                title={
-                  exporting
-                    ? `正在导出 ${exporting.percent}%`
-                    : !edl
-                      ? "正在计算剪辑方案…"
-                      : edl.deletions.length === 0
-                        ? "还没有删除任何内容：先删掉要剪掉的段落，再导出成片"
-                        : "把当前的删除方案渲染成一个音频文件"
-                }
-              >
-                {exporting ? `导出中 ${exporting.percent}%` : "导出成片"}
-              </button>
+              {/*
+                导出成片 lives in the 导出 menu now. The transport keeps only the actions
+                that act on the selection; a button that produces a file belongs with the
+                other file-producing actions, and having it here *and* in the menu is how
+                the two drifted apart (the menu one lagged a round behind on 「先删除要剪掉
+                的内容」). 试听成片 stays — it plays, it does not deliver.
+              */}
               {rendered ? (
                 <button type="button" className="ghost" onClick={() => setShowOutput((v) => !v)}>
                   {showOutput ? "收起成片" : "试听成片"}

@@ -1,5 +1,12 @@
 /**
- * Video area: template confirm, timeline blocks, still preview, export (P1).
+ * Video area: template confirm, timeline blocks, still preview (P1).
+ *
+ * **Export is not here.** A 导出视频 button plus a 下载成片 link plus a
+ * 「成片 1 小时 1 分 / 原始 1 小时 1 分」 line used to sit at the bottom of this panel; all
+ * three were removed in round 102. Delivering the film belongs with the other deliveries
+ * (字幕 / ShowNotes / 文稿 / 成片音频) in the 导出 menu, and the two durations are the
+ * 音频剪辑 panel's own summary repeated one panel higher. What this panel does is arrange
+ * the film.
  *
  * **Collapsed by default.** Most sessions are audio-only; reserving vertical space
  * above the waveform for a feature nobody has switched on is a tax on every edit.
@@ -35,7 +42,7 @@ import { AssetLibrary } from "./AssetLibrary";
 import { CollapsiblePanel } from "./CollapsiblePanel";
 import { DeckPanel } from "./DeckPanel";
 import { TemplateTexts } from "./TemplateTexts";
-import { formatDuration, formatTime } from "./format";
+import { formatTime } from "./format";
 import { VideoTrack } from "./VideoTrack";
 import type { View } from "./waveView";
 import { lengthCaption, dropRange, orphanedBlocks, summaryLine } from "./videoTimeline";
@@ -45,9 +52,21 @@ interface Props {
   versionId: string;
   /** Playhead on the **original** timeline; the preview is asked for output time. */
   positionMs: number;
-  hasDeletions: boolean;
   /** Sentences of this version — the deck's proofreading pane and its page starts. */
   sentences: Sentence[];
+  /**
+   * The burnt-in subtitle's two numbers, **controlled from `App`**.
+   *
+   * They used to be local state here, which was fine while the export button was also here.
+   * The export moved to the 导出 menu (round 102) and the menu is rendered by `App`; a slider
+   * whose value only the panel can see would be honoured by 「生成静帧」 and silently ignored
+   * by the film — the worst possible split, because the preview would agree with the slider
+   * and the output would not.
+   */
+  fontSize: number;
+  marginV: number;
+  onFontSize: (value: number) => void;
+  onMarginV: (value: number) => void;
   onSeek: (ms: number) => void;
   onNotice: (message: string) => void;
   /**
@@ -93,8 +112,11 @@ export function VideoPanel({
   projectId,
   versionId,
   positionMs,
-  hasDeletions,
   sentences,
+  fontSize,
+  marginV,
+  onFontSize,
+  onMarginV,
   onSeek,
   onNotice,
   view,
@@ -108,9 +130,6 @@ export function VideoPanel({
   const [importPath, setImportPath] = useState("");
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewAt, setPreviewAt] = useState(0);
-  const [fontSize, setFontSize] = useState(52);
-  const [marginV, setMarginV] = useState(56);
-  const [exporting, setExporting] = useState<{ id: string; percent: number; url: string } | null>(null);
   // P2: the library, the dragged asset, and the selected block.
   const [assetRevision, setAssetRevision] = useState(0);
   const [draggingAsset, setDraggingAsset] = useState<string | null>(null);
@@ -168,17 +187,9 @@ export function VideoPanel({
     void loadAvatars();
   }, [template?.status, loadAvatars]);
 
-  // Open on the renderer's real defaults instead of hard-coded numbers that would
-  // drift the moment the ASS style changes.
-  useEffect(() => {
-    void api
-      .videoSubtitleStyle()
-      .then((style) => {
-        setFontSize(style.font_size);
-        setMarginV(style.margin_v);
-      })
-      .catch(() => undefined);
-  }, []);
+  // The style's defaults are fetched by `App` now (see the `fontSize` prop): the same two
+  // numbers feed the film export, and an export must not depend on this panel having been
+  // opened at least once.
 
   /**
    * Poll while a compile is running.
@@ -277,45 +288,17 @@ export function VideoPanel({
     }
   };
 
-  const doExport = async (): Promise<void> => {
-    setBusy(true);
-    try {
-      const started = await api.exportVideo(versionId, {
-        burn_subtitles: true,
-        font_size: fontSize,
-      });
-      setExporting({ id: started.id, percent: 0, url: "" });
-    } catch (caught) {
-      onNotice(caught instanceof Error ? caught.message : String(caught));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  // Poll the export while it runs. A one-hour film is ~14 minutes of x264, so a
-  // spinner with no number is indistinguishable from a dead button.
-  useEffect(() => {
-    if (!exporting || exporting.percent >= 100) return;
-    const timer = window.setTimeout(async () => {
-      try {
-        const state = await api.videoExport(exporting.id);
-        if (state.status === "failed") {
-          onNotice(`导出失败：${state.error ?? "未知原因"}`);
-          setExporting(null);
-          return;
-        }
-        if (state.status === "done") {
-          setExporting({ id: state.id, percent: 100, url: state.url });
-          onNotice("视频导出完成");
-          return;
-        }
-        setExporting({ ...exporting, percent: Math.round(state.progress * 100) });
-      } catch {
-        setExporting(null);
-      }
-    }, 1500);
-    return () => window.clearTimeout(timer);
-  }, [exporting, onNotice]);
+  /**
+   * Nothing here exports the film.
+   *
+   * There used to be a 导出视频 button and a 下载成片 link in this panel, next to a
+   * 「成片 1 小时 1 分 / 原始 1 小时 1 分」 line. All three went away in round 102: the two
+   * durations are the 音频剪辑 panel's summary repeated one panel higher, and every other
+   * delivery already lives in the 导出 menu. Arranging the film is this panel's job;
+   * delivering it is the menu's. The state, the poll and the download moved to `App.tsx`
+   * alongside 导出成片音频, because two exports with two progress readouts and two
+   * different sets of disabled-reasons was the shape of the duplication.
+   */
 
   const doDeleteItem = async (item: VideoItem): Promise<void> => {
     try {
@@ -624,7 +607,7 @@ export function VideoPanel({
                         max={96}
                         step={2}
                         value={fontSize}
-                        onChange={(event) => setFontSize(Number(event.target.value))}
+                        onChange={(event) => onFontSize(Number(event.target.value))}
                       />
                     </label>
                     <label className="field">
@@ -637,7 +620,7 @@ export function VideoPanel({
                         max={160}
                         step={4}
                         value={marginV}
-                        onChange={(event) => setMarginV(Number(event.target.value))}
+                        onChange={(event) => onMarginV(Number(event.target.value))}
                       />
                     </label>
                     <p className="section-note">
@@ -743,27 +726,13 @@ export function VideoPanel({
             </p>
           ) : null}
 
-          <div className="edl-actions">
-            <button
-              type="button"
-              disabled={busy || !hasDeletions || exporting !== null}
-              title={hasDeletions ? "" : "先删除要剪掉的内容，视频用成片音频"}
-              onClick={() => void doExport()}
-            >
-              {exporting ? `导出中… ${exporting.percent}%` : "导出视频"}
-            </button>
-            {exporting && exporting.url ? (
-              <a className="button-link" href={exporting.url} download>
-                下载成片
-              </a>
-            ) : null}
-            {timeline ? (
-              <span className="muted small">
-                成片 {formatDuration(timeline.output_duration_ms)} / 原始{" "}
-                {formatDuration(timeline.original_duration_ms)}
-              </span>
-            ) : null}
-          </div>
+          {/*
+            No export row here any more (round 102). It was a 导出视频 button, a 下载成片
+            link, and a 「成片 1 小时 1 分 / 原始 1 小时 1 分」 line. All three were
+            duplicates: the two durations are the 音频剪辑 panel's own summary one panel
+            below, and every other delivery already lives in the 导出 menu. What remains
+            here is arranging the film; delivering it is the menu's job.
+          */}
 
           {/*
             The track is the **last** row in this panel, so it sits directly above the audio
