@@ -13,13 +13,14 @@ the move path rewrites through a temporary offset instead of a direct swap.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from animatter.core.deck import PagePlan, page_spans, plan_pages
+from animatter.core.deck import PagePlan, page_spans, plan_pages, settle_pages
 from animatter.core.script import Chapter, ScriptSentence
 from animatter.errors import AppError
 from animatter.ids import new_id, utcnow_iso
@@ -327,6 +328,66 @@ def purge_images(
 # --- generation --------------------------------------------------------
 
 
+def generate_from_pages(
+    session: Session,
+    settings: object,
+    project_id: str,
+    *,
+    pages: list[PagePlan],
+    replace: bool = True,
+    source: str = "transcript",
+    warnings: list[str] | None = None,
+) -> tuple[Deck, list[SlideView]]:
+    """Write already-settled pages as rows. The only place a page becomes a row.
+
+    ``source`` and ``warnings`` are recorded on the deck rather than returned to the caller:
+    the panel re-reads the deck on every mount and after every edit, so anything it has to
+    show about *how* the pages were made has to survive a round trip through the database.
+    """
+    deck = create_deck(session, project_id)
+    if replace:
+        clear_slides(session, settings, deck.id)
+
+    for page in pages:
+        add_slide(
+            session,
+            deck,
+            title=page.title,
+            body=page.body,
+            layout=page.layout,
+            source_ord=page.source_ord,
+            start_ms=page.start_ms,
+        )
+    record_provenance(deck, source=source, warnings=warnings or [])
+    session.flush()
+    log.info("deck.generated", project=project_id, deck=deck.id, pages=len(pages), source=source)
+    view_pair = view(session, project_id)
+    assert view_pair is not None
+    return deck, view_pair[1]
+
+
+def record_provenance(deck: Deck, *, source: str, warnings: list[str]) -> None:
+    """Store how this deck was made. Called on every generate, including a failed outline.
+
+    Written even when nothing went wrong: ``source`` is what stops a fallback deck from
+    quietly posing as a planned one, and clearing the warnings on a clean run is the only way
+    the previous run's complaint ever disappears.
+    """
+    deck.source = source
+    deck.warnings_json = json.dumps(warnings, ensure_ascii=False)
+
+
+def stored_warnings(deck: Deck) -> list[str]:
+    """The last run's warnings, tolerating a row written by an older version."""
+    try:
+        value = json.loads(deck.warnings_json or "[]")
+    except ValueError:
+        return []
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
+
+
 def generate_from_transcript(
     session: Session,
     settings: object,
@@ -337,71 +398,22 @@ def generate_from_transcript(
     total_ms: int,
     replace: bool = True,
 ) -> tuple[Deck, list[SlideView]]:
-    """Pages from the transcript, one per topic stretch.
+    """The **fallback** planner: pages cut at pauses, body = the transcript itself.
 
-    ``chapters`` is optional: when the project already has ShowNotes chapters they are
-    better page boundaries than the pause heuristic, so they are used as **forced** breaks.
-    Without them the pause/length rules decide, which is what makes the feature work on a
-    project that never generated ShowNotes.
+    Kept as the path for a project with no API key or a failed outline call, and as the one
+    path a test can drive without a model. Its output is honest and complete and is not what
+    the feature is for — see :func:`animatter.services.deck_outline.outline_pages` for that.
+
+    ``chapters`` are still applied, through the same :func:`settle_pages` the model path uses,
+    so a chapter heading wins over a first-clause title on either path.
     """
-    deck = create_deck(session, project_id)
-    if replace:
-        clear_slides(session, settings, deck.id)
-
-    pages = plan_pages(sentences)
-    pages = _split_at_chapters(pages, chapters or [], total_ms=total_ms)
-
-    for page in pages:
-        add_slide(
-            session,
-            deck,
-            title=page.title,
-            body=page.body,
-            layout="title_body",
-            source_ord=page.source_ord,
-            start_ms=page.start_ms,
-        )
-    session.flush()
-    log.info("deck.generated", project=project_id, deck=deck.id, pages=len(pages))
-    view_pair = view(session, project_id)
-    assert view_pair is not None
-    return deck, view_pair[1]
-
-
-def _split_at_chapters(
-    pages: list[PagePlan], chapters: list[Chapter], *, total_ms: int
-) -> list[PagePlan]:
-    """Mark chapter openings as section breaks.
-
-    Only pages that **start** a chapter become ``title`` layout pages. Re-labelling interior
-    pages would be wrong: a chapter heading is not a summary of the page it lands on, it is
-    the name of the stretch starting there.
-    """
-    if not chapters:
-        return pages
-    starts = {chapter.first_ord for chapter in chapters}
-    out: list[PagePlan] = []
-    for page in pages:
-        if page.source_ord in starts:
-            out.append(
-                PagePlan(
-                    source_ord=page.source_ord,
-                    start_ms=page.start_ms,
-                    last_ord=page.last_ord,
-                    title=next(
-                        chapter.heading
-                        for chapter in chapters
-                        if chapter.first_ord == page.source_ord
-                    ),
-                    body=page.body,
-                    context=page.context,
-                    speaker=page.speaker,
-                )
-            )
-        else:
-            out.append(page)
-    del total_ms  # page spans are derived on read, not here
-    return out
+    settled, _warnings = settle_pages(
+        plan_pages(sentences),
+        sentences=sentences,
+        total_ms=total_ms,
+        chapters=chapters or [],
+    )
+    return generate_from_pages(session, settings, project_id, pages=settled, replace=replace)
 
 
 def spans_of(rows: list[Slide], *, total_ms: int) -> list[tuple[Slide, int, int]]:

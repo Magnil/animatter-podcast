@@ -19,10 +19,15 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from animatter.config import Settings
+from animatter.core.deck import PagePlan, plan_pages, settle_pages
 from animatter.errors import AppError
+from animatter.providers.http import build_client
 from animatter.services import clipping as clipping_service
+from animatter.services import deck_outline
 from animatter.services import decks as deck_service
+from animatter.services import projects as project_service
 from animatter.services import script as script_service
+from animatter.services.llm import build_llm
 
 router = APIRouter(prefix="/api", tags=["decks"])
 
@@ -49,6 +54,12 @@ class DeckOut(BaseModel):
     project_id: str
     title: str
     slides: list[SlideOut]
+    #: ``model`` when the pages came from an outline call, ``transcript`` when the fallback
+    #: planner stood in. The panel says which, because "why is my deck a transcript" is the
+    #: one question this feature has to be able to answer about itself.
+    source: str = "transcript"
+    #: Non-fatal problems with the generated pages, already in user-facing Chinese.
+    warnings: list[str] = Field(default_factory=list)
 
 
 class ChapterIn(BaseModel):
@@ -59,8 +70,12 @@ class ChapterIn(BaseModel):
 class GenerateIn(BaseModel):
     #: ``True`` replaces the existing pages, which is what 「重新生成」 means.
     replace: bool = True
-    #: Chapter openings to use as section breaks. Empty means "let the pause rule decide".
+    #: Chapter openings to use as section breaks. Empty means "let the planner decide".
     chapters: list[ChapterIn] = Field(default_factory=list)
+    #: ``plan`` (default) asks the model where the topics turn; ``transcript`` cuts the
+    #: transcript at pauses. The second one exists because a project may have no API key and
+    #: because re-generating a 60-page deck for free is a legitimate thing to want.
+    mode: str = Field(default="plan", description="plan | transcript")
 
 
 class SlidePatchIn(BaseModel):
@@ -74,12 +89,25 @@ class SlideMoveIn(BaseModel):
     to_ord: int = Field(ge=0)
 
 
-def _out(deck: object, slides: list[deck_service.SlideView], project_id: str) -> DeckOut:
+def _out(
+    deck: object,
+    slides: list[deck_service.SlideView],
+    project_id: str,
+    *,
+    warnings: list[str] | None = None,
+) -> DeckOut:
+    row = deck
     return DeckOut(
-        id=deck.id,  # type: ignore[attr-defined]
+        id=row.id,  # type: ignore[attr-defined]
         project_id=project_id,
-        title=deck.title,  # type: ignore[attr-defined]
+        title=row.title,  # type: ignore[attr-defined]
         slides=[SlideOut(**item.as_dict(project_id)) for item in slides],  # type: ignore[arg-type]
+        source=str(row.source),  # type: ignore[attr-defined]
+        warnings=(
+            warnings
+            if warnings is not None
+            else deck_service.stored_warnings(row)  # type: ignore[arg-type]
+        ),
     )
 
 
@@ -106,7 +134,11 @@ def generate_deck(
     request: Request,
     session: Session = Depends(_session_dependency),
 ) -> DeckOut:
-    """Pages from the transcript — no LLM call, so this is instant and free.
+    """Plan the pages, falling back to the transcript cutter when the model cannot.
+
+    Two paths, one endpoint, because the decision is not the client's to make: whether a model
+    can be reached is a property of this machine's configuration, and a UI that has to choose
+    would have to know. ``mode="transcript"`` is the explicit way to ask for the cheap one.
 
     ``chapters`` is passed in by the caller rather than read from storage: chapters are not
     persisted (the ShowNotes generator returns them and they are rendered straight into
@@ -119,17 +151,53 @@ def generate_deck(
         [(item.heading, item.start_ms) for item in payload.chapters], session, version
     )
 
-    deck, slides = deck_service.generate_from_transcript(
+    source = "transcript"
+    warnings: list[str] = []
+    pages: list[PagePlan] = []
+    project = project_service.get_project(session, version.project_id)
+    if payload.mode == "plan":
+        llm = build_llm(settings, session)
+        if llm is None:
+            warnings.append("没有配置 DASHSCOPE_API_KEY，按字幕停顿分页")
+        else:
+            with build_client() as client:
+                outline = deck_outline.outline_pages(
+                    session,
+                    llm=llm,
+                    client=client,
+                    sentences=sentences,
+                    chapters=chapters,
+                    total_ms=version.duration_ms,
+                    title_hint=project.name,
+                    project_id=version.project_id,
+                )
+            pages = outline.pages
+            warnings.extend(outline.warnings)
+            if outline.source == "model":
+                source = "model"
+            else:
+                warnings.append("模型没有给出可用的大纲，按字幕停顿分页")
+
+    if source != "model":
+        pages, fallback_warnings = settle_pages(
+            plan_pages(sentences),
+            sentences=sentences,
+            total_ms=version.duration_ms,
+            chapters=chapters,
+        )
+        warnings.extend(fallback_warnings)
+
+    deck, slides = deck_service.generate_from_pages(
         session,
         settings,
         version.project_id,
-        sentences=sentences,
-        chapters=chapters,
-        total_ms=version.duration_ms,
+        pages=pages,
         replace=payload.replace,
+        source=source,
+        warnings=warnings,
     )
     session.commit()
-    return _out(deck, slides, version.project_id)
+    return _out(deck, slides, version.project_id, warnings=warnings)
 
 
 @router.patch("/slides/{slide_id}", response_model=SlideOut)

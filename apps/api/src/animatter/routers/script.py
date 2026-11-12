@@ -25,6 +25,7 @@ from animatter.providers.http import build_client
 from animatter.providers.llm.bailian import BailianLlm
 from animatter.services import script as script_service
 from animatter.services import settings_store
+from animatter.services.llm import build_llm
 
 router = APIRouter(prefix="/api", tags=["script"])
 
@@ -37,21 +38,17 @@ def _session_dependency(request: Request) -> Iterator[Session]:
 
 def _llm(request: Request, session: Session) -> BailianLlm:
     settings: Settings = request.app.state.settings
-    if not settings.dashscope_api_key:
+    llm = build_llm(settings, session)
+    if llm is None:
+        # Unlike the deck generator, a document has no deterministic fallback: rewriting the
+        # transcript without a model is what the 381-line body path already refuses to fake.
         raise AppError(
             "missing_api_key",
             "未配置 DASHSCOPE_API_KEY",
             hint="在 .env 里填入百炼 API Key，重启服务后再试。",
             status=503,
         )
-    # The model is a *setting*, not a process constant: the menu lets the user
-    # pick qwen-max for a flagship episode without a restart.
-    chosen = str(settings_store.load(session).get("llm_model") or settings.llm_model)
-    return BailianLlm(
-        base_url=settings.dashscope_compatible_base,
-        api_key=settings.dashscope_api_key,
-        model=chosen,
-    )
+    return llm
 
 
 class GenerateIn(BaseModel):

@@ -458,6 +458,14 @@ class Deck(Base):
         ForeignKey("project.id", ondelete="CASCADE"), index=True
     )
     title: Mapped[str] = mapped_column(String(200), default="")
+    #: ``model`` when the pages came from an outline call, ``transcript`` when the
+    #: deterministic fallback produced them. Stored rather than recomputed because it is a
+    #: fact about *this* generation: after a failed call the panel has to be able to say why
+    #: the deck looks like a transcript, and the answer is not visible in the rows.
+    source: Mapped[str] = mapped_column(String(16), default="transcript")
+    #: JSON list of user-facing strings produced by the generation run (a dropped page, a
+    #: merged page, a failed block). Empty for a clean run.
+    warnings_json: Mapped[str] = mapped_column(Text, default="[]")
     created_at: Mapped[str] = mapped_column(String(32))
 
 
