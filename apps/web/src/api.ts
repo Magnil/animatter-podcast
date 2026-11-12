@@ -947,6 +947,33 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  /**
+   * The families this deck can be set in — Chinese-capable only.
+   *
+   * Separate from `api.fonts()` on purpose: that one is the template tab's list, which has to
+   * include decorative Latin-only faces (the poster's episode number is digits). Every
+   * character on a slide is Chinese, so a face without the glyphs draws empty boxes.
+   */
+  deckFonts: (projectId: string) =>
+    request<{ families: string[]; title_font: string; body_font: string }>(
+      `/api/projects/${projectId}/deck/fonts`,
+    ),
+
+  /**
+   * Set the deck's title and body typefaces.
+   *
+   * Deck-wide, not per slide: type is what makes a deck look like one document. Omitting a
+   * field leaves it alone; passing `""` puts it back to the default.
+   */
+  setDeckFonts: (
+    projectId: string,
+    body: { title_font?: string; body_font?: string },
+  ) =>
+    request<Deck>(`/api/projects/${projectId}/deck`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
   moveSlide: (slideId: string, toOrd: number) =>
     request<DeckSlide[]>(`/api/slides/${slideId}/move`, {
       method: "POST",
@@ -1263,6 +1290,9 @@ export interface Deck {
   source: string;
   /** How the last generation had to repair the plan. Empty for a clean run. */
   warnings: string[];
+  /** Resolved, never empty: an unset deck reports the renderer's own default. */
+  title_font: string;
+  body_font: string;
 }
 
 export interface VideoTimeline {

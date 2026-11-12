@@ -68,6 +68,9 @@ export function DeckPanel({
   const [dirty, setDirty] = useState(false);
   // Bumped after every edit so the <img> reloads instead of showing the cached old page.
   const [revision, setRevision] = useState(0);
+  // Chinese-capable families, for the two typeface pickers. Empty until the first fetch, which
+  // is also when the selects disable themselves rather than offering an empty list.
+  const [fontFamilies, setFontFamilies] = useState<string[]>([]);
   const loadSeq = useRef(0);
 
   const load = useCallback(async () => {
@@ -90,6 +93,15 @@ export function DeckPanel({
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    // Fetched once, and again only if the panel is remounted: the set of families on the
+    // machine does not change while the user is editing a deck.
+    void api
+      .deckFonts(projectId)
+      .then((list) => setFontFamilies(list.families))
+      .catch(() => setFontFamilies([]));
+  }, [projectId]);
 
   const slides = deck?.slides ?? [];
   const selected = useMemo(
@@ -199,6 +211,29 @@ export function DeckPanel({
     }
   };
 
+  /**
+   * Set one of the deck's two typefaces.
+   *
+   * The whole deck at once, not the selected page: type is what makes a deck read as one
+   * document, and a page-by-page font would be visible immediately as a mistake. The server
+   * drops every cached PNG, so the preview is told to re-fetch — the URL is unchanged and the
+   * browser would otherwise keep showing the old face.
+   */
+  const doFont = async (role: "title" | "body", family: string): Promise<void> => {
+    setBusy(true);
+    try {
+      const next = await api.setDeckFonts(projectId, {
+        [role === "title" ? "title_font" : "body_font"]: family,
+      });
+      setDeck((current) => (current === null ? current : { ...next }));
+      setRevision((value) => value + 1);
+    } catch (caught) {
+      onNotice(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const doDelete = async (): Promise<void> => {
     if (!selected) return;
     try {
@@ -261,6 +296,19 @@ export function DeckPanel({
     );
   }
 
+  /**
+   * The options for one picker: the current family first, then everything else.
+   *
+   * The current family is put first even if it is not in the list, because it can be absent
+   * for a real reason — the deck was set on another machine, or in 字由 a font that has since
+   * been deleted. A select whose value matches no option renders as blank, which looks like
+   * "no font" rather than "that font is gone".
+   */
+  const fontOptions = (current: string): string[] => {
+    const head = current ? [current] : [];
+    return [...head, ...fontFamilies.filter((name) => name !== current)];
+  };
+
   return (
     <div className="deck-panel">
       <div className="deck-toolbar">
@@ -285,6 +333,47 @@ export function DeckPanel({
         <button type="button" className="ghost small" disabled={busy} onClick={() => void doGenerate(mode)}>
           {busy ? "生成中…" : "重新生成"}
         </button>
+      </div>
+
+      {/*
+        Two pickers, one row: the title and the body are set separately because they are
+        different kinds of text, and a deck where the title shrinks to the body's size to
+        avoid a second wrap will not look like a title. Deck-wide, like a master slide.
+      */}
+      <div className="deck-fonts">
+        <label className="field">
+          <span>标题字体</span>
+          <select
+            value={deck.title_font}
+            disabled={busy || fontFamilies.length === 0}
+            aria-label="标题字体"
+            onChange={(event) => void doFont("title", event.target.value)}
+          >
+            {fontOptions(deck.title_font).map((name) => (
+              <option key={name} value={name}>
+                {name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>正文字体</span>
+          <select
+            value={deck.body_font}
+            disabled={busy || fontFamilies.length === 0}
+            aria-label="正文字体"
+            onChange={(event) => void doFont("body", event.target.value)}
+          >
+            {fontOptions(deck.body_font).map((name) => (
+              <option key={name} value={name}>
+                {name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <span className="deck-font-hint">
+          只列出能画中文的字体。整份演示稿一起换，不用一页页改。
+        </span>
       </div>
 
       {deck.warnings.length ? (

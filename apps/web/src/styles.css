@@ -2138,6 +2138,26 @@ button.small,
   color: var(--muted);
 }
 
+/* Title and body typefaces, side by side because they are a pair: the comparison is the
+   point, and stacking them would make one look like a fallback of the other. */
+.deck-fonts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 12px;
+}
+
+.deck-fonts .field {
+  margin: 0;
+  width: 180px;
+}
+
+.deck-font-hint {
+  font-size: 0.72rem;
+  color: var(--muted);
+  padding-bottom: 6px;
+}
+
 .deck-body {
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr);
