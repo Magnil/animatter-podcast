@@ -79,7 +79,7 @@ docs/                    本文件拆出来的设计文档
 
 ```powershell
 # 后端：在 apps/api 下跑
-..\..\.venv\Scripts\python.exe -m pytest -q            # 1235 passed, 1 skipped, 3 deselected
+..\..\.venv\Scripts\python.exe -m pytest -q            # 1257 passed, 1 skipped, 3 deselected，约 40 s
 ..\..\.venv\Scripts\python.exe -m ruff check src tests
 ..\..\.venv\Scripts\python.exe -m mypy --strict src    # 102 files
 
@@ -91,6 +91,9 @@ npx vite build
 # 启动（仓库根）
 .\scripts\dev.ps1                                      # 装依赖 → 迁移 → 8317
 ```
+
+**pytest 默认并行跑**（`addopts` 里 `-n auto --dist loadscope`）。迭代单个文件时加 `-n0`，
+比启动 worker 快：`pytest tests/test_decks.py -n0`。
 
 **改完四个都要绿**：pytest、ruff + mypy、tsc、npm test。设计文档与实现不一致时，先改文档再改代码。
 

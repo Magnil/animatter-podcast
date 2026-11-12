@@ -2207,4 +2207,42 @@ digest = sha256(样式 | 时刻 | 覆盖该帧的框段 | 该时刻的头像亮�
 `scripts/check-r101-fonts.mjs` 断言两个下拉框都在、选项和服务端是同一份、改了标题字体后缩略图的
 **标题区域**像素变了而正文区域没变、改正文字体反过来、刷新后设置还在；截图见 `.tmp/r101-fonts.png`。
 
+## 2026-11-12 测试从 6 分钟降到 40 秒
 
+用户问：「检查已经花了超过一个小时了……测试需要那么久吗？有没有优化的办法？」
+
+**说实话：不需要，而且慢是有明确账单的。** 全量 pytest 是 **6 分 16 秒**，`--durations=0`
+把 1220 条时长加起来看，其中 **253 秒是 setup**，而这 253 秒里 439 次都是同一件事——
+在刚建好的空库上重放 18 个 Alembic 迁移。每个 `client`/`session` fixture 都付一次（实测
+一次 467 ms，其中 440 ms 是迁移），而绝大多数测试根本不关心迁移。
+
+**改动一：迁移只跑一次。** `conftest` 新增 session 级 `migrated_template` fixture，跑一遍
+迁移到 head，每个测试**复制**那个 376 KB 的库（1.1 ms）。lifespan 里的 `upgrade_to_head`
+仍然会跑，但找到 head 就 20 ms 返回——这更接近用户机器上的样子，不是绕过它。
+
+**踩到的坑：** 第一版把库复制到 `tmp_path / "data"`，而 `test_outline_import` 的
+`keyed_client` 自己建 `Settings(data_dir=tmp_path / "data")` 又跑一个 app。两个引擎指向同一个
+SQLite 文件，复制模板库时另一个正在用，`database is locked`。把 fixture 的目录改成
+`tmp_path / "fixture-data"` 就分开了。
+
+**改动二：并行。** `addopts` 加 `-p xdist -n auto --dist loadscope`，6:00 → **0:40**。
+
+**`--dist loadscope` 不是可选项。** 默认的 `load` 会把一个模块的测试拆到不同进程，而
+`test_video_template_edits` / `test_video_template_assets` 有 module 级 fixture（一次 6 秒的真
+PSD 编译、一次导入 + 轮询到编译完成）。实测 `-n 8` 用 `load` 时
+`test_restoring_the_photo_puts_the_psd_face_back` 失败；`loadscope` 连跑三次 1257 passed。
+
+**改动三（不是 pytest 的）：一张幻灯片从 1.38 s 到 21 ms。** `slide_render._load` 每取一个
+字号都走 `fonts.resolve` → `fonts.discover`，而 `discover` 会重扫 222 个字体文件（41 ms）。
+排一个页面要 29 个字号，于是一张 320×180 的图要 **1382 ms**——这也解释了为什么
+`test_deck_fonts.py` 单独就要 27 秒。`discover` 现在有 2 秒 TTL + 指纹校验、`resolve` 加
+memo（`discover` 重建时一起清），同一张图 **21 ms**。
+
+这一项原本躲在平均值里：它平摊到每个渲染测试是几百毫秒，看总量看不出来，只有
+`--durations=0` 加上单独计时才浮出来。
+
+**结果**：6:16 → **0:40**（8 worker），单文件 `-n0` 更快（`test_decks.py` 3.2 s）。
+覆盖率一条没动：`test_migrations.py` 仍然从空库驱动 alembic 走指定 revision。
+
+`AGENTS.md` 的命令块和 `docs/conventions.md` §16.4.1 记下这两条，因为「慢的测试会被跳过」——
+6 分钟的全量套件在实际使用中会退化成「改完只跑自己那个文件」，那才是真的丢覆盖率。

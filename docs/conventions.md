@@ -45,6 +45,31 @@
 - **只在铁律或索引真的变了时才动 `AGENTS.md`**——它每轮都进上下文，膨胀的代价由每一次对话承担；
 - 跑一遍四个质量门（pytest / ruff + mypy / tsc / npm test）。
 
+### 16.4.1 测试要快，因为慢的测试会被跳过
+
+全量 pytest 曾经 **6 分 16 秒**，其中 **253 秒**是 439 次「在刚建好的空库上重放 18 个迁移」
+——每个 `client`/`session` fixture 都付一次，而绝大多数测试根本不关心迁移。两处改动把
+它降到 **40 秒**，两处都不降低覆盖率：
+
+| 改动 | 省下 | 代价 |
+|---|---|---|
+| 迁移只跑一次，做成模板库，每个测试**复制**它（1.1 ms） | ~230 s | 无：lifespan 里的 `upgrade_to_head` 仍会跑，找到 head 就 20 ms 返回，这更接近真实用户的机器 |
+| `pytest-xdist` 默认并行（`-n auto --dist loadscope`） | 从 6:00 → 0:40 | 8 个 worker 各扫一遍字体、各建一个模板库 |
+
+两条配套经验：
+
+- **`--dist loadscope`，不是默认的 `load`。** 默认分布会把一个模块的测试拆到不同进程，
+  而 `test_video_template_edits` / `test_video_template_assets` 有 module 级 fixture（一次 6 秒
+  的真 PSD 编译、一次导入 + 轮询）。实测 `-n 8` 用 `load` 时 `test_restoring_the_photo_puts_the_
+  psd_face_back` 失败，用 `loadscope` 连跑三次全绿。
+- **迭代单个文件用 `-n0`。** 起 worker 固定要几秒，单文件反而更慢。
+
+还有一处不属于 pytest 的：`slide_render._load` 每取一个字号都走 `fonts.resolve` →
+`fonts.discover`，而 `discover` 会重扫 222 个字体文件（41 ms）。排版一个页面要 29 个字号，
+于是一张 320×180 的图要 **1.38 s**。现在 `discover` 有 2 秒 TTL + 指纹校验、`resolve` 有
+memo，同一张图 **21 ms**。这类「每页都在做同一件事」的开销只能靠 `--durations` 找——
+看总量看不出来，因为它平摊到每个测试里。
+
 ### 16.5 任务栏（todo）纪律
 
 任务栏是**自报状态**，不是从代码或测试推断出来的：`todo_write` 整体替换列表，
