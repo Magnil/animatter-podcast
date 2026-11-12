@@ -152,6 +152,22 @@ def test_blur_fill_labels_do_not_collide_across_two_segments() -> None:
     assert "bgbg0" in chain.text and "bgbg1" in chain.text
 
 
+def test_cover_keeps_the_top_of_the_picture() -> None:
+    """Round 108: 「填满裁切」 must crop the bottom, not both ends.
+
+    `crop` defaults to the centre, so a 9:16 screenshot in a 16:9 box lost its title bar
+    *and* kept the empty bottom — the exact opposite of what the material needs.
+    """
+    chain = build_chain([segment(fit="cover")], width=1440, height=810)
+    assert "crop=1440:810:0:0" in chain.text
+
+
+def test_the_blurred_backdrop_is_anchored_at_the_top_too() -> None:
+    """The backdrop is a `cover`: centring it there would also drift what shows behind."""
+    chain = build_chain([segment(fit="blur_fill")], width=1440, height=810)
+    assert "crop=1440:810:0:0" in chain.text
+
+
 def test_contain_pads_rather_than_crops() -> None:
     chain = build_chain([segment(fit="contain")], width=1440, height=810)
     assert "pad=1440:810" in chain.text

@@ -124,6 +124,12 @@ def fit_geometry(
     visible and the leftover area is letterbox. ``cover`` scales to *fill*, so the
     image is cropped instead. ``stretch`` ignores the aspect ratio entirely.
 
+    **``cover`` keeps the top of the picture** (``crop=w:h:0:0`` in ``media/box_track``),
+    not the middle. Material is screenshots and posters: the subject sits at the top and
+    the overflow is a footer or dead margin, so a centred crop throws away the top *and*
+    keeps the bottom. The horizontal case follows the same rule — a too-wide picture loses
+    its right edge rather than both.
+
     Both blur_fill members matter: its blurred backdrop is a ``cover`` (it must reach
     every edge) while its foreground is a ``contain`` (it must not lose any pixel).
     """

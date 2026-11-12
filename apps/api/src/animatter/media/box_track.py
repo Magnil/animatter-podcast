@@ -180,9 +180,13 @@ def _normalise(
     if fit == "stretch":
         return f"{src}scale={width}:{height},setsar=1"
     if fit == "cover":
+        # Top-left anchored, not centred: ``crop`` defaults to the middle, which throws away
+        # the top *and* the bottom. The material is screenshots and posters — subject at the
+        # top, dead margin at the bottom — so keeping the top edge is the only crop that
+        # keeps the thing the picture is about.
         return (
             f"{src}scale={width}:{height}:force_original_aspect_ratio=increase,"
-            f"crop={width}:{height},setsar=1"
+            f"crop={width}:{height}:0:0,setsar=1"
         )
     if fit == "blur_fill":
         # Two branches from one input. ``split`` is required: feeding one input to two
@@ -190,7 +194,7 @@ def _normalise(
         return (
             f"{src}split=2[bgbg{label}][bgfg{label}];"
             f"[bgbg{label}]scale={width}:{height}:force_original_aspect_ratio=increase,"
-            f"crop={width}:{height},boxblur=luma_radius={_BLUR_RADIUS}:luma_power={_BLUR_POWER},"
+            f"crop={width}:{height}:0:0,boxblur=luma_radius={_BLUR_RADIUS}:luma_power={_BLUR_POWER},"
             f"{_BACKDROP_DIM},setsar=1[bgbase{label}];"
             f"[bgfg{label}]scale={width}:{height}:force_original_aspect_ratio=decrease,setsar=1"
             f"[bgfg2{label}];"
