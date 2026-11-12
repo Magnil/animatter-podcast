@@ -2105,6 +2105,39 @@ button.small,
   color: var(--muted);
 }
 
+/* Which path produced the pages. A 4-character tag, not a sentence: the answer to
+   「这份稿是模型分段的还是按字幕切的」 has to be readable without reading. */
+.deck-source-tag {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  font-size: 0.72rem;
+}
+
+/* The plan had to be repaired. Amber rather than red: the deck is usable, it is just not
+   what was asked for (a merged page, a dropped line number, a failed block). */
+.deck-warnings {
+  list-style: none;
+  margin: 0;
+  padding: 6px 8px;
+  border-left: 3px solid #b7791f;
+  background: rgba(183, 121, 31, 0.08);
+  font-size: 0.76rem;
+  color: #7a5210;
+}
+
+.deck-warnings li + li {
+  margin-top: 3px;
+}
+
+.deck-body-hint {
+  margin-left: 6px;
+  font-style: normal;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
 .deck-body {
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr);

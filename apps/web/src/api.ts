@@ -911,7 +911,12 @@ export const api = {
   deck: (projectId: string) => request<Deck | null>(`/api/projects/${projectId}/deck`),
 
   /**
-   * Pages from the transcript. No LLM call, so this is instant and free.
+   * Plan the deck's pages.
+   *
+   * `plan` (default) asks the model where the topics turn and what each stretch argues;
+   * `transcript` cuts the transcript at pauses, which is free and instant and produces the
+   * teleprompter this round replaced. The server falls back to `transcript` by itself when no
+   * key is configured or the call fails, and says so in `warnings`.
    *
    * `chapters` is passed in rather than read server-side because chapters are never
    * persisted: they come back from the ShowNotes run and live only in the UI's memory.
@@ -921,6 +926,7 @@ export const api = {
     options: {
       replace?: boolean;
       chapters?: { heading: string; start_ms: number }[];
+      mode?: "plan" | "transcript";
     } = {},
   ) =>
     request<Deck>(`/api/versions/${versionId}/deck/generate`, {
@@ -928,6 +934,7 @@ export const api = {
       body: JSON.stringify({
         replace: options.replace ?? true,
         chapters: options.chapters ?? [],
+        mode: options.mode ?? "plan",
       }),
     }),
 
@@ -1252,6 +1259,10 @@ export interface Deck {
   project_id: string;
   title: string;
   slides: DeckSlide[];
+  /** `model` when the pages were planned by the outline call, `transcript` for the fallback. */
+  source: string;
+  /** How the last generation had to repair the plan. Empty for a clean run. */
+  warnings: string[];
 }
 
 export interface VideoTimeline {
