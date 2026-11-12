@@ -37,6 +37,7 @@ page load does not pay for it twice, while a newly downloaded font still shows u
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -156,13 +157,45 @@ def _fingerprint(files: list[Path]) -> tuple[int, int]:
 _cache: tuple[tuple[int, int], list[FontFace]] | None = None
 #: Same key as ``_cache``; invalidated together with it.
 _cjk_cache: tuple[tuple[int, int], list[str]] | None = None
+#: ``(family, bold) -> face or None``. Cleared whenever ``discover`` rebuilds.
+_resolve_cache: dict[tuple[str, bool | None], FontFace | None] = {}
+#: When the last directory walk happened, on the monotonic clock.
+_checked_at: float = 0.0
+
+#: How long a directory walk is trusted. ``discover`` stats 222 files (~35–47 ms measured), and
+#: drawing one slide asks for ~29 font sizes — without this the shrink loop re-walked the font
+#: directories 29 times and one 320×180 page cost **1.4 s**. Two seconds is long enough that a
+#: single render (or a whole PATCH→purge→redraw cycle) pays once, and short enough that a font
+#: downloaded in 字由 shows up while the user is still looking at the picker. A test can call
+#: :func:`forget` to drop the caches outright.
+_FINGERPRINT_TTL: Final[float] = 2.0
+
+
+def forget() -> None:
+    """Drop every font cache, so the next call re-walks the filesystem.
+
+    Only useful when a test installs or removes a font mid-process; the normal path relies on
+    the TTL plus the fingerprint.
+    """
+    global _cache, _cjk_cache, _checked_at
+    _cache = None
+    _cjk_cache = None
+    _resolve_cache.clear()
+    _checked_at = 0.0
 
 
 def discover() -> list[FontFace]:
-    """Every resolvable font face, de-duplicated by (family, style)."""
-    global _cache
+    """Every resolvable font face, de-duplicated by (family, style).
+
+    Re-walks the font directories at most once per :data:`_FINGERPRINT_TTL`, then trusts the
+    fingerprint (file count + newest mtime) to notice an install.
+    """
+    global _cache, _checked_at
+    if _cache is not None and (time.monotonic() - _checked_at) < _FINGERPRINT_TTL:
+        return _cache[1]
     files = _candidate_files()
     key = _fingerprint(files)
+    _checked_at = time.monotonic()
     if _cache is not None and _cache[0] == key:
         return _cache[1]
 
@@ -180,6 +213,7 @@ def discover() -> list[FontFace]:
         found.setdefault((family, style), FontFace(family=family, style=style, path=path))
     faces = sorted(found.values(), key=lambda item: (item.family.lower(), item.style))
     _cache = (key, faces)
+    _resolve_cache.clear()
     log.info("fonts.discovered", files=len(files), faces=len(faces))
     return faces
 
@@ -252,8 +286,19 @@ def resolve(family: str, *, bold: bool | None = None) -> FontFace | None:
     typed (or the PSD reported) 「Alimama ShuHeiTi」 while the file says
     「Alimama ShuHeiTi Bold」, and a strict equality check would report a font as missing
     while it is sitting right there.
+
+    Memoised: drawing one slide asks for the same family at ~29 sizes, and every one of those
+    used to redo the match over 220 faces. The cache is cleared whenever :func:`discover`
+    rebuilds.
     """
-    wanted = family.strip().lower()
+    key = (family.strip().lower(), bold)
+    if key in _resolve_cache:
+        return _resolve_cache[key]
+    _resolve_cache[key] = _resolve_uncached(key[0], bold)
+    return _resolve_cache[key]
+
+
+def _resolve_uncached(wanted: str, bold: bool | None) -> FontFace | None:
     if not wanted:
         return None
     faces = discover()
