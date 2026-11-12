@@ -22,6 +22,7 @@ dependencies = [
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    "pytest-xdist>=3.6",
     "ruff>=0.7",
     "mypy>=1.13",
 ]
@@ -65,4 +66,12 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = ["live: hits real Aliyun endpoints (deselected by default)"]
-addopts = "-m 'not live'"
+# Parallel by default: 6:00 serial → 0:40 on 8 workers (measured). ``loadscope`` puts a whole
+# module on one worker, which is what keeps module-scoped fixtures (the 6-second PSD compile,
+# the imported template) shared instead of re-run per worker — with the default ``load``
+# distribution one test in test_video_template_edits failed because a module fixture's state
+# was split across processes.
+addopts = "-m 'not live' -p xdist -n auto --dist loadscope"
+# For one file while iterating, `-n0` is faster than spinning up workers::
+#
+#     pytest tests/test_decks.py -n0
