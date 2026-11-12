@@ -44,7 +44,14 @@ from animatter.core.video_anchor import (
 from animatter.errors import AppError
 from animatter.ids import new_id, utcnow_iso
 from animatter.log import get_logger
-from animatter.models import Media, Sentence, Token, TranscriptVersion, VideoItem
+from animatter.models import (
+    Media,
+    Sentence,
+    Slide,
+    Token,
+    TranscriptVersion,
+    VideoItem,
+)
 
 log = get_logger(__name__)
 
@@ -182,13 +189,57 @@ def view_items(
 #: Name used when a gallery's first member is gone and nothing else can name the block.
 _GALLERY = "画廊"
 
+#: How a slide block that covers several pages is named: 「开场与节目定位 等 3 页」. Same shape
+#: as the gallery's 「A 等 N 张」, because both answer "what is in this block" with "the first
+#: thing, and how many".
+_PAGE_MORE = "{} 等 {} 页"
+
+
+def _slide_label(pages: list[tuple[int, str]], start_ms: int, end_ms: int) -> str:
+    """The pages a slide block plays, named for the track.
+
+    Named after the page the block **opens** on, then 「等 N 页」 when it covers more. Naming it
+    after the deck instead was round 104's mistake: `deck.title` is the literal 「演示稿」 on
+    every project (`decks.DEFAULT_TITLE`, no code path sets anything else), so the label was
+    identical to the block's kind and told the user nothing.
+
+    The *rule* for which pages are inside is the same one the renderer uses
+    (``video_box._slide_stretches``): a page owns ``[start, next_start)``, so the page on
+    screen at an instant is the last one starting at or before it. A block opening at 01:10
+    inside a page that began at 00:05 opens on *that* page.
+
+    Deliberately computed on the original timeline. A label says *which part of the deck* the
+    block is; cutting the audio under it does not move that part, and a label that changed
+    length every time a sentence was deleted would be worse than a stale one.
+    """
+    if not pages:
+        return ""
+    opening: tuple[int, str] | None = None
+    for page_start, title in pages:
+        if page_start <= start_ms:
+            opening = (page_start, title)
+        else:
+            break
+    covered: list[str] = []
+    if opening is not None and opening[1]:
+        covered.append(opening[1])
+    for page_start, title in pages:
+        if start_ms < page_start < end_ms and title:
+            covered.append(title)
+    if not covered:
+        return ""
+    if len(covered) == 1:
+        return covered[0]
+    return _PAGE_MORE.format(covered[0], len(covered))
+
 
 def _labels_for(session: Session, rows: list[VideoItem]) -> dict[str, str]:
-    """Display name per block, in two queries rather than two per block.
+    """Display name per block, in a fixed number of queries rather than two per block.
 
     A timeline is redrawn on every drag frame, so the read has to stay flat: collecting the
-    ids first and resolving them in one query each keeps it that way no matter how many
-    blocks a project has.
+    ids first and resolving each kind in one query keeps it that way no matter how many
+    blocks a project has. Slide blocks cost a third query — their pages — because naming one
+    after the deck would name every one of them 「演示稿」 (see :func:`_slide_label`).
     """
     from animatter.models import Deck, VideoAsset
 
@@ -205,14 +256,23 @@ def _labels_for(session: Session, rows: list[VideoItem]) -> dict[str, str]:
         for asset in session.scalars(select(VideoAsset).where(VideoAsset.id.in_(wanted))):
             names[asset.id] = asset.original_name or Path(asset.path).name
     titles: dict[str, str] = {}
+    pages: dict[str, list[tuple[int, str]]] = {}
     if deck_ids:
         for deck in session.scalars(select(Deck).where(Deck.id.in_(deck_ids))):
             titles[deck.id] = deck.title
+        for slide in session.scalars(
+            select(Slide).where(Slide.deck_id.in_(deck_ids)).order_by(Slide.ord)
+        ):
+            pages.setdefault(slide.deck_id, []).append((slide.start_ms, slide.title))
 
     out: dict[str, str] = {}
     for row in rows:
         if row.kind == "slide":
-            out[row.id] = titles.get(row.deck_id or "", "")
+            # Page names first, the deck's title only as a fallback: every deck is called
+            # 「演示稿」, so that fallback is the same as saying nothing.
+            out[row.id] = _slide_label(
+                pages.get(row.deck_id or "", []), row.start_ms, row.end_ms
+            ) or titles.get(row.deck_id or "", "")
             continue
         if row.kind == "gallery":
             members = [

@@ -348,12 +348,95 @@ def test_a_media_block_is_named_after_the_imported_file(
     assert _labels(session, project)[item.id] == "开场封面.png"
 
 
-def test_a_slide_block_is_named_after_the_deck(
+def test_a_slide_block_is_named_after_the_page_it_opens_on(
     session: Session, project: str
 ) -> None:
-    deck = make_deck(session, project, title="费那奇 MV 访谈", pages=[("开场", 0)])
+    """Round 107: it said 「演示稿」, which is every deck's title and the block's kind.
+
+    Naming it after `deck.title` was round 104's mistake: `decks.DEFAULT_TITLE` is 「演示稿」
+    and no code path writes anything else, so the label was identical to the kind and
+    indistinguishable from the fallback. The pages are what distinguishes two slide blocks.
+    """
+    deck = make_deck(
+        session,
+        project,
+        title="演示稿",
+        pages=[("开场与节目定位", 5100), ("嘉宾介绍", 132_980)],
+    )
+    item = make_slide_item(session, project, deck_id=deck.id, start_ms=70_970, end_ms=198_850)
+    assert _labels(session, project)[item.id] == "开场与节目定位 等 2 页"
+
+
+def test_a_slide_block_on_one_page_is_named_after_that_page(
+    session: Session, project: str
+) -> None:
+    deck = make_deck(
+        session,
+        project,
+        title="演示稿",
+        pages=[("开场与节目定位", 5100), ("嘉宾介绍", 132_980)],
+    )
+    item = make_slide_item(session, project, deck_id=deck.id, start_ms=71_000, end_ms=120_000)
+    assert _labels(session, project)[item.id] == "开场与节目定位"
+
+
+def test_a_slide_block_that_opens_on_a_page_boundary_names_the_later_page(
+    session: Session, project: str
+) -> None:
+    """A page owns ``[start, next_start)``, so a block at exactly 132 980 opens on 嘉宾介绍."""
+    deck = make_deck(
+        session,
+        project,
+        title="演示稿",
+        pages=[("开场与节目定位", 5100), ("嘉宾介绍", 132_980)],
+    )
+    item = make_slide_item(session, project, deck_id=deck.id, start_ms=132_980, end_ms=180_000)
+    assert _labels(session, project)[item.id] == "嘉宾介绍"
+
+
+def test_a_slide_block_before_the_first_page_is_named_after_the_first_page(
+    session: Session, project: str
+) -> None:
+    """The deck has not started yet, so the block opens on page one — and plays only page one."""
+    deck = make_deck(
+        session, project, title="演示稿", pages=[("开场与节目定位", 5100), ("嘉宾介绍", 132_980)]
+    )
+    item = make_slide_item(session, project, deck_id=deck.id, start_ms=0, end_ms=90_000)
+    assert _labels(session, project)[item.id] == "开场与节目定位"
+
+
+def test_a_deck_with_no_pages_still_names_its_block_after_the_deck(
+    session: Session, project: str
+) -> None:
+    """A deck whose pages were all deleted: the title is a poor name but it is a name."""
+    deck = make_deck(session, project, title="费那奇 MV 访谈", pages=[])
     item = make_slide_item(session, project, deck_id=deck.id, start_ms=0, end_ms=5000)
     assert _labels(session, project)[item.id] == "费那奇 MV 访谈"
+
+
+def test_untitled_pages_do_not_steal_the_label(
+    session: Session, project: str
+) -> None:
+    """A page with an empty title must not produce 「 等 2 页」 — that reads as a broken string."""
+    deck = make_deck(
+        session, project, title="演示稿", pages=[("", 5100), ("嘉宾介绍", 132_980)]
+    )
+    item = make_slide_item(session, project, deck_id=deck.id, start_ms=0, end_ms=198_850)
+    assert _labels(session, project)[item.id] == "嘉宾介绍"
+
+
+def test_the_label_counts_only_the_pages_inside_the_block(
+    session: Session, project: str
+) -> None:
+    """「等 N 页」 is the count of pages the block plays, not the deck's page count."""
+    deck = make_deck(
+        session,
+        project,
+        title="演示稿",
+        pages=[("一", 0), ("二", 10_000), ("三", 20_000), ("四", 30_000)],
+    )
+    item = make_slide_item(session, project, deck_id=deck.id, start_ms=10_000, end_ms=25_000)
+    assert _labels(session, project)[item.id] == "二 等 2 页"
 
 
 def test_a_gallery_is_named_after_its_members(
@@ -436,6 +519,8 @@ def test_the_timeline_payload_carries_the_label(client: TestClient, session: Ses
         },
     )
     body = client.get(f"/api/versions/{version.id}/video/timeline").json()
-    assert body["items"][0]["label"] == "演示稿"
+    # The page's own title, not the deck's: every deck is called 「演示稿」, so sending that
+    # would be sending the block's kind a second time.
+    assert body["items"][0]["label"] == "开场"
 
 
