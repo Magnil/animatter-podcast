@@ -45,7 +45,7 @@ import { TemplateTexts } from "./TemplateTexts";
 import { formatTime } from "./format";
 import { VideoTrack } from "./VideoTrack";
 import type { View } from "./waveView";
-import { lengthCaption, dropRange, orphanedBlocks, summaryLine } from "./videoTimeline";
+import { FITS, dropRange, orphanedBlocks, summaryLine } from "./videoTimeline";
 
 interface Props {
   projectId: string;
@@ -90,23 +90,6 @@ const VIDEO_TABS: { id: TabId; label: string; hint: string }[] = [
 ];
 
 type TabId = "template" | "subtitle" | "library" | "deck";
-
-const FITS: { id: string; label: string; hint: string }[] = [
-  { id: "blur_fill", label: "模糊填充", hint: "竖图放进 16:9 框：模糊放大作底 + 完整居中" },
-  { id: "contain", label: "完整显示", hint: "留边，不裁切" },
-  { id: "cover", label: "填满裁切", hint: "铺满，裁掉溢出" },
-  { id: "stretch", label: "拉伸", hint: "会变形" },
-];
-
-/** How many images a gallery block holds, tolerating a half-edited string. */
-function galleryCount(item: VideoItem): number {
-  try {
-    const parsed = JSON.parse(item.gallery_json || "[]") as unknown;
-    return Array.isArray(parsed) ? parsed.length : 0;
-  } catch {
-    return 0;
-  }
-}
 
 export function VideoPanel({
   projectId,
@@ -685,42 +668,16 @@ export function VideoPanel({
             </div>
           ) : null}
 
-          {selected ? (
-            <div className="video-selected">
-              <p className="muted small">
-                选中 {formatTime(selected.start_ms)}–{formatTime(selected.end_ms)}（
-                {lengthCaption(selected)}）
-              </p>
-              <div className="edl-actions">
-                <label className="field inline">
-                  <span>填充</span>
-                  <select
-                    value={selected.fit}
-                    onChange={(event) => void doFit(selected, event.target.value)}
-                  >
-                    {FITS.map((fit) => (
-                      <option key={fit.id} value={fit.id}>
-                        {fit.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <button
-                  type="button"
-                  className="ghost small"
-                  onClick={() => void doDeleteItem(selected)}
-                >
-                  删掉这个块
-                </button>
-                {draggingAsset ? null : (
-                  <span className="muted small">
-                    拖一个素材到下面的视频轴上可以加进画廊
-                    {selected.kind === "gallery" ? `（现在 ${galleryCount(selected)} 张）` : ""}
-                  </span>
-                )}
-              </div>
-            </div>
-          ) : timeline && timeline.items.length === 0 ? (
+          {/*
+            No selected-block row any more (round 104). It said 选中 01:10.970–03:18.850
+            （127.9s） outside the timeline, and offered 填充 / 删掉这个块 / a drag hint; all
+            of that described *one* block, and all of it went stale the moment another block
+            was clicked. The range now sits on the block itself (where every block has one)
+            and the two actions are a bubble anchored to the selected block — see
+            `VideoTrack`. What remains here is the only thing the panel still has to say on
+            its own: that there are no blocks at all.
+          */}
+          {timeline && timeline.items.length === 0 ? (
             <p className="muted small">
               还没有素材块。从「素材库」标签页把一个文件拖到下面的视频轴上，或者拖给某个句子。
             </p>
@@ -751,6 +708,9 @@ export function VideoPanel({
             onSelect={setSelected}
             onMove={(item, start, end) => void doMove(item, start, end)}
             onDropAsset={(assetId, atMs) => void doDropAsset(assetId, atMs)}
+            selectedId={selected?.id ?? null}
+            onFit={(item, fit) => void doFit(item, fit)}
+            onDelete={(item) => void doDeleteItem(item)}
             onZoom={onZoom}
             onPan={onPan}
           />

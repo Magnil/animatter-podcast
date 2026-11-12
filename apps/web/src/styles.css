@@ -1794,18 +1794,24 @@ button.small,
   white-space: nowrap;
 }
 
-/* --- video area (docs/frontend.md 搂7.7) ------------------------------------
+/* --- video area (docs/frontend.md §7.7) ------------------------------------
    Sits above the waveform, collapsed by default. The preview box keeps a 16:9
    aspect so the layout does not jump when the first still arrives — a panel that
-   grows by 400px the moment you click 鐢熸垚闈欏抚 pushes the waveform off-screen. */
+   grows by 400px the moment you click 生成静帧 pushes the waveform off-screen. */
 .video-panel {
   gap: 8px;
 }
 
+/* The still fills the whole column: `aspect-ratio` alone, no `max-height`.
+   A 260px cap (round 103 and earlier) left a letterbox inside the box on any window
+   wider than ~460px, so the picture was smaller than its own frame and the frame was
+   narrower than the column — two razors of empty panel around a 1440×810 still. The
+   height now follows the width, which is what "自适应" has to mean for a video: 16:9 is
+   the film's own shape (§19.1), so the frame is always the shape of the output.
+   `object-fit: contain` stays — a 9:16 still must not be cropped to fill a 16:9 frame. */
 .video-preview-box {
   aspect-ratio: 16 / 9;
   width: 100%;
-  max-height: 260px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1816,6 +1822,7 @@ button.small,
 }
 
 .video-preview-box img {
+  display: block;
   width: 100%;
   height: 100%;
   object-fit: contain;
@@ -1876,9 +1883,12 @@ button.small,
   list-style: none;
 }
 
+/* 220px, not 148px: the card has to hold a 40px thumbnail, the file's own name and two
+   buttons. At 148px the name was squeezed to a single character, which is the same
+   "cannot tell the assets apart" problem the hash names caused. */
 .asset-item {
   flex: 0 0 auto;
-  width: 148px;
+  width: 220px;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -1926,6 +1936,14 @@ button.small,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The ＋ and ✕ buttons, stacked. In a row they take 44px of a 220px card. */
+.asset-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 0 0 auto;
 }
 
 /* --- the video track (P2) ------------------------------------------------
@@ -1995,12 +2013,89 @@ button.small,
   background: var(--accent);
 }
 
-.video-block-kind,
+/* Two lines on the block: what it is, then when it is.
+
+   Both are clipped rather than wrapped. A block is often 30 px wide when zoomed out, and
+   a wrapped name would make it twice the height of its neighbours — in a row of blocks
+   that are all the same height, that reads as a layout bug. */
+.video-block-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  pointer-events: none;
+}
+
+.video-block-name,
 .video-block-time {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   pointer-events: none;
+  line-height: 1.15;
+}
+
+.video-block-name {
+  font-weight: 600;
+}
+
+.video-block-time {
+  font-size: 0.64rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The bubble that opens on a selected block.
+
+   Positioned against `.video-track-wrap`, not `.video-track`: the track clips its
+   overflow (so a block scrolled past its right edge cannot paint over the settings
+   column), and a bubble inside it would be clipped the same way — which reads as the
+   bubble failing to open. */
+.video-track-wrap {
+  position: relative;
+}
+
+/* The reserved row. Sized from the bubble's own height (padding + line), and only while
+   a block is selected. */
+.video-track-wrap.has-bubble {
+  padding-top: 34px;
+}
+
+.video-bubble {
+  position: absolute;
+  top: 0;
+  z-index: 4;
+  width: 300px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--panel);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 28%);
+  font-size: 0.74rem;
+}
+
+.video-bubble-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.video-bubble-fit {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.video-bubble select {
+  font-size: 0.72rem;
 }
 
 .video-block-handle {
@@ -2037,23 +2132,6 @@ button.small,
   width: 1px;
   background: var(--danger, #dc2626);
   pointer-events: none;
-}
-
-.video-item.is-selected {
-  outline: 1px solid var(--accent);
-  border-radius: 4px;
-}
-
-.video-selected {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 8px;
-}
-
-.field.inline {
-  flex-direction: row;
-  align-items: center;
-  gap: 6px;
 }
 
 /* Two sliders under the still. Kept inline in the panel (not a dialog) because

@@ -197,24 +197,28 @@ export function AssetLibrary({
                     : "文件不见了"}
                 </span>
               </div>
-              {onAddToBlock ? (
+              {/* Stacked, not side by side: two 22px buttons in a row cost 44px of a card
+                  that is only 220px wide, and the name is what has to survive. */}
+              <div className="asset-actions">
+                {onAddToBlock ? (
+                  <button
+                    type="button"
+                    className="ghost small"
+                    title="加进选中的素材块"
+                    onClick={() => onAddToBlock(asset.id)}
+                  >
+                    ＋
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className="ghost small"
-                  title="加进选中的素材块"
-                  onClick={() => onAddToBlock(asset.id)}
+                  title="删除素材"
+                  onClick={() => void doDelete(asset)}
                 >
-                  ＋
+                  ✕
                 </button>
-              ) : null}
-              <button
-                type="button"
-                className="ghost small"
-                title="删除素材"
-                onClick={() => void doDelete(asset)}
-              >
-                ✕
-              </button>
+              </div>
             </li>
           ))}
         </ul>

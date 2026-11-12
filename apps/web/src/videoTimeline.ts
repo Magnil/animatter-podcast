@@ -125,13 +125,36 @@ export function galleryCaption(block: BlockSpan, imageCount: number): string {
   return `${imageCount} 张 · 每张 ${now}s（原 ${(original / 1000).toFixed(1)}s）`;
 }
 
-/** `"原始 10.0s / 成片 8.0s"`, or just the one number when nothing was cut. */
-export function lengthCaption(block: BlockSpan): string {
-  const original = (block.duration_ms / 1000).toFixed(1);
-  const output = (block.output_ms / 1000).toFixed(1);
-  if (block.output_ms === block.duration_ms) return `${original}s`;
-  return `原始 ${original}s / 成片 ${output}s`;
+/**
+ * What a block is called on the track.
+ *
+ * The server sends a `label` — the imported file's own name, the deck's title, or the first
+ * gallery member's name — and it is empty in exactly one normal case: a block the user
+ * created before choosing anything. Falling back to the kind keeps those blocks from
+ * rendering as a blank rectangle, which reads as a rendering bug rather than as "no file
+ * picked yet".
+ */
+export function blockName(block: { label?: string; kind: string }): string {
+  if (block.label) return block.label;
+  if (block.kind === "gallery") return "画廊";
+  if (block.kind === "slide") return "演示稿";
+  return "素材";
 }
+
+/**
+ * The four fit strategies, with the words the UI uses for them.
+ *
+ * Lives here rather than in `VideoPanel` because two places offer the same choice now: the
+ * 模板 tab's 「框内默认填充」 and the bubble that opens on a selected block. Two copies of
+ * this list would drift the moment one gained a strategy, and the drift would look like the
+ * bubble silently refusing a fit the template offers.
+ */
+export const FITS: { id: string; label: string; hint: string }[] = [
+  { id: "blur_fill", label: "模糊填充", hint: "竖图放进 16:9 框：模糊放大作底 + 完整居中" },
+  { id: "contain", label: "完整显示", hint: "留边，不裁切" },
+  { id: "cover", label: "填满裁切", hint: "铺满，裁掉溢出" },
+  { id: "stretch", label: "拉伸", hint: "会变形" },
+];
 
 /** Blocks whose audio was deleted in full, sorted so the list is stable. */
 export function orphanedBlocks<T extends { orphaned: boolean; start_ms: number }>(blocks: T[]): T[] {

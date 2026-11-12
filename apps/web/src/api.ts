@@ -1267,6 +1267,12 @@ export interface VideoTemplate {
 export interface VideoItem {
   id: string;
   kind: "media" | "gallery" | "slide";
+  /**
+   * What the block is called: the imported file's own name, the deck's title, or the first
+   * gallery member's name. Derived by the server on read — renaming a deck must change every
+   * block of it, which a copied column could not do. Empty when nothing names the block.
+   */
+  label: string;
   /** Original-timeline edges, snapped to a sentence start. */
   start_ms: number;
   end_ms: number;

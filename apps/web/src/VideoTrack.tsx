@@ -1,6 +1,20 @@
 /**
  * The video track: blocks you can drag, resize, and drop onto (P2).
  *
+ * **The block says what it is and when it is.** Two lines of text on the block itself — the
+ * asset's own name (or the deck's title) on top, the range it covers underneath — because
+ * the same facts used to be printed *outside* the track, in a panel row that described
+ * whichever block was selected. That row said 「01:10.970–03:18.850（127.9s）」 once, for one
+ * block; the number belongs under the block it describes, where all of them have it at once
+ * and where it moves when the block moves (round 104).
+ *
+ * **The bubble replaces that row.** Selecting a block opens a small panel anchored to it,
+ * holding the two things one actually does to a block — choose how its picture fills the
+ * box, and delete it. It lives in the wrapper above the track, with its own reserved row, so
+ * it neither pushes the waveform down (what the old row did on every selection) nor floats
+ * over the settings column (what an absolutely positioned bubble did when the selected block
+ * sat in the right half).
+ *
  * Renderer stays a plain `<div>` + CSS transform stack rather than a canvas. A real
  * episode has a few dozen blocks at most, not the tens of thousands that push the
  * transcript into a virtual list, and DOM gives drag/click/hover for free — the canvas
@@ -17,7 +31,15 @@ import type { VideoItem } from "./api";
 import { formatTime } from "./format";
 import { ZOOM_STEP, xToMs as xToMsIn } from "./waveView";
 import type { View } from "./waveView";
-import { MIN_BLOCK_MS, blockAt, layoutBlock, moveBlock, resizeBlock } from "./videoTimeline";
+import {
+  FITS,
+  MIN_BLOCK_MS,
+  blockAt,
+  blockName,
+  layoutBlock,
+  moveBlock,
+  resizeBlock,
+} from "./videoTimeline";
 
 export interface VideoTrackProps {
   items: VideoItem[];
@@ -31,6 +53,16 @@ export interface VideoTrackProps {
   onSelect: (item: VideoItem | null) => void;
   onMove: (item: VideoItem, startMs: number, endMs: number) => void;
   onDropAsset: (assetId: string, atMs: number) => void;
+  /**
+   * The selected block's id.
+   *
+   * Passed down rather than kept here: `VideoPanel` also needs to know what is selected (it
+   * feeds 「加进画廊」 in the library tab), and two copies of that state is how a bubble ends
+   * up open around a block the panel thinks is not selected.
+   */
+  selectedId: string | null;
+  onFit: (item: VideoItem, fit: string) => void;
+  onDelete: (item: VideoItem) => void;
   /** Zoom/pan the **shared** window — the same one the audio waveform uses. */
   onZoom: (anchorMs: number, factor: number) => void;
   onPan: (from: number) => void;
@@ -42,6 +74,10 @@ type Drag =
   | null;
 
 const HEIGHT = 56;
+/** Kept in sync with `.video-bubble { width: … }` — the anchor maths needs the number. */
+const BUBBLE_WIDTH = 300;
+/** `.video-track-wrap { padding: 0 7px }`, the same 7px the waveform canvas is inset by. */
+const TRACK_INSET = 7;
 
 export function VideoTrack({
   items,
@@ -54,6 +90,9 @@ export function VideoTrack({
   onSelect,
   onMove,
   onDropAsset,
+  selectedId,
+  onFit,
+  onDelete,
   onZoom,
   onPan,
 }: VideoTrackProps): React.JSX.Element {
@@ -112,6 +151,9 @@ export function VideoTrack({
     },
     [view],
   );
+
+  /** The block the bubble describes, or `null`. Read from props so the panel owns it. */
+  const bubbleItem = selectedId === null ? null : (items.find((item) => item.id === selectedId) ?? null);
 
   /**
    * Which edge, if any, the pointer is close enough to grab.
@@ -203,6 +245,32 @@ export function VideoTrack({
     setDrag(null);
   };
 
+  /**
+   * Where the bubble sits: above the selected block, clamped inside the track.
+   *
+   * Clamped on both edges because a block can be 4 px wide when zoomed out; anchoring the
+   * bubble to its centre would hang most of the panel outside the track, and `.video-track`
+   * clips (`overflow: hidden`) so it would simply be cut off. Above rather than below: below
+   * is where the audio waveform is, and a bubble overlapping it reads as part of that track.
+   */
+  const bubbleStyle = (item: VideoItem): React.CSSProperties => {
+    const layout = layoutBlock(
+      { ...item, duration_ms: item.end_ms - item.start_ms, output_ms: item.output_ms },
+      view,
+      width,
+    );
+    const centre = layout.left + layout.width / 2;
+    // Centred on the block, then clamped to the track: anchored on the centre alone, a
+    // 4-pixel-wide block would put most of the panel outside the track. `TRACK_INSET` is the
+    // wrapper's own horizontal padding — the track starts that far in, so the bubble's `left`
+    // (measured against the wrapper) has to add it.
+    const clamped = Math.max(
+      0,
+      Math.min(Math.max(0, width - BUBBLE_WIDTH), centre - BUBBLE_WIDTH / 2),
+    );
+    return { left: `${TRACK_INSET + clamped}px` };
+  };
+
   const blockStyle = (item: VideoItem): React.CSSProperties => {
     const shown =
       ghost !== null && drag !== null && drag.item.id === item.id
@@ -220,7 +288,12 @@ export function VideoTrack({
   };
 
   return (
-    <div className="video-track-wrap">
+    // `has-bubble` reserves the bubble's row. Anchoring it over the track's top edge instead
+    // would float it across the settings column whenever the selected block sits in the right
+    // half — in the demo it landed exactly on 「框内默认填充」 and hid the control it was
+    // standing next to. The reserved row is ~34 px and only exists while something is
+    // selected, which is less than the row this bubble replaced.
+    <div className={`video-track-wrap${bubbleItem === null ? "" : " has-bubble"}`}>
       <div
         ref={trackRef}
         className={`video-track${drag === null ? "" : " is-dragging"}${
@@ -256,13 +329,15 @@ export function VideoTrack({
               drag !== null && drag.item.id === item.id ? " is-dragged" : ""
             }`}
             style={blockStyle(item)}
-            title={`${formatTime(item.start_ms)} · ${item.kind}`}
+            title={`${blockName(item)} · ${formatTime(item.start_ms)}–${formatTime(item.end_ms)}`}
           >
-            <span className="video-block-kind">
-              {item.kind === "gallery" ? "画廊" : item.kind === "slide" ? "演示稿" : "素材"}
+            <span className="video-block-text">
+              <span className="video-block-name">{blockName(item)}</span>
+              <span className="video-block-time">
+                {formatTime(item.start_ms)}–{formatTime(item.end_ms)}
+              </span>
             </span>
             <span className="video-block-kept" style={{ width: `${keptPercent(item)}%` }} />
-            <span className="video-block-time">{formatTime(item.start_ms)}</span>
             {hover !== null && hover.item.id === item.id ? (
               <span className={`video-block-handle ${hover.edge}`} />
             ) : null}
@@ -292,6 +367,46 @@ export function VideoTrack({
           style={{ left: `${((positionMs - view.from) / Math.max(1, view.to - view.from)) * width}px` }}
         />
       </div>
+
+      {/*
+        Outside `.video-track` on purpose: the track clips (`overflow: hidden`) so a block
+        that scrolls off its right edge cannot paint over the settings column. A bubble
+        placed inside would be clipped the same way, and the clipping would look like the
+        bubble failing to open.
+      */}
+      {bubbleItem !== null ? (
+        <div
+          className="video-bubble"
+          style={bubbleStyle(bubbleItem)}
+          // A pointerdown inside the bubble must not reach the track: the track reads it as
+          // "grab the block behind" and would drag the block out from under the menu.
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <span className="video-bubble-name">{blockName(bubbleItem)}</span>
+          <label className="video-bubble-fit">
+            <span>填充</span>
+            <select
+              value={bubbleItem.fit}
+              title={FITS.find((fit) => fit.id === bubbleItem.fit)?.hint ?? ""}
+              onChange={(event) => onFit(bubbleItem, event.target.value)}
+            >
+              {FITS.map((fit) => (
+                <option key={fit.id} value={fit.id}>
+                  {fit.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            className="ghost small"
+            title={`删掉 ${blockName(bubbleItem)}`}
+            onClick={() => onDelete(bubbleItem)}
+          >
+            删除素材
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
