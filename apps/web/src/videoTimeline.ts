@@ -227,6 +227,73 @@ export function moveBlock(
   return { start_ms: start, end_ms: start + length };
 }
 
+/** The neighbouring block on one side, ignoring the block being moved. */
+function neighbourOf<T extends { start_ms: number; end_ms: number }>(
+  block: { start_ms: number; end_ms: number },
+  others: T[],
+  direction: "prev" | "next",
+): T | null {
+  let best: T | null = null;
+  for (const other of others) {
+    // Identity, not coordinates: two blocks can legitimately have the same edges (a stack at
+    // one instant), and skipping both would make the jump miss the neighbour entirely.
+    if (other === block) continue;
+    if (direction === "prev") {
+      // Ends at or before this block starts.
+      if (other.end_ms <= block.start_ms && (best === null || other.end_ms > best.end_ms)) {
+        best = other;
+      }
+    } else if (other.start_ms >= block.end_ms && (best === null || other.start_ms < best.start_ms)) {
+      best = other;
+    }
+  }
+  return best;
+}
+
+/**
+ * Move a block so it butts against its neighbour on one side, keeping its length.
+ *
+ * This is what ``Ctrl+←`` / ``Ctrl+→`` do on the track. Dragging by hand can close a gap, but
+ * not exactly: the snap grid is ~500 ms apart, so a hand drag lands "about there" and a block
+ * that should share an edge with its neighbour ends up a few hundred milliseconds off. Two
+ * blocks that are meant to be adjacent have to be exactly adjacent — a gap between them reads
+ * as "there is no video here" while the one before it is still playing.
+ *
+ * **Length is preserved**, not the end or the start. Closing a gap by stretching the block
+ * would silently change how long a picture is on screen, which is a number the user set.
+ *
+ * Returns ``null`` when there is nothing to do (no neighbour on that side, no gap, or the move
+ * would overlap the block on the *other* side). The caller then leaves the block alone and
+ * says nothing — a shortcut that visibly does nothing when it is already flush is correct,
+ * and a notice for it would be noise on every second press.
+ */
+export function abutNeighbour<T extends { start_ms: number; end_ms: number }>(
+  block: { start_ms: number; end_ms: number },
+  direction: "prev" | "next",
+  others: T[],
+  durationMs: number,
+): { start_ms: number; end_ms: number } | null {
+  const neighbour = neighbourOf(block, others, direction);
+  if (neighbour === null) return null;
+  const length = block.end_ms - block.start_ms;
+  if (length <= 0) return null;
+
+  const start =
+    direction === "prev" ? neighbour.end_ms : neighbour.start_ms - length;
+  const end = start + length;
+  // Nothing to do: already flush with that neighbour, or the direction points the wrong way.
+  if (start === block.start_ms) return null;
+  if (direction === "prev" && start > block.start_ms) return null;
+  if (direction === "next" && start < block.start_ms) return null;
+  // Refuse a move that would leave the film or land on top of another block.
+  if (start < 0 || end > durationMs) return null;
+  for (const other of others) {
+    if (other === block) continue;
+    if (start < other.end_ms && other.start_ms < end) return null;
+  }
+  return { start_ms: start, end_ms: end };
+}
+
 /** Resize one edge, refusing to invert the block. */
 export function resizeBlock(
   block: { start_ms: number; end_ms: number },

@@ -34,6 +34,7 @@ import type { View } from "./waveView";
 import {
   FITS,
   MIN_BLOCK_MS,
+  abutNeighbour,
   blockAt,
   blockName,
   layoutBlock,
@@ -140,6 +141,51 @@ export function VideoTrack({
     node.addEventListener("wheel", onWheel, { passive: false });
     return () => node.removeEventListener("wheel", onWheel);
   }, [durationMs, onPan, onZoom, view, width]);
+
+  /**
+   * Ctrl+← / Ctrl+→: move the selected block flush against its neighbour.
+   *
+   * Dragging can close a gap, but not *exactly* — the snap grid is ~500 ms apart, so a hand
+   * drag lands "about there" and two blocks that should share an edge end up a few hundred
+   * milliseconds apart, which reads as 「这一段没有视频」. The shortcut is the only way to
+   * say "exactly adjacent".
+   *
+   * A window listener rather than an `onKeyDown` on the track: the track is not focusable
+   * (it is a `role="presentation"` div that owns pointer gestures), and making it focusable
+   * would put a tab stop in the middle of the page and a focus ring around a 56-pixel strip.
+   * The cost is having to guard against typing, which is four lines and cannot go wrong
+   * silently — anything in an input, a textarea or a contenteditable keeps its own
+   * Ctrl+←/→ (word-by-word caret movement) untouched.
+   *
+   * `abutNeighbour` returns `null` when the block is already flush or has no neighbour on
+   * that side, and nothing happens: a shortcut that does nothing when it is already satisfied
+   * is correct, and a notice for it would fire on every second press.
+   */
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      if (event.shiftKey || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      if (target) {
+        if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
+        if (target.isContentEditable) return;
+      }
+      const item = items.find((candidate) => candidate.id === selectedId);
+      if (!item) return;
+      const moved = abutNeighbour(
+        item,
+        event.key === "ArrowLeft" ? "prev" : "next",
+        items,
+        durationMs,
+      );
+      if (moved === null) return;
+      event.preventDefault();
+      onMove(item, moved.start_ms, moved.end_ms);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [durationMs, items, onMove, selectedId]);
 
   const toMs = useCallback(
     (clientX: number): number => {

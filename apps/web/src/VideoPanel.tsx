@@ -715,6 +715,18 @@ export function VideoPanel({
             onPan={onPan}
           />
 
+          {/*
+            One line, and only once there is a block to use it on. A keyboard shortcut nobody
+            can find may as well not exist, and 拖动 can approach "adjacent" but never reach
+            it — the snap grid is ~500 ms, so the only exact way to close a gap is this key.
+          */}
+          {timeline && timeline.items.length > 0 ? (
+            <p className="muted small video-track-hint">
+              拖块两端改时长，拖块身挪位置，滚轮缩放（Shift+滚轮平移）。选中一个块后
+              Ctrl+← / Ctrl+→ 让它贴到前一个 / 后一个素材上（长度不变）。
+            </p>
+          ) : null}
+
         </div>
       )}
     </CollapsiblePanel>

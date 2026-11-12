@@ -438,7 +438,32 @@ export function DeckPanel({
               >
                 下移
               </button>
-              <button type="button" className="ghost small" onClick={() => void doDelete()}>
+              {/*
+                These two belong with 版式/上移/下移, not with 保存: they act on the *page's
+                place in the film* (where it is heard, which stretch it covers), while 保存
+                belongs to the two text fields below it. They used to sit under the textarea,
+                one row away from the page-order buttons they are the natural sequel to, and
+                a reader looking for "put this page into the box" had to scan past 版式,
+                上移, 下移 and a destructive button to find it.
+              */}
+              <button type="button" className="ghost small" onClick={() => onSeek(selected.start_ms)}>
+                跳到这句字幕
+              </button>
+              <button
+                type="button"
+                className="ghost small"
+                onClick={() => {
+                  const span = spanOf(selected);
+                  onInsertBlock(deck.id, span.start, span.end);
+                }}
+              >
+                放进素材框
+              </button>
+              <button
+                type="button"
+                className="ghost small push-end"
+                onClick={() => void doDelete()}
+              >
                 删掉这页
               </button>
             </div>
@@ -462,23 +487,6 @@ export function DeckPanel({
             <div className="deck-row">
               <button type="button" disabled={busy || !dirty} onClick={() => void doSave()}>
                 {busy ? "保存中…" : dirty ? "保存这一页" : "已保存"}
-              </button>
-              <button
-                type="button"
-                className="ghost small"
-                onClick={() => onSeek(selected.start_ms)}
-              >
-                跳到这句字幕
-              </button>
-              <button
-                type="button"
-                className="ghost small"
-                onClick={() => {
-                  const span = spanOf(selected);
-                  onInsertBlock(deck.id, span.start, span.end);
-                }}
-              >
-                放进素材框
               </button>
             </div>
 

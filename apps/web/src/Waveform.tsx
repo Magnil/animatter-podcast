@@ -536,6 +536,11 @@ export function Waveform({
         aria-valuemax={durationMs}
         aria-valuenow={Math.round(positionMs)}
         onKeyDown={(event) => {
+          // Ctrl / Cmd / Alt + arrow belong to whoever owns a selection *above* this canvas —
+          // `VideoTrack`'s Ctrl+←/→ closes a gap against the neighbouring block. Seeking as
+          // well would be two edits from one press, and the seek would be invisible under the
+          // block move that follows it.
+          if (event.ctrlKey || event.metaKey || event.altKey) return;
           // Only seeking and panning. Zoom and the reset to "whole file" are
           // deliberately *not* on the keyboard: the window is something the user
           // sets up once and expects to stay put, and every extra binding is one

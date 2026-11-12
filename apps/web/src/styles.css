@@ -2055,6 +2055,13 @@ button.small,
   position: relative;
 }
 
+/* One muted line under the track: the gestures, including the Ctrl+←/→ shortcut, which
+   nothing on screen would otherwise reveal. */
+.video-track-hint {
+  margin: 2px 0 0;
+  line-height: 1.5;
+}
+
 /* The reserved row. Sized from the bubble's own height (padding + line), and only while
    a block is selected. */
 .video-track-wrap.has-bubble {
@@ -2296,6 +2303,13 @@ button.small,
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+/* Pushes a destructive action away from the ones that are safe to press in a row.
+   `margin-left: auto` rather than a spacer element: the row wraps, and a spacer would
+   become a whole wrapped line of its own on a narrow column. */
+.deck-row .push-end {
+  margin-left: auto;
 }
 
 .deck-source {

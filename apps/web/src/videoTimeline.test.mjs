@@ -16,6 +16,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  abutNeighbour,
   blockAt,
   blockName,
   dropRange,
@@ -336,6 +337,84 @@ test("every fit has a label and a hint a tooltip can show", () => {
     assert.ok(fit.label.length > 0, fit.id);
     assert.ok(fit.hint.length > 0, fit.id);
   }
+});
+
+// --- Ctrl+Left / Ctrl+Right -------------------------------------------
+
+test("abutNeighbour closes the gap in front of a block, keeping its length", () => {
+  const previous = { start_ms: 0, end_ms: 70_970 };
+  const block = { start_ms: 75_000, end_ms: 100_000 };
+  assert.deepEqual(abutNeighbour(block, "prev", [previous, block], 3_600_000), {
+    start_ms: 70_970,
+    end_ms: 95_970,
+  });
+});
+
+test("abutNeighbour closes the gap after a block", () => {
+  const block = { start_ms: 0, end_ms: 10_000 };
+  const next = { start_ms: 12_000, end_ms: 30_000 };
+  assert.deepEqual(abutNeighbour(block, "next", [block, next], 3_600_000), {
+    start_ms: 2_000,
+    end_ms: 12_000,
+  });
+});
+
+test("abutNeighbour does nothing when the block is already flush", () => {
+  // A shortcut that fires on every press would be worse than one that is quiet: the second
+  // press has nothing to do, and a notice for it would appear on every other keypress.
+  const previous = { start_ms: 0, end_ms: 10_000 };
+  const block = { start_ms: 10_000, end_ms: 20_000 };
+  assert.equal(abutNeighbour(block, "prev", [previous, block], 3_600_000), null);
+});
+
+test("abutNeighbour does nothing at the ends of the film", () => {
+  const only = { start_ms: 5000, end_ms: 9000 };
+  assert.equal(abutNeighbour(only, "prev", [only], 3_600_000), null);
+  assert.equal(abutNeighbour(only, "next", [only], 3_600_000), null);
+});
+
+test("abutNeighbour refuses a move that would overlap the other neighbour", () => {
+  // The block is longer than the gap between its two neighbours: closing one side would put
+  // it on top of the other, and an overlapping block is mostly trimmed away at render time —
+  // it looks like the block was deleted.
+  const previous = { start_ms: 0, end_ms: 10_000 };
+  const next = { start_ms: 25_000, end_ms: 40_000 };
+  // 18 s long, but the gap between its neighbours is only 15 s: either direction lands on top
+  // of the other block.
+  const block = { start_ms: 12_000, end_ms: 30_000 };
+  assert.equal(abutNeighbour(block, "prev", [previous, next, block], 3_600_000), null);
+  assert.equal(abutNeighbour(block, "next", [previous, next, block], 3_600_000), null);
+});
+
+test("abutNeighbour refuses an edge outside the film", () => {
+  // With consistent data this cannot happen — butting left starts at the neighbour's *end*,
+  // so the block's own length keeps it inside. It happens when `durationMs` lags: the track
+  // takes the total from the timeline grid, and a re-transcription can shorten the media
+  // while a render is in flight. Refusing is the honest answer; writing a block at 200 s of a
+  // 100 s film would land in the database and show up as a block that never plays.
+  const block = { start_ms: 0, end_ms: 10_000 };
+  const next = { start_ms: 200_000, end_ms: 210_000 };
+  assert.equal(abutNeighbour(block, "next", [block, next], 100_000), null);
+});
+
+test("abutNeighbour does not require the block to be in the list", () => {
+  // The track passes its own array, which does contain the block; a caller that filters it out
+  // must still get the same answer.
+  const previous = { start_ms: 0, end_ms: 10_000 };
+  const block = { start_ms: 12_000, end_ms: 20_000 };
+  assert.deepEqual(abutNeighbour(block, "prev", [previous], 3_600_000), {
+    start_ms: 10_000,
+    end_ms: 18_000,
+  });
+});
+
+test("abutNeighbour measures gaps against the neighbour's own edges", () => {
+  // Two candidates on the left: the closer *end* wins, not the closer start. A block that
+  // ends later but starts earlier is the one that is actually adjacent.
+  const far = { start_ms: 0, end_ms: 5000 };
+  const near = { start_ms: 3000, end_ms: 9000 };
+  const block = { start_ms: 12_000, end_ms: 20_000 };
+  assert.equal(abutNeighbour(block, "prev", [far, near, block], 3_600_000)?.start_ms, 9000);
 });
 
 // --- keeping the block on screen --------------------------------------
