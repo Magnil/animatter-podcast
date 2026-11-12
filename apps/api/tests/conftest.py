@@ -15,10 +15,17 @@ from animatter.main import create_app
 
 @pytest.fixture()
 def settings(tmp_path: Path) -> Settings:
+    # ``dashscope_api_key=None`` explicitly, even though ``.env`` on a developer's machine has
+    # a real key: the class reads ``.env`` at import time, so without this every test that
+    # reaches a model-backed endpoint would make a **real paid call**. Round 100 made deck
+    # generation one of those endpoints, which is what turned a silently expensive test suite
+    # into a visible failure (one test got a one-page outline from a three-sentence fixture).
+    # A test that wants a key sets one itself and stubs the transport.
     return Settings(
         data_dir=tmp_path / "data",
         host="127.0.0.1",
         log_level="ERROR",
+        dashscope_api_key=None,
     )
 
 

@@ -278,7 +278,7 @@ def test_pages_are_contiguous_and_ordered() -> None:
 
 def test_page_plan_is_frozen() -> None:
     page = PagePlan(
-        source_ord=0, start_ms=0, last_ord=0, title="t", body="b", context="c", speaker=0
+        source_ord=0, start_ms=0, last_ord=0, title="t", text="b", context="c", speaker=0
     )
     try:
         page.title = "changed"  # type: ignore[misc]
