@@ -17,11 +17,12 @@ import assert from "node:assert/strict";
 
 import {
   blockAt,
+  blockName,
   dropRange,
+  FITS,
   galleryCaption,
   galleryDwellMs,
   layoutBlock,
-  lengthCaption,
   MIN_BLOCK_MS,
   moveBlock,
   msToX,
@@ -130,23 +131,6 @@ test("snapEdge accepts a boundary exactly at the radius", () => {
 
 test("snapEdge is idempotent on a target", () => {
   assert.equal(snapEdge(1000, [0, 1000, 2000]), 1000);
-});
-
-// --- lengths ------------------------------------------------------------
-
-test("lengthCaption shows one number when nothing was cut", () => {
-  assert.equal(
-    lengthCaption({ start_ms: 0, end_ms: 10_000, duration_ms: 10_000, output_ms: 10_000 }),
-    "10.0s",
-  );
-});
-
-test("lengthCaption shows both numbers when audio was cut", () => {
-  // A single number here is what makes the user say 「我明明设了 10 秒」.
-  assert.equal(
-    lengthCaption({ start_ms: 0, end_ms: 10_000, duration_ms: 10_000, output_ms: 8000 }),
-    "原始 10.0s / 成片 8.0s",
-  );
 });
 
 // --- gallery pacing -----------------------------------------------------
@@ -312,6 +296,46 @@ test("blockAt returns null outside every block", () => {
 test("blockAt prefers the later block when two overlap", () => {
   const blocks = [{ start_ms: 0, end_ms: 5000 }, { start_ms: 3000, end_ms: 8000 }];
   assert.deepEqual(blockAt(3500, blocks), blocks[1]);
+});
+
+// --- what a block is called -------------------------------------------
+
+test("blockName prefers the server's label", () => {
+  // Round 104: the track used to say 「素材」 / 「画廊」 / 「演示稿」 for every block, so two
+  // stills on the same timeline were indistinguishable.
+  assert.equal(blockName({ label: "开场封面.png", kind: "media" }), "开场封面.png");
+  assert.equal(blockName({ label: "演示稿", kind: "slide" }), "演示稿");
+});
+
+test("blockName falls back to the kind when nothing names the block", () => {
+  // A block created before an asset was picked has no label; a blank rectangle reads as a
+  // rendering bug rather than as "no file yet".
+  assert.equal(blockName({ label: "", kind: "media" }), "素材");
+  assert.equal(blockName({ label: "", kind: "gallery" }), "画廊");
+  assert.equal(blockName({ label: "", kind: "slide" }), "演示稿");
+  assert.equal(blockName({ kind: "media" }), "素材");
+});
+
+test("blockName treats an unknown kind as material", () => {
+  assert.equal(blockName({ label: "", kind: "nonsense" }), "素材");
+});
+
+// --- the fit list ------------------------------------------------------
+
+test("FITS is exactly the four strategies the server accepts", () => {
+  // `services/video.py` validates against {contain, cover, blur_fill, stretch}. A label
+  // here whose id is not one of those is a dropdown entry that 400s on pick.
+  assert.deepEqual(
+    FITS.map((fit) => fit.id),
+    ["blur_fill", "contain", "cover", "stretch"],
+  );
+});
+
+test("every fit has a label and a hint a tooltip can show", () => {
+  for (const fit of FITS) {
+    assert.ok(fit.label.length > 0, fit.id);
+    assert.ok(fit.hint.length > 0, fit.id);
+  }
 });
 
 // --- keeping the block on screen --------------------------------------
