@@ -357,6 +357,8 @@ class ItemOut(BaseModel):
     slide_id: str | None = None
     gallery_json: str
     orphaned: bool
+    muted: bool
+    has_audio: bool
 
 
 class TimelineOut(BaseModel):
@@ -403,6 +405,9 @@ class ItemIn(BaseModel):
     slide_id: str | None = None
     gallery_json: str = "[]"
     snap: bool = True
+    #: ``True`` (silent) is the default, matching the column: the film's sound is the podcast,
+    #: and a block's own audio is additional (§19.20).
+    muted: bool = True
 
 
 class ItemPatchIn(BaseModel):
@@ -417,6 +422,7 @@ class ItemPatchIn(BaseModel):
     slide_id: str | None = None
     gallery_json: str | None = None
     snap: bool = True
+    muted: bool | None = None
 
 
 def _snapped(
@@ -462,6 +468,7 @@ def create_item(
         deck_id=payload.deck_id,
         slide_id=payload.slide_id,
         gallery_json=payload.gallery_json,
+        muted=payload.muted,
     )
     edl = clipping_service.build_edl(session, settings, version)
     keeps = [(keep.orig_start, keep.orig_end) for keep in edl.keeps]
@@ -500,6 +507,7 @@ def patch_item(
         deck_id=payload.deck_id,
         slide_id=payload.slide_id,
         gallery_json=payload.gallery_json,
+        muted=payload.muted,
     )
     edl = clipping_service.build_edl(session, settings, version)
     keeps = [(keep.orig_start, keep.orig_end) for keep in edl.keeps]

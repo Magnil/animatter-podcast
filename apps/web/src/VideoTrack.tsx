@@ -40,6 +40,7 @@ import {
   layoutBlock,
   moveBlock,
   resizeBlock,
+  stretchToNeighbour,
 } from "./videoTimeline";
 
 export interface VideoTrackProps {
@@ -63,6 +64,8 @@ export interface VideoTrackProps {
    */
   selectedId: string | null;
   onFit: (item: VideoItem, fit: string) => void;
+  /** Toggle the block's own sound on or off (§19.20). */
+  onMute: (item: VideoItem, muted: boolean) => void;
   onDelete: (item: VideoItem) => void;
   /** Zoom/pan the **shared** window — the same one the audio waveform uses. */
   onZoom: (anchorMs: number, factor: number) => void;
@@ -93,6 +96,7 @@ export function VideoTrack({
   onDropAsset,
   selectedId,
   onFit,
+  onMute,
   onDelete,
   onZoom,
   onPan,
@@ -143,7 +147,12 @@ export function VideoTrack({
   }, [durationMs, onPan, onZoom, view, width]);
 
   /**
-   * Ctrl+← / Ctrl+→: move the selected block flush against its neighbour.
+   * Ctrl+← / Ctrl+→ move the whole block flush against its neighbour (length kept);
+   * Shift+← / Shift+→ stretch one edge until it reaches it (length changes).
+   *
+   * Both keys are handled here because they share the neighbour search and because splitting
+   * them across two listeners would let a future edit to the input field guard fix one and
+   * miss the other — that guard is the only part that can go wrong silently.
    *
    * Dragging can close a gap, but not *exactly* — the snap grid is ~500 ms apart, so a hand
    * drag lands "about there" and two blocks that should share an edge end up a few hundred
@@ -157,15 +166,18 @@ export function VideoTrack({
    * silently — anything in an input, a textarea or a contenteditable keeps its own
    * Ctrl+←/→ (word-by-word caret movement) untouched.
    *
-   * `abutNeighbour` returns `null` when the block is already flush or has no neighbour on
-   * that side, and nothing happens: a shortcut that does nothing when it is already satisfied
-   * is correct, and a notice for it would fire on every second press.
+   * Both helpers return `null` when there is nothing to do, and nothing happens: a shortcut
+   * that does nothing when it is already satisfied is correct, and a notice for it would fire
+   * on every second press.
    */
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
-      if (!event.ctrlKey && !event.metaKey) return;
+      const move = event.ctrlKey || event.metaKey;
+      const stretch = event.shiftKey;
+      // Both at once means "do two things", which nobody asked for; Alt is reserved by the
+      // window manager on Windows and never reaches a page.
+      if (move === stretch || event.altKey) return;
       if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-      if (event.shiftKey || event.altKey) return;
       const target = event.target as HTMLElement | null;
       if (target) {
         if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
@@ -173,12 +185,10 @@ export function VideoTrack({
       }
       const item = items.find((candidate) => candidate.id === selectedId);
       if (!item) return;
-      const moved = abutNeighbour(
-        item,
-        event.key === "ArrowLeft" ? "prev" : "next",
-        items,
-        durationMs,
-      );
+      const direction = event.key === "ArrowLeft" ? "prev" : "next";
+      const moved = stretch
+        ? stretchToNeighbour(item, direction, items, durationMs)
+        : abutNeighbour(item, direction, items, durationMs);
       if (moved === null) return;
       event.preventDefault();
       onMove(item, moved.start_ms, moved.end_ms);
@@ -443,6 +453,29 @@ export function VideoTrack({
               ))}
             </select>
           </label>
+          {/*
+            One letter, and only where it can do something. A still has no sound, so the
+            button is *absent* rather than disabled: a permanently greyed-out M asks "what is
+            wrong with this block", and the answer is "nothing".
+          */}
+          {bubbleItem.has_audio ? (
+            <button
+              type="button"
+              className={`ghost small icon${bubbleItem.muted ? "" : " is-on"}`}
+              // Pressed **is** muted: this button silences the block, so a pressed M is a
+              // silent block. The inverse read as "pressed means audible" and told the user
+              // the opposite of the truth on every silent block.
+              aria-pressed={bubbleItem.muted}
+              title={
+                bubbleItem.muted
+                  ? `让 ${blockName(bubbleItem)} 自己的声音也进成片`
+                  : `只留播客的声音，静音 ${blockName(bubbleItem)}`
+              }
+              onClick={() => onMute(bubbleItem, !bubbleItem.muted)}
+            >
+              M
+            </button>
+          ) : null}
           <button
             type="button"
             className="ghost small"

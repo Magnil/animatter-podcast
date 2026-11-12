@@ -2105,6 +2105,24 @@ button.small,
   font-size: 0.72rem;
 }
 
+/* The M toggle (§19.20).
+   Square and one letter wide, because it sits between a select and a destructive button and a
+   third full-width control would push 删除素材 out of a 300px bubble. Off is the plain ghost
+   look (the block is silent, which is the default); on is accent-filled, because "this block
+   is audible" is a state nothing else on the track says out loud. */
+.video-bubble .icon {
+  min-width: 22px;
+  padding-inline: 4px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.video-bubble .icon.is-on {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
 .video-block-handle {
   position: absolute;
   top: 0;

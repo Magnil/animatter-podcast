@@ -1005,6 +1005,8 @@ export const api = {
       deck_id?: string;
       slide_id?: string;
       gallery_json?: string;
+      /** `true` (silent) is the server default; only pass it to create a speaking block. */
+      muted?: boolean;
     },
   ) =>
     request<VideoItem>(`/api/versions/${versionId}/video/items`, {
@@ -1022,6 +1024,7 @@ export const api = {
       asset_id?: string;
       gallery_json?: string;
       snap?: boolean;
+      muted?: boolean;
     },
   ) =>
     request<VideoItem>(`/api/video/items/${itemId}`, {
@@ -1288,6 +1291,20 @@ export interface VideoItem {
   slide_id: string | null;
   gallery_json: string;
   orphaned: boolean;
+  /**
+   * Whether the block's own sound is silenced (§19.20).
+   *
+   * `true` by default — the film's audio is the podcast, and a block's sound is something the
+   * user asks for. So an untouched project sounds exactly as it did before the feature.
+   */
+  muted: boolean;
+  /**
+   * Whether unmuting would bring sound back: `false` for a still, a deck, or a silent clip.
+   *
+   * Computed on the server from `video_asset.has_audio`, because the timeline payload carries
+   * no asset rows and the button must not be offered where it would be a lie.
+   */
+  has_audio: boolean;
 }
 
 /** One page of the deck (P4). */

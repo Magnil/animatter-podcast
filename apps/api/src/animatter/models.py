@@ -453,6 +453,10 @@ class VideoAsset(Base):
     #: 0 for images — they have no intrinsic length, so a block's length is
     #: whatever the timeline says rather than something the asset forces.
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    #: Whether the file carries an audio stream. Read at import (ffprobe is already running
+    #: there) so the timeline can offer 「M」 only on blocks that have something to mute, and
+    #: so the renderer need not probe every distinct clip on every export.
+    has_audio: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[str] = mapped_column(String(32))
 
 
@@ -540,5 +544,9 @@ class VideoItem(Base):
     #: The block's audio was deleted in full, so it has zero length in the output.
     #: Flagged rather than deleted: the user may restore that sentence tomorrow.
     orphaned: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: Silence the **asset's own** sound (§19.20). ``True`` by default: the film's audio is the
+    #: podcast, and until this round that was the only thing in it. A block's sound is an extra
+    #: the user asks for, so an untouched project sounds exactly as it did before.
+    muted: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[str] = mapped_column(String(32))
     updated_at: Mapped[str] = mapped_column(String(32))

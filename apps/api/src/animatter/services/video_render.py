@@ -683,7 +683,10 @@ def _video_signature(prepared: PreparedVideo, options: ExportOptions) -> str:
         hashlib.sha256(
             ";".join(
                 f"{item.start_ms}-{item.end_ms}:{item.kind}:{item.fit}:"
-                f"{item.asset_id or ''}:{item.deck_id or ''}:{item.gallery_json}:{item.motion}"
+                f"{item.asset_id or ''}:{item.deck_id or ''}:{item.gallery_json}:{item.motion}:"
+                # The mute flag changes what the film sounds like, so an export cached
+                # across a click on 「M」 would hand back the previous audio silently.
+                f"{'muted' if item.muted else 'audible'}"
                 for item in prepared.items
             ).encode()
         ).hexdigest(),
@@ -815,7 +818,16 @@ def _encode(
     report(0.95)
 
     result = video_media.mux(
-        settings.ffmpeg_path, video=silent, audio=prepared.audio_path, target=final
+        settings.ffmpeg_path,
+        video=silent,
+        audio=prepared.audio_path,
+        target=final,
+        # Empty unless the user unmuted something (§19.20), which is what keeps the silent
+        # case on the `-c copy` path it was designed around.
+        mix=[
+            video_media.AudioMix(start_ms=item.start_ms, end_ms=item.end_ms, path=item.path)
+            for item in plan.audible
+        ],
     )
     silent.unlink(missing_ok=True)
 

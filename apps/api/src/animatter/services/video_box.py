@@ -55,6 +55,20 @@ class PlannedBlock:
 
 
 @dataclass(frozen=True)
+class AudibleStretch:
+    """One block's own sound, placed on the **output** timeline (§19.20).
+
+    ``path`` is the asset file; ``start_ms``/``end_ms`` are output milliseconds. The clip is
+    read from its own beginning — the picture is too, because a block plays continuously and
+    is truncated rather than jump-cut (§19.3).
+    """
+
+    start_ms: int
+    end_ms: int
+    path: Path
+
+
+@dataclass(frozen=True)
 class BoxPlan:
     """The whole chain plus what the renderer needs to place it."""
 
@@ -66,6 +80,9 @@ class BoxPlan:
     box_y: int
     #: Blocks dropped because their audio no longer exists. Reported, never silent.
     orphaned: int = 0
+    #: Stretches that should be mixed under the podcast, in output time. Empty unless the user
+    #: unmuted something — silence is the default and keeps the mux on its `-c copy` path.
+    audible: tuple[AudibleStretch, ...] = ()
     #: True when every segment is a plate excerpt: the film genuinely has no box content.
     empty: bool = True
 
@@ -415,6 +432,8 @@ def plan(
             )
         )
 
+    audible = _audible_stretches(session, cache, planned, time_map)
+
     empty = not any(segment.kind != box_track.KIND_PLATE for segment in final)
     log.info(
         "box.planned",
@@ -435,7 +454,49 @@ def plan(
         box_y=box_y,
         orphaned=orphaned,
         empty=empty,
+        audible=tuple(audible),
     )
+
+
+def _audible_stretches(
+    session: Session,
+    cache: dict[str, VideoAsset | None],
+    planned: list[PlannedBlock],
+    time_map: TimeMap,
+) -> list[AudibleStretch]:
+    """Every unmuted block that has a sound, laid end to end in output time.
+
+    Built from the same ``planned`` list as the picture on purpose: a block that contributed
+    no stretch to the chain (its audio was deleted, or its asset vanished) must contribute no
+    sound either, and taking the two lists from one loop is what keeps them from disagreeing.
+
+    A gallery is one block and one stretch: its members change the picture every few seconds,
+    but its sound is whatever clip a member happens to carry, so the *first* member with audio
+    speaks for the whole block. Mixing each member in turn would restart the sound at every
+    image and produce a stutter nobody asked for.
+    """
+
+    out: list[AudibleStretch] = []
+    for block in planned:
+        if block.item.muted:
+            continue
+        asset_ids: list[str] = []
+        if block.item.kind == "gallery":
+            asset_ids = [asset_id for asset_id, _weight in _gallery_ids(block.item.gallery_json)]
+        elif block.item.asset_id:
+            asset_ids = [block.item.asset_id]
+        for asset_id in asset_ids:
+            row = _asset(session, cache, asset_id)
+            if row is None or not row.has_audio:
+                continue
+            mapped = time_map.map_range(block.item.start_ms, block.item.end_ms)
+            if mapped is None or mapped[1] <= mapped[0]:
+                continue
+            out.append(
+                AudibleStretch(start_ms=mapped[0], end_ms=mapped[1], path=Path(row.path))
+            )
+            break
+    return out
 
 
 def _slide_tables(

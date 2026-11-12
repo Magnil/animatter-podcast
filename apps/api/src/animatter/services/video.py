@@ -83,6 +83,9 @@ class ItemView:
     #: deck must change what every block of it says, and a copied column would keep saying
     #: the old name until something happened to rewrite the block.
     label: str = ""
+    #: True when unmuting this block would actually bring sound back. False for stills, for
+    #: slide decks, and for a silent clip — in all three cases the button would be a lie.
+    has_audio: bool = False
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -101,6 +104,13 @@ class ItemView:
             "slide_id": self.item.slide_id,
             "gallery_json": self.item.gallery_json,
             "orphaned": self.orphaned,
+            #: Whether this block is silent. The UI draws 「M」 pressed when it is, and the
+            #: renderer mixes the asset's sound back in when it is not (§19.20).
+            "muted": self.item.muted,
+            #: Whether unmuting would do anything — a still has no sound to bring back. Read
+            #: from the asset (or from the gallery's first member) rather than left to the
+            #: front end, which does not have the asset rows on the timeline payload.
+            "has_audio": self.has_audio,
         }
 
 
@@ -171,6 +181,7 @@ def view_items(
     """
     rows = list_items(session, project_id)
     labels = _labels_for(session, rows)
+    audible = _audible_for(session, rows)
     views: list[ItemView] = []
     for row in rows:
         interval = Interval(row.start_ms, row.end_ms)
@@ -181,9 +192,43 @@ def view_items(
                 output_ms=output,
                 orphaned=output <= 0,
                 label=labels.get(row.id, ""),
+                has_audio=audible.get(row.id, False),
             )
         )
     return views
+
+
+def _audible_for(session: Session, rows: list[VideoItem]) -> dict[str, bool]:
+    """Which blocks have a sound to unmute, in one query.
+
+    A still has no audio stream and a slide deck's pages are PNGs, so only ``media`` and
+    ``gallery`` blocks can ever say yes — a gallery as soon as *one* member is a clip with
+    sound. Answered here rather than in the browser because the timeline payload carries no
+    asset rows, and rather than in the renderer because that would be one ffprobe process per
+    distinct clip on every export.
+    """
+    from animatter.models import VideoAsset
+
+    wanted: set[str] = set()
+    members_of: dict[str, list[str]] = {}
+    for row in rows:
+        if row.kind == "gallery":
+            ids = [asset_id for asset_id, _weight in _gallery_members(row.gallery_json)]
+            members_of[row.id] = ids
+            wanted.update(ids)
+        elif row.kind == "media" and row.asset_id:
+            wanted.add(row.asset_id)
+            members_of[row.id] = [row.asset_id]
+
+    sound: dict[str, bool] = {}
+    if wanted:
+        for asset in session.scalars(select(VideoAsset).where(VideoAsset.id.in_(wanted))):
+            sound[asset.id] = bool(asset.has_audio)
+
+    return {
+        item_id: any(sound.get(asset_id, False) for asset_id in asset_ids)
+        for item_id, asset_ids in members_of.items()
+    }
 
 
 #: Name used when a gallery's first member is gone and nothing else can name the block.
@@ -351,6 +396,7 @@ def create_item(
     deck_id: str | None = None,
     slide_id: str | None = None,
     gallery_json: str = "[]",
+    muted: bool = True,
 ) -> VideoItem:
     _validate(kind, fit, motion)
     if end_ms <= start_ms:
@@ -374,6 +420,7 @@ def create_item(
         slide_id=slide_id,
         gallery_json=gallery_json,
         orphaned=False,
+        muted=muted,
         created_at=now,
         updated_at=now,
     )
@@ -396,6 +443,7 @@ def update_item(
     deck_id: str | None = None,
     slide_id: str | None = None,
     gallery_json: str | None = None,
+    muted: bool | None = None,
 ) -> VideoItem:
     """Patch a block. ``None`` means "leave alone", so a cleared field must pass ``""``."""
     row = session.get(VideoItem, item_id)
@@ -420,6 +468,8 @@ def update_item(
         row.slide_id = slide_id or None
     if gallery_json is not None:
         row.gallery_json = gallery_json
+    if muted is not None:
+        row.muted = muted
 
     new_start = start_ms if start_ms is not None else row.start_ms
     new_end = end_ms if end_ms is not None else row.end_ms

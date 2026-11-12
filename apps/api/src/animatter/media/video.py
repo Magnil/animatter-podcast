@@ -550,18 +550,39 @@ def render_still(
     return VideoResult(path=target, duration_ms=0, frames=1)
 
 
+@dataclass(frozen=True)
+class AudioMix:
+    """One block's own sound, placed on the output timeline.
+
+    ``start_ms``/``end_ms`` are **output** milliseconds (§19.3): the block may be longer on
+    the original timeline than what the film plays of it. The clip is always read from its own
+    beginning, because that is what its picture does.
+    """
+
+    start_ms: int
+    end_ms: int
+    path: Path
+
+
 def mux(
     ffmpeg: str,
     *,
     video: Path,
     audio: Path,
     target: Path,
+    mix: list[AudioMix] | None = None,
 ) -> VideoResult:
-    """Stick the rendered audio onto the silent video without re-encoding either.
+    """Stick the rendered audio onto the silent video, mixing in blocks' own sound if any.
 
     ``-c copy`` measured 0.24 s per 60 s — three orders of magnitude cheaper than
     encoding audio here, and it guarantees the film's sound is bit-identical to the
-    audio the user already exported and approved.
+    audio the user already exported and approved. That path is kept for the **silent**
+    case, which is the default and every project until someone unmutes a block (§19.20).
+
+    ``mix`` is the unmuted stretches. Mixing cannot be a stream copy — two audio tracks have
+    to be resampled, delayed and summed — so that case re-encodes the podcast audio once, at
+    a bitrate high enough that the difference is inaudible. It is opt-in per block, so nobody
+    pays it by accident.
 
     ``-shortest`` is deliberately **not** used: the two tracks are both derived from
     the same EDL, and if they ever disagree slightly, silently truncating one hides a
@@ -578,33 +599,121 @@ def mux(
         )
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    _run(
-        [
-            ffmpeg,
-            "-nostdin",
-            "-y",
-            "-loglevel",
-            "error",
-            "-i",
-            str(video),
-            "-i",
-            str(audio),
-            "-map",
-            "0:v:0",
-            "-map",
-            "1:a:0",
-            "-c",
-            "copy",
-            "-movflags",
-            "+faststart",
-            str(target),
-        ]
-    )
+    audible = [item for item in (mix or []) if item.end_ms > item.start_ms]
+    if not audible:
+        _run(
+            [
+                ffmpeg,
+                "-nostdin",
+                "-y",
+                "-loglevel",
+                "error",
+                "-i",
+                str(video),
+                "-i",
+                str(audio),
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-c",
+                "copy",
+                "-movflags",
+                "+faststart",
+                str(target),
+            ]
+        )
+    else:
+        graph, args = _mix_graph(audible)
+        _run(
+            [
+                ffmpeg,
+                "-nostdin",
+                "-y",
+                "-loglevel",
+                "error",
+                "-i",
+                str(video),
+                "-i",
+                str(audio),
+                *args,
+                "-filter_complex",
+                graph,
+                "-map",
+                "0:v:0",
+                "-map",
+                "[aout]",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-b:a",
+                MIX_BITRATE,
+                "-movflags",
+                "+faststart",
+                str(target),
+            ]
+        )
     if not target.exists() or target.stat().st_size == 0:
         raise AppError("mux_failed", "混流产出为空文件", hint="检查 ffmpeg 日志与磁盘空间。")
 
     duration = _probe_duration_ms(ffmpeg, target)
     return VideoResult(path=target, duration_ms=duration, frames=0)
+
+
+#: Podcast bitrate for the mixed case. The audio render defaults to 192k; matching it
+#: means the only difference the user can hear is the sound they asked for.
+MIX_BITRATE: Final[str] = "192k"
+
+#: Everything is resampled to this before summing. ``amix`` refuses inputs whose formats
+#: disagree, and a vp9/opus screen recording from a phone is 48 kHz stereo while an older
+#: clip is 44.1 kHz mono — the failure is an ffmpeg error at encode time, i.e. after the
+#: twenty-minute video encode, which is the worst possible moment to learn about it.
+MIX_SAMPLE_RATE: Final[int] = 48000
+
+
+def _mix_graph(stretches: list[AudioMix]) -> tuple[str, list[str]]:
+    """``(filter_complex, extra input arguments)`` for podcast + block sound.
+
+    One input per stretch rather than per file: the same clip can back two blocks at
+    different instants, and a `-ss`-style share would put one of them at the wrong time.
+    ``amix`` with ``duration=first`` keeps the film's length: the podcast track is input 1
+    and is the full film, so a stretch reaching past the end cannot lengthen the output.
+
+    ``normalize=0`` is not decoration. ``amix``'s default is to divide by the number of
+    inputs, which would quietly halve the podcast's volume the moment one block is unmuted —
+    a change nobody asked for, in the direction of "the film sounds worse but only sometimes".
+
+    ``alimiter`` is the other half of that decision, and it was measured rather than assumed:
+    with ``normalize=0`` and both inputs at full scale, **36 000 of 96 000 samples** landed on
+    the 16-bit ceiling. ``:latency=1`` is not decoration either — the limiter delays its output
+    by 239 samples (5 ms) by default, which would put every clip's sound 5 ms behind its
+    picture. Measured with an impulse: 0 samples of delay with the flag.
+    """
+    parts: list[str] = [
+        f"[1:a]aresample={MIX_SAMPLE_RATE},aformat=channel_layouts=stereo[pod]"
+    ]
+    labels = ["[pod]"]
+    args: list[str] = []
+    for index, stretch in enumerate(stretches):
+        args += ["-i", str(stretch.path)]
+        # Input 0 is the video and input 1 the podcast, so this stretch is input index + 2.
+        parts.append(
+            f"[{index + 2}:a]aresample={MIX_SAMPLE_RATE},"
+            f"aformat=channel_layouts=stereo,"
+            f"atrim=start=0:end={(stretch.end_ms - stretch.start_ms) / 1000:.3f},"
+            f"asetpts=PTS-STARTPTS,"
+            f"adelay={stretch.start_ms}|{stretch.start_ms}[bx{index}]"
+        )
+        labels.append(f"[bx{index}]")
+    parts.append(
+        f"{''.join(labels)}amix=inputs={len(labels)}:duration=first:"
+        f"dropout_transition=0:normalize=0,"
+        # 0.95 rather than 1.0: a limiter set to exactly full scale still lets a sample or two
+        # through at the ceiling once the encoder rounds.
+        f"alimiter=limit=0.95:level=disabled:latency=1[aout]"
+    )
+    return ";".join(parts), args
 
 
 def _probe_duration_ms(ffmpeg: str, path: Path) -> int:

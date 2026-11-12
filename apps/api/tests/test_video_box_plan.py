@@ -17,6 +17,7 @@ its result.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -54,6 +55,7 @@ def make_asset(
     *,
     kind: str = KIND_IMAGE,
     duration_ms: int = 0,
+    has_audio: bool = False,
 ) -> VideoAsset:
     path = tmp_path / f"{new_id('f')}.png"
     path.write_bytes(b"not really a png, the planner never opens it")
@@ -66,6 +68,7 @@ def make_asset(
         width=1920,
         height=1080,
         duration_ms=duration_ms,
+        has_audio=has_audio,
         created_at=utcnow_iso(),
     )
     session.add(row)
@@ -83,6 +86,7 @@ def make_item(
     asset_id: str | None = None,
     gallery_json: str = "[]",
     fit: str = "cover",
+    muted: bool = True,
 ) -> VideoItem:
     row = VideoItem(
         id=new_id("vitem"),
@@ -98,6 +102,7 @@ def make_item(
         slide_id=None,
         gallery_json=gallery_json,
         orphaned=False,
+        muted=muted,
         created_at=utcnow_iso(),
         updated_at=utcnow_iso(),
     )
@@ -132,6 +137,151 @@ def test_a_single_block_covers_the_whole_film(
     assert plan.segments[0].kind == KIND_IMAGE
     assert plan.segments[0].duration_ms == 5000
     assert not plan.empty
+
+
+# --- the block's own sound, in output time (§19.20) --------------------
+
+
+def test_a_muted_block_contributes_no_sound(
+    session: Session, project: str, tmp_path: Path
+) -> None:
+    asset = make_asset(
+        session, project, tmp_path, kind=KIND_VIDEO, duration_ms=9000, has_audio=True
+    )
+    item = make_item(session, project, start_ms=0, end_ms=5000, asset_id=asset.id)
+    plan = video_box.plan(
+        session,
+        template_background=tmp_path / "bg.png",
+        box_rect=BOX,
+        items=[item],
+        edl=edl_of((0, 5000), original=5000),
+    )
+    # Silent is the default, and it is what keeps the mux on its `-c copy` path.
+    assert plan.audible == ()
+
+
+def test_an_unmuted_block_contributes_its_own_stretch(
+    session: Session, project: str, tmp_path: Path
+) -> None:
+    asset = make_asset(
+        session, project, tmp_path, kind=KIND_VIDEO, duration_ms=9000, has_audio=True
+    )
+    item = make_item(
+        session, project, start_ms=1000, end_ms=4000, asset_id=asset.id, muted=False
+    )
+    plan = video_box.plan(
+        session,
+        template_background=tmp_path / "bg.png",
+        box_rect=BOX,
+        items=[item],
+        edl=edl_of((0, 5000), original=5000),
+    )
+    assert len(plan.audible) == 1
+    assert (plan.audible[0].start_ms, plan.audible[0].end_ms) == (1000, 4000)
+
+
+def test_the_sound_follows_the_picture_across_a_cut(
+    session: Session, project: str, tmp_path: Path
+) -> None:
+    """The deletion of 1000 ms *before* the block shifts both, by the same 1000 ms.
+
+    Unmuted sound that kept its original instant would start one second after its picture,
+    and one more second for every further cut before it — a drift, not an offset.
+    """
+    asset = make_asset(
+        session, project, tmp_path, kind=KIND_VIDEO, duration_ms=9000, has_audio=True
+    )
+    item = make_item(
+        session, project, start_ms=3000, end_ms=5000, asset_id=asset.id, muted=False
+    )
+    plan = video_box.plan(
+        session,
+        template_background=tmp_path / "bg.png",
+        box_rect=BOX,
+        items=[item],
+        # Dropped 1000–2000, so everything after 2000 is 1000 ms earlier in the film.
+        edl=edl_of((0, 1000), (2000, 5000), original=5000),
+    )
+    assert len(plan.audible) == 1
+    assert (plan.audible[0].start_ms, plan.audible[0].end_ms) == (2000, 4000)
+    # And the picture agrees — that is the whole point. The plate fills output [0, 2000):
+    # the surviving first second (0–1000) plus the second that was never cut out of the
+    # block's own approach (2000–3000 maps to output 1000–2000).
+    before_the_block = sum(
+        segment.duration_ms for segment in plan.segments if segment.kind == KIND_PLATE
+    )
+    assert before_the_block == 2000
+
+
+def test_a_block_whose_audio_is_gone_contributes_no_sound(
+    session: Session, project: str, tmp_path: Path
+) -> None:
+    """An orphan has no picture; a sound under no picture is worse than silence."""
+    asset = make_asset(
+        session, project, tmp_path, kind=KIND_VIDEO, duration_ms=9000, has_audio=True
+    )
+    item = make_item(
+        session, project, start_ms=1000, end_ms=2000, asset_id=asset.id, muted=False
+    )
+    plan = video_box.plan(
+        session,
+        template_background=tmp_path / "bg.png",
+        box_rect=BOX,
+        items=[item],
+        # The block's whole span is deleted.
+        edl=edl_of((0, 1000), (2000, 5000), original=5000),
+    )
+    assert plan.orphaned == 1
+    assert plan.audible == ()
+
+
+def test_a_still_is_never_audible(session: Session, project: str, tmp_path: Path) -> None:
+    """Unmuting a PNG is a state, not a sound: `has_audio` is what decides."""
+    asset = make_asset(session, project, tmp_path, kind=KIND_IMAGE)
+    item = make_item(
+        session, project, start_ms=0, end_ms=2000, asset_id=asset.id, muted=False
+    )
+    plan = video_box.plan(
+        session,
+        template_background=tmp_path / "bg.png",
+        box_rect=BOX,
+        items=[item],
+        edl=edl_of((0, 2000), original=2000),
+    )
+    assert plan.audible == ()
+
+
+def test_a_gallery_speaks_once_with_its_first_sound(
+    session: Session, project: str, tmp_path: Path
+) -> None:
+    """Three images and one clip: the clip's sound covers the block, not a third of it.
+
+    Restarting the sound at every member would produce a stutter, and the members are
+    pictures changing under one continuous block.
+    """
+    still = make_asset(session, project, tmp_path, kind=KIND_IMAGE)
+    clip = make_asset(
+        session, project, tmp_path, kind=KIND_VIDEO, duration_ms=9000, has_audio=True
+    )
+    members = json.dumps([{"asset_id": still.id}, {"asset_id": clip.id}])
+    item = make_item(
+        session,
+        project,
+        start_ms=0,
+        end_ms=6000,
+        kind="gallery",
+        gallery_json=members,
+        muted=False,
+    )
+    plan = video_box.plan(
+        session,
+        template_background=tmp_path / "bg.png",
+        box_rect=BOX,
+        items=[item],
+        edl=edl_of((0, 6000), original=6000),
+    )
+    assert len(plan.audible) == 1
+    assert (plan.audible[0].start_ms, plan.audible[0].end_ms) == (0, 6000)
 
 
 def test_the_box_rect_is_carried_through(session: Session, project: str, tmp_path: Path) -> None:

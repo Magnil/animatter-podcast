@@ -77,6 +77,7 @@ class AssetView:
             "width": self.row.width,
             "height": self.row.height,
             "duration_ms": self.row.duration_ms,
+            "has_audio": self.row.has_audio,
             "created_at": self.row.created_at,
             "url": self.url,
             "exists": self.exists,
@@ -113,11 +114,16 @@ _PROBE_ARGS = [
 ]
 
 
-def _probe(ffprobe: str, path: Path) -> tuple[int, int, int, bool]:
-    """Return ``(width, height, duration_ms, has_video)``.
+def _probe(ffprobe: str, path: Path) -> tuple[int, int, int, bool, bool]:
+    """Return ``(width, height, duration_ms, has_video, has_audio)``.
 
     ``has_video`` is what separates a real clip from an audio file with a .mp4 suffix;
     a plain "ffmpeg opened it" check would happily add a soundtrack to the library.
+
+    ``has_audio`` is kept because a clip's own sound is opt-in per block (§19.20): the
+    bubble offers 「M」 only for a block that has something to unmute. Probing for it later
+    would mean one ffprobe process per distinct clip on every export, and the UI cannot
+    guess it at all.
     """
     try:
         completed = subprocess.run(
@@ -151,7 +157,8 @@ def _probe(ffprobe: str, path: Path) -> tuple[int, int, int, bool]:
     streams = payload.get("streams") or []
     video = next((item for item in streams if item.get("codec_type") == "video"), None)
     if video is None:
-        return 0, 0, 0, False
+        return 0, 0, 0, False, False
+    has_audio = any(item.get("codec_type") == "audio" for item in streams)
 
     width = int(video.get("width") or 0)
     height = int(video.get("height") or 0)
@@ -169,7 +176,7 @@ def _probe(ffprobe: str, path: Path) -> tuple[int, int, int, bool]:
         duration_ms = round(float(raw_duration) * 1000)
     except (TypeError, ValueError):
         duration_ms = 0
-    return width, height, max(0, duration_ms), True
+    return width, height, max(0, duration_ms), True, has_audio
 
 
 def _kind_of(path: Path) -> str | None:
@@ -239,10 +246,19 @@ def import_asset(
         if not existing.original_name:
             existing.original_name = (display_name or resolved.name)[:200]
             session.flush()
+        # `has_audio` postdates some rows too (§19.20). It is checked separately from the name,
+        # because the two columns were added in different rounds and a row can easily have one
+        # and not the other — the demo project's six clips all had names and none had a sound
+        # flag. Only clips are probed: an image's answer is always `false`.
+        if existing.kind == KIND_VIDEO and not existing.has_audio:
+            _w, _h, _duration, _has_video, has_sound = _probe(settings.ffprobe_path, resolved)
+            if has_sound:
+                existing.has_audio = True
+                session.flush()
         log.info("asset.reused", project=project_id, asset=existing.id, sha256=digest[:12])
         return existing
 
-    width, height, duration_ms, has_video = _probe(settings.ffprobe_path, resolved)
+    width, height, duration_ms, has_video, has_audio = _probe(settings.ffprobe_path, resolved)
     if not has_video:
         raise AppError(
             "asset_no_video",
@@ -270,6 +286,7 @@ def import_asset(
         width=width,
         height=height,
         duration_ms=duration_ms,
+        has_audio=has_audio,
         created_at=utcnow_iso(),
     )
     session.add(row)

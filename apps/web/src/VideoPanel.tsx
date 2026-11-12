@@ -45,7 +45,7 @@ import { TemplateTexts } from "./TemplateTexts";
 import { formatTime } from "./format";
 import { VideoTrack } from "./VideoTrack";
 import type { View } from "./waveView";
-import { FITS, dropRange, orphanedBlocks, summaryLine } from "./videoTimeline";
+import { FITS, blockName, dropRange, orphanedBlocks, summaryLine } from "./videoTimeline";
 
 interface Props {
   projectId: string;
@@ -413,6 +413,27 @@ export function VideoPanel({
   };
 
   /**
+   * Silence or unmute the block's own sound (§19.20).
+   *
+   * Only the flag is written; the mix happens at export. Saying so in the notice matters —
+   * otherwise pressing M appears to do nothing, because the preview is a still and there is
+   * no film to hear yet.
+   */
+  const doMute = async (item: VideoItem, muted: boolean): Promise<void> => {
+    try {
+      await api.patchVideoItem(item.id, { muted });
+      await load();
+      onNotice(
+        muted
+          ? `已静音 ${blockName(item)}，成片里只留播客的声音`
+          : `${blockName(item)} 的声音会混进成片（导出时生效）`,
+      );
+    } catch (caught) {
+      onNotice(caught instanceof Error ? caught.message : String(caught));
+    }
+  };
+
+  /**
    * Move an orphaned block onto the next slot that still has audio.
    *
    * The action has to be **deterministic and explainable**, not clever: pick the next
@@ -710,20 +731,25 @@ export function VideoPanel({
             onDropAsset={(assetId, atMs) => void doDropAsset(assetId, atMs)}
             selectedId={selected?.id ?? null}
             onFit={(item, fit) => void doFit(item, fit)}
+            onMute={(item, muted) => void doMute(item, muted)}
             onDelete={(item) => void doDeleteItem(item)}
             onZoom={onZoom}
             onPan={onPan}
           />
 
           {/*
-            One line, and only once there is a block to use it on. A keyboard shortcut nobody
-            can find may as well not exist, and 拖动 can approach "adjacent" but never reach
-            it — the snap grid is ~500 ms, so the only exact way to close a gap is this key.
+            Only the keys, and only once there is a block to use them on.
+            
+            The line used to explain dragging and zooming too. Both are discoverable by
+            trying them, and the zoom gestures are *identical to the waveform's* directly
+            underneath — so that half was explaining the audio editor to someone who had
+            already learned it there. What cannot be discovered is a modifier: nothing on
+            screen hints that Ctrl or Shift exists.
           */}
           {timeline && timeline.items.length > 0 ? (
             <p className="muted small video-track-hint">
-              拖块两端改时长，拖块身挪位置，滚轮缩放（Shift+滚轮平移）。选中一个块后
-              Ctrl+← / Ctrl+→ 让它贴到前一个 / 后一个素材上（长度不变）。
+              选中一个块：Ctrl+← / Ctrl+→ 整块贴到前一个 / 后一个素材上（长度不变），
+              Shift+← / Shift+→ 只把这一边拉过去（长度改变）。
             </p>
           ) : null}
 
