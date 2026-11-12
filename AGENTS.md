@@ -79,9 +79,9 @@ docs/                    本文件拆出来的设计文档
 
 ```powershell
 # 后端：在 apps/api 下跑
-..\..\.venv\Scripts\python.exe -m pytest -q            # 1202 passed, 1 skipped, 3 deselected
+..\..\.venv\Scripts\python.exe -m pytest -q            # 1235 passed, 1 skipped, 3 deselected
 ..\..\.venv\Scripts\python.exe -m ruff check src tests
-..\..\.venv\Scripts\python.exe -m mypy --strict src    # 100 files
+..\..\.venv\Scripts\python.exe -m mypy --strict src    # 102 files
 
 # 前端：在 apps/web 下跑
 npx tsc --noEmit
