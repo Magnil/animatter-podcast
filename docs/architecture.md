@@ -217,6 +217,11 @@ outline(id TEXT PK, project_id, media_id, content TEXT, created_at)
 job(id TEXT PK, kind TEXT, payload_json TEXT,
       status TEXT, progress REAL, message TEXT,
       created_at, started_at, finished_at, error TEXT)
+
+-- 视频（§19）：模板 / 素材库 / 演示稿 / 时间轴。完整字段见 docs/video.md §19.4，
+-- 这里只列一条这一轮加的东西——
+-- video_asset.original_name：素材落盘按 sha256 改名，界面要显示导入时的文件名，
+--   所以名字必须存下来（文件名反推不出来）。空串 = 这一行早于这一列，显示时退回哈希名。
 ```
 
 ### 5.2 文件树
