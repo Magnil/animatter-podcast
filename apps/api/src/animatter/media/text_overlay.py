@@ -216,7 +216,27 @@ def _fit(
     a few pixels is visible and fixable; shrinking a 56 px title to 9 px to make it fit is not
     a fix, and silently dropping characters is worse than either.
     """
-    floor = max(MIN_PX, round(base_size * MIN_SCALE))
+    # A slot whose recorded size is 0 or single-digit still has to be *drawn*: `floor` may
+    # never exceed the size we start from, or the loop below never runs and the export dies
+    # with 「这段文字排不下」 — naming neither the slot nor the reason (round 110, found on a
+    # template compiled before `slots_json` carried `font_size`).
+    #
+    # A missing size falls back to the slot's own **height**, not to the 6 px floor: measured on
+    # that template, 6 px produced a title 6 px tall inside a 617×109 rect — an export that
+    # "succeeds" with text nobody can read. Starting from the height lets the loop that follows
+    # do what it already does (shrink until both dimensions fit), which is what a person would
+    # do by hand, and it is the only start that can be right for both a 200×50 episode number
+    # and a 617×109 two-line title.
+    missing = base_size <= 0
+    if missing:
+        log.warning("text.size_missing", slot=slot.text[:40], w=slot.w, h=slot.h)
+        base_size = max(MIN_PX, slot.h)
+    size = base_size
+    # The 0.5 floor protects an **authored** size from being shrunk into illegibility. A
+    # missing size has nothing to protect, and keeping the floor let the fallback overflow its
+    # own rect (measured: 617×109 with three lines at 54 px = 194 px tall). With no intent to
+    # preserve, the goal is simply "as large as fits", so it may go down to ``MIN_PX``.
+    floor = MIN_PX if missing else min(size, max(MIN_PX, round(size * MIN_SCALE)))
     path = str(fonts.require(slot.font).path)
     # A single-line slot may grow to the right; ``max_width`` is how far it can go before
     # it would leave the canvas. Falling back to the slot's own width keeps every other
@@ -225,7 +245,6 @@ def _fit(
     best: tuple[ImageFont.FreeTypeFont, list[str], int] | None = None
     best_overflow = float("inf")
 
-    size = base_size
     while size >= floor:
         font = ImageFont.truetype(path, size=size, index=0)
         lines = _wrap(
