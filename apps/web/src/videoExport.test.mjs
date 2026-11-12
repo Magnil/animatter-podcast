@@ -14,38 +14,42 @@ import { filmFilename, videoExportEntry } from "./videoExport.ts";
 
 // --- enablement ---------------------------------------------------------
 
-test("an empty edit disables the entry and says why", () => {
-  const entry = videoExportEntry({ hasEdl: true, deletionCount: 0, exportingPercent: null });
-  assert.equal(entry.disabled, true);
-  // The dependency is on the *audio* edit — the film is built from the cut audio — and that
-  // is not guessable from the label 「导出成片视频」.
-  assert.match(entry.hint, /先删除/);
+test("an empty edit is ready, not blocked (round 110)", () => {
+  // Someone who only proofread subtitles and then wants the film has nothing to cut first.
+  // The entry used to be disabled here with 「先删除要剪掉的内容」, which was a rule about the
+  // app's plumbing rather than about their work. `deletionCount` is not even an input any
+  // more, so the condition cannot come back by accident.
+  const entry = videoExportEntry({ hasEdl: true, exportingPercent: null });
+  assert.equal(entry.disabled, false);
+  assert.doesNotMatch(entry.hint, /先删除/);
+  assert.match(entry.hint, /1080p/);
 });
 
 test("the EDL arriving enables it", () => {
-  const entry = videoExportEntry({ hasEdl: true, deletionCount: 3, exportingPercent: null });
+  const entry = videoExportEntry({ hasEdl: true, exportingPercent: null });
   assert.equal(entry.disabled, false);
   assert.equal(entry.label, "导出成片视频…");
 });
 
-test("a missing EDL is a different reason from an empty edit", () => {
-  const entry = videoExportEntry({ hasEdl: false, deletionCount: 0, exportingPercent: null });
+test("a missing EDL is the only wait left", () => {
+  const entry = videoExportEntry({ hasEdl: false, exportingPercent: null });
   assert.equal(entry.disabled, true);
-  // "先删除要剪掉的内容" would be a lie: the EDL is how the app knows there is nothing cut.
+  // It is a *wait* — the EDL is still being computed — and it is the only reason besides a
+  // running encode that still disables the entry.
   assert.match(entry.hint, /计算剪辑方案/);
   assert.doesNotMatch(entry.hint, /先删除/);
 });
 
 test("a running encode outranks every other reason", () => {
-  // Both "no EDL" and "no deletions" would be wrong here: the film is already rendering.
-  const entry = videoExportEntry({ hasEdl: true, deletionCount: 5, exportingPercent: 41 });
+  // "no EDL" would be wrong here: the film is already rendering.
+  const entry = videoExportEntry({ hasEdl: true, exportingPercent: 41 });
   assert.equal(entry.disabled, true);
   assert.match(entry.label, /41%/);
   assert.match(entry.hint, /后台/);
 });
 
 test("the ready hint states what the render is fixed at", () => {
-  const entry = videoExportEntry({ hasEdl: true, deletionCount: 1, exportingPercent: null });
+  const entry = videoExportEntry({ hasEdl: true, exportingPercent: null });
   // There is no dialog holding these two facts, and a film that turns out to have burned-in
   // subtitles you did not want is discovered after fourteen minutes of encoding.
   assert.match(entry.hint, /1080p/);

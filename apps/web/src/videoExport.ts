@@ -16,10 +16,14 @@
  */
 
 export interface VideoExportInputs {
-  /** Has the EDL arrived yet? Until it has, "no deletions" is not yet known. */
+  /** Has the EDL arrived yet? Until it has, there is no duration and no timeline to film. */
   hasEdl: boolean;
-  /** How many spans the user has cut. The film is rendered from the **cut** audio. */
-  deletionCount: number;
+  /**
+   * There is deliberately **no deletion count** (round 110). An empty edit is a film of the
+   * whole episode — the normal end of a proofreading-only session — and the audio the film
+   * needs is rendered on demand. Leaving a `deletionCount` in the inputs would invite the
+   * condition back; not having it makes that impossible to write by accident.
+   */
   /** Live percentage while an encode runs; `null` when idle. */
   exportingPercent: number | null;
 }
@@ -33,9 +37,8 @@ export interface VideoExportEntry {
 /**
  * Label, hint and enablement for the menu entry.
  *
- * Ordered by what the user can act on. An encode in flight is a *state*: telling someone
- * 「先删除要剪掉的内容」 while their film is rendering accuses them of not having done the
- * thing they already did.
+ * Ordered by what the user can act on. An encode in flight is a *state*, and a missing EDL
+ * is a *wait* — everything else is ready to go.
  */
 export function videoExportEntry(input: VideoExportInputs): VideoExportEntry {
   if (input.exportingPercent !== null) {
@@ -50,15 +53,8 @@ export function videoExportEntry(input: VideoExportInputs): VideoExportEntry {
   if (!input.hasEdl) {
     return { label: "导出成片视频…", hint: "正在计算剪辑方案…", disabled: true };
   }
-  if (input.deletionCount === 0) {
-    return {
-      label: "导出成片视频…",
-      // The same wording the tooltip used. The dependency is on the **audio** edit — the
-      // film is built from the cut audio — and that is not guessable from the label.
-      hint: "先删除要剪掉的内容：视频用成片音频",
-      disabled: true,
-    };
-  }
+  // Ready — whether or not anything was cut. The film's audio is rendered on demand at
+  // export time, so there is nothing to wait for and nothing to do first.
   return {
     label: "导出成片视频…",
     // The two facts the render is fixed at, in the entry itself: there is no dialog to hold

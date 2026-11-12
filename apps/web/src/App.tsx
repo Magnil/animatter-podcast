@@ -1135,15 +1135,16 @@ function Desk({
           {
             id: "render",
             label: exporting ? `导出成片音频… ${exporting.percent}%（进行中）` : "导出成片音频…",
-            hint:
-              edl && edl.deletions.length === 0
-                ? "先删除要剪掉的内容"
-                : !edl
-                  ? "正在计算剪辑方案…"
-                  : settings?.export_format === "wav"
-                    ? "WAV 无损"
-                    : "M4A",
-            disabled: exporting !== null || !edl || edl.deletions.length === 0,
+            // Empty edit exports the whole episode. That is the normal end of a
+            // proofreading-only session (第 110 轮): subtitle work is a deliverable on its
+            // own, and requiring a cut first made the menu item dead for anyone who never
+            // wanted one.
+            hint: !edl
+              ? "正在计算剪辑方案…"
+              : settings?.export_format === "wav"
+                ? "WAV 无损"
+                : "M4A",
+            disabled: exporting !== null || !edl,
             onSelect: () => void renderExport(),
           },
           {
@@ -1153,7 +1154,6 @@ function Desk({
             id: "render-video",
             ...videoExportEntry({
               hasEdl: edl !== null,
-              deletionCount: edl?.deletions.length ?? 0,
               exportingPercent: film?.percent ?? null,
             }),
             onSelect: () => void exportFilm(),
@@ -1487,8 +1487,7 @@ function Desk({
                 导出成片 lives in the 导出 menu now. The transport keeps only the actions
                 that act on the selection; a button that produces a file belongs with the
                 other file-producing actions, and having it here *and* in the menu is how
-                the two drifted apart (the menu one lagged a round behind on 「先删除要剪掉
-                的内容」). 试听成片 stays — it plays, it does not deliver.
+                the two drifted apart). 试听成片 stays — it plays, it does not deliver.
               */}
               {rendered ? (
                 <button type="button" className="ghost" onClick={() => setShowOutput((v) => !v)}>
