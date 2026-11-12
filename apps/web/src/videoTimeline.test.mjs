@@ -324,12 +324,13 @@ test("blockName treats an unknown kind as material", () => {
 
 // --- the fit list ------------------------------------------------------
 
-test("FITS is exactly the four strategies the server accepts", () => {
-  // `services/video.py` validates against {contain, cover, blur_fill, stretch}. A label
-  // here whose id is not one of those is a dropdown entry that 400s on pick.
+test("FITS is exactly the strategies the server accepts", () => {
+  // `services/video.py` validates against exactly this set. A label here whose id is not one
+  // of those is a dropdown entry that 400s on pick; an id on the server that is missing here
+  // is a strategy nobody can choose.
   assert.deepEqual(
     FITS.map((fit) => fit.id),
-    ["blur_fill", "contain", "cover", "stretch"],
+    ["blur_fill", "blur_crop", "contain", "cover", "stretch"],
   );
 });
 

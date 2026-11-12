@@ -132,6 +132,12 @@ def fit_geometry(
 
     Both blur_fill members matter: its blurred backdrop is a ``cover`` (it must reach
     every edge) while its foreground is a ``contain`` (it must not lose any pixel).
+
+    ``blur_crop`` is the only strategy that does **not** scale: ``scale`` is 1.0 and the picture
+    keeps its own pixels, top-centre anchored, with the leftover of the box filled by the same
+    blurred backdrop. So ``visible`` is the intersection of the image's own pixels with the box,
+    and ``letterboxed`` means "the box is not fully covered" — which for this strategy is the
+    normal case rather than a compromise.
     """
     if asset_w <= 0 or asset_h <= 0 or box_w <= 0 or box_h <= 0:
         return FitGeometry(scale=1.0, visible_w=box_w, visible_h=box_h, letterboxed=False)
@@ -143,6 +149,13 @@ def fit_geometry(
         return FitGeometry(scale=cover, visible_w=box_w, visible_h=box_h, letterboxed=False)
     if fit == "cover":
         return FitGeometry(scale=cover, visible_w=box_w, visible_h=box_h, letterboxed=False)
+    if fit == "blur_crop":
+        return FitGeometry(
+            scale=1.0,
+            visible_w=min(box_w, asset_w),
+            visible_h=min(box_h, asset_h),
+            letterboxed=asset_w < box_w or asset_h < box_h,
+        )
     if fit in {"contain", "blur_fill"}:
         scaled_w = round(asset_w * inside)
         scaled_h = round(asset_h * inside)

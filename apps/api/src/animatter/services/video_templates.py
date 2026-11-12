@@ -43,7 +43,7 @@ log = get_logger(__name__)
 #: different files.
 _VIDEO_SUBDIR = "video"
 
-FITS = ("contain", "cover", "blur_fill", "stretch")
+FITS = ("contain", "cover", "blur_fill", "blur_crop", "stretch")
 
 
 @dataclass(frozen=True)

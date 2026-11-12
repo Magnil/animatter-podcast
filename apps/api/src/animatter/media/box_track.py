@@ -150,6 +150,25 @@ def input_args(segment: BoxSegment, source: Path) -> list[str]:
     return ["-loop", "1", "-t", seconds, "-i", str(source)]
 
 
+def _blurred_backdrop(
+    src_label: str, out_label: str, width: int, height: int
+) -> str:
+    """The blurred, dimmed ``cover`` of one image, filling the whole box, as ``out_label``.
+
+    Shared by ``blur_fill`` and ``blur_crop`` on purpose: those two strategies differ only in
+    what they put *on top* of the backdrop, so two copies of this chain would drift into looking
+    like two different features — a different radius, a different dim, a different crop anchor.
+
+    The caller names the output: each strategy has its own downstream reference to it, and a
+    label the caller does not expect is a filtergraph that fails to bind at encode time.
+    """
+    return (
+        f"[{src_label}]scale={width}:{height}:force_original_aspect_ratio=increase,"
+        f"crop={width}:{height}:0:0,boxblur=luma_radius={_BLUR_RADIUS}:luma_power={_BLUR_POWER},"
+        f"{_BACKDROP_DIM},setsar=1[{out_label}]"
+    )
+
+
 def _normalise(
     segment: BoxSegment, width: int, height: int, *, input_base: int = 0, tag: int = 0
 ) -> str:
@@ -193,12 +212,27 @@ def _normalise(
         # filters without it makes ffmpeg reuse an already-consumed frame.
         return (
             f"{src}split=2[bgbg{label}][bgfg{label}];"
-            f"[bgbg{label}]scale={width}:{height}:force_original_aspect_ratio=increase,"
-            f"crop={width}:{height}:0:0,boxblur=luma_radius={_BLUR_RADIUS}:luma_power={_BLUR_POWER},"
-            f"{_BACKDROP_DIM},setsar=1[bgbase{label}];"
+            f"{_blurred_backdrop(f'bgbg{label}', f'bgbase{label}', width, height)};"
             f"[bgfg{label}]scale={width}:{height}:force_original_aspect_ratio=decrease,setsar=1"
             f"[bgfg2{label}];"
             f"[bgbase{label}][bgfg2{label}]overlay=(W-w)/2:(H-h)/2:format=auto,setsar=1"
+        )
+    if fit == "blur_crop":
+        # **No scaling.** The picture keeps its own pixels — this is the one strategy for
+        # material that must stay sharp, so blowing a 1080-wide screenshot up to 1440 would
+        # defeat it.
+        #
+        # The anchor is the midpoint of the image's top edge (`overlay=(W-w)/2:0`): a wide
+        # picture loses equal slices from both sides, a tall one loses only its bottom, and
+        # whatever the box has left over is the blurred backdrop. `overlay` clips for us — the
+        # parts outside the box are simply not drawn, which is the "超出部分裁掉" half.
+        return (
+            f"{src}split=2[bccg{label}][bcfg{label}];"
+            f"{_blurred_backdrop(f'bccg{label}', f'bcbase{label}', width, height)};"
+            # `setsar=1` on the foreground is what stops `overlay` from rescaling it: an
+            # unknown SAR makes overlay re-fit the image, and the 1:1 placement is the point.
+            f"[bcfg{label}]setsar=1[bcimg{label}];"
+            f"[bcbase{label}][bcimg{label}]overlay=(W-w)/2:0:format=auto,setsar=1"
         )
     # `contain` and anything unrecognised: keep every pixel, letterbox the remainder.
     # Black rather than transparent because the result is overlaid onto the plate, and a

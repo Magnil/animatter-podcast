@@ -149,6 +149,33 @@ def test_blur_fill_keeps_every_pixel_like_contain() -> None:
     assert (blur.visible_w, blur.visible_h) == (contain.visible_w, contain.visible_h)
 
 
+def test_blur_crop_does_not_scale() -> None:
+    """`scale` is 1.0: the picture keeps its own pixels, which is the mode's whole reason."""
+    geometry = fit_geometry("blur_crop", asset_w=1080, asset_h=1920, box_w=1440, box_h=810)
+    assert geometry.scale == 1.0
+
+
+def test_blur_crop_shows_the_intersection_with_the_box() -> None:
+    # 1080×1920 in a 1440×810 box: everything horizontally (1080 < 1440), the top 810 px
+    # vertically. The rest of the box is backdrop.
+    geometry = fit_geometry("blur_crop", asset_w=1080, asset_h=1920, box_w=1440, box_h=810)
+    assert (geometry.visible_w, geometry.visible_h) == (1080, 810)
+    assert geometry.letterboxed
+
+
+def test_blur_crop_of_a_too_wide_picture_is_cropped_not_letterboxed_horizontally() -> None:
+    geometry = fit_geometry("blur_crop", asset_w=2560, asset_h=600, box_w=1440, box_h=810)
+    assert (geometry.visible_w, geometry.visible_h) == (1440, 600)
+    # Only the bottom is empty.
+    assert geometry.letterboxed
+
+
+def test_blur_crop_of_a_picture_that_already_fits_needs_no_backdrop() -> None:
+    geometry = fit_geometry("blur_crop", asset_w=1440, asset_h=810, box_w=1440, box_h=810)
+    assert not geometry.letterboxed
+    assert (geometry.visible_w, geometry.visible_h) == (1440, 810)
+
+
 def test_stretch_ignores_the_aspect_ratio() -> None:
     geometry = fit_geometry("stretch", asset_w=1080, asset_h=1920, box_w=1440, box_h=810)
     assert geometry.visible_w == 1440
@@ -162,7 +189,9 @@ def test_an_unknown_fit_falls_back_to_contain() -> None:
     assert geometry.visible_w < 1440
 
 
-@pytest.mark.parametrize("fit", ["contain", "cover", "blur_fill", "stretch", "unknown"])
+@pytest.mark.parametrize(
+    "fit", ["contain", "cover", "blur_fill", "blur_crop", "stretch", "unknown"]
+)
 def test_a_zero_asset_size_does_not_divide_by_zero(fit: str) -> None:
     geometry = fit_geometry(fit, asset_w=0, asset_h=0, box_w=1440, box_h=810)
     assert geometry.visible_w == 1440

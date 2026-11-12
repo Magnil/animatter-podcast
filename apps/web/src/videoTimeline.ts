@@ -151,6 +151,11 @@ export function blockName(block: { label?: string; kind: string }): string {
  */
 export const FITS: { id: string; label: string; hint: string }[] = [
   { id: "blur_fill", label: "模糊填充", hint: "竖图放进 16:9 框：模糊放大作底 + 完整居中" },
+  {
+    id: "blur_crop",
+    label: "模糊裁切",
+    hint: "按原图像素摆放、顶边中点对齐，溢出裁掉，没满的地方模糊填充（图不会被放大，最清晰）",
+  },
   { id: "contain", label: "完整显示", hint: "留边，不裁切" },
   { id: "cover", label: "填满裁切", hint: "铺满，裁掉溢出" },
   { id: "stretch", label: "拉伸", hint: "会变形" },

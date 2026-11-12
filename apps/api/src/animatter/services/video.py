@@ -56,7 +56,7 @@ from animatter.models import (
 log = get_logger(__name__)
 
 ITEM_KINDS = frozenset({"media", "gallery", "slide"})
-FITS = frozenset({"contain", "cover", "blur_fill", "stretch"})
+FITS = frozenset({"contain", "cover", "blur_fill", "blur_crop", "stretch"})
 MOTIONS = frozenset({"none", "kenburns"})
 
 

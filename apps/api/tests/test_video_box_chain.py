@@ -168,6 +168,63 @@ def test_the_blurred_backdrop_is_anchored_at_the_top_too() -> None:
     assert "crop=1440:810:0:0" in chain.text
 
 
+def test_blur_crop_scales_nothing() -> None:
+    """The whole point of the mode: the picture keeps its own pixels.
+
+    Every other strategy resizes; this one exists for material that must stay sharp, so a
+    `scale=1440:810` on the foreground would defeat it.
+    """
+    chain = build_chain([segment(fit="blur_crop")], width=1440, height=810)
+    # One chain is a `;`-joined filter sequence on a single line, so split on `;`.
+    filters = [part for part in chain.text.split(";") if "bcimg" in part]
+    assert filters
+    for part in filters:
+        assert "scale=" not in part, part
+
+
+def test_blur_crop_anchors_at_the_middle_of_the_top_edge() -> None:
+    """Top-*centre*: horizontal overflow is split evenly, vertical overflow is all at the
+    bottom. Top-left would keep only the right side of a wide picture."""
+    chain = build_chain([segment(fit="blur_crop")], width=1440, height=810)
+    assert "overlay=(W-w)/2:0:format=auto" in chain.text
+
+
+def test_blur_crop_fills_the_leftover_with_a_blurred_backdrop() -> None:
+    chain = build_chain([segment(fit="blur_crop")], width=1440, height=810)
+    assert "boxblur=luma_radius=20" in chain.text
+    assert "eq=brightness=-0.10" in chain.text
+
+
+def test_blur_crop_and_blur_fill_share_one_backdrop() -> None:
+    """Two copies of that chain would drift into looking like two different features."""
+    crop = build_chain([segment(fit="blur_crop")], width=1440, height=810).text
+    fill = build_chain([segment(fit="blur_fill")], width=1440, height=810).text
+    for part in (
+        "scale=1440:810:force_original_aspect_ratio=increase",
+        "crop=1440:810:0:0",
+        "boxblur=luma_radius=20:luma_power=2",
+        "eq=brightness=-0.10",
+    ):
+        assert part in crop, part
+        assert part in fill, part
+
+
+def test_blur_crop_splits_the_input_once() -> None:
+    """Two filters off one input without `split` makes ffmpeg reuse a consumed frame."""
+    chain = build_chain([segment(fit="blur_crop")], width=1440, height=810)
+    assert chain.text.count("split=2") == 1
+
+
+def test_blur_crop_labels_do_not_collide_across_two_segments() -> None:
+    chain = build_chain(
+        [segment(fit="blur_crop"), segment(input_index=1, fit="blur_crop")],
+        width=1440,
+        height=810,
+    )
+    assert "bcbase0" in chain.text and "bcbase1" in chain.text
+    assert chain.text.count("[bcbase0]") == 2  # defined once, used once
+
+
 def test_contain_pads_rather_than_crops() -> None:
     chain = build_chain([segment(fit="contain")], width=1440, height=810)
     assert "pad=1440:810" in chain.text
