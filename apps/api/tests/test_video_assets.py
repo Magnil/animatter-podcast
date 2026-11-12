@@ -11,6 +11,7 @@ the user does not remember choosing.
 
 from __future__ import annotations
 
+import io
 import subprocess
 from pathlib import Path
 
@@ -79,6 +80,24 @@ def test_the_copy_is_named_by_hash(
     """Two different ``IMG_0001.png`` must not collide."""
     row = asset_service.import_asset(session, app_settings, project, image_at(tmp_path))
     assert Path(row.path).stem == row.sha256[:16]
+
+
+def test_the_original_name_survives_the_hash_rename(
+    session: Session, app_settings: object, project: str, tmp_path: Path
+) -> None:
+    """The file on disk is named by hash; the *label* is what the user chose.
+
+    Round 104: the library showed ``b825e065e6cf9826.png`` for every imported still, so two
+    of them were indistinguishable in the picker and on the timeline.
+    """
+    row = asset_service.import_asset(session, app_settings, project, image_at(tmp_path, "开场封面.png"))
+    session.commit()
+    assert Path(row.path).stem != "开场封面"
+    assert row.original_name == "开场封面.png"
+    view = next(
+        item for item in asset_service.view_all(session, app_settings, project) if item.row.id == row.id
+    )
+    assert view.name == "开场封面.png"
 
 
 def test_reimporting_the_same_bytes_reuses_the_row(
@@ -293,6 +312,24 @@ def test_the_upload_endpoint_rejects_an_extensionless_file(
     assert response.json()["error"]["code"] == "asset_unsupported"
 
 
+def test_the_upload_endpoint_names_the_asset_with_the_browsers_file_name(
+    client: TestClient, project: str
+) -> None:
+    """The bytes are staged as ``upload.png``; the label must not follow that.
+
+    A ``File`` from a browser has no path, so the server writes it to a temp file whose name
+    it chose. Reading the display name off *that* would call every uploaded asset 「upload」.
+    """
+    buffer = io.BytesIO()
+    Image.new("RGB", (640, 360), (200, 40, 40)).save(buffer, format="PNG")
+    response = client.post(
+        f"/api/projects/{project}/video/assets/upload",
+        files={"file": ("嘉宾照片.png", buffer.getvalue(), "image/png")},
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["name"] == "嘉宾照片.png"
+
+
 def test_the_import_endpoint_takes_a_path(
     client: TestClient, project: str, tmp_path: Path
 ) -> None:
@@ -301,7 +338,7 @@ def test_the_import_endpoint_takes_a_path(
         f"/api/projects/{project}/video/assets", json={"path": str(source)}
     )
     assert response.status_code == 201, response.text
-    assert response.json()["name"].startswith(response.json()["sha256"][:16])
+    assert response.json()["name"] == "by-path.png"
 
 
 def test_the_file_endpoint_serves_the_bytes(
