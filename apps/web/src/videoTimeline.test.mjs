@@ -19,6 +19,7 @@ import {
   abutNeighbour,
   blockAt,
   blockName,
+  stretchToNeighbour,
   dropRange,
   FITS,
   galleryCaption,
@@ -373,17 +374,36 @@ test("abutNeighbour does nothing at the ends of the film", () => {
   assert.equal(abutNeighbour(only, "next", [only], 3_600_000), null);
 });
 
-test("abutNeighbour refuses a move that would overlap the other neighbour", () => {
-  // The block is longer than the gap between its two neighbours: closing one side would put
-  // it on top of the other, and an overlapping block is mostly trimmed away at render time —
-  // it looks like the block was deleted.
+test("a block that already overlaps a neighbour can still be moved", () => {
+  // Real timelines contain this: the demo project has 141700–145572 sitting inside the tail of
+  // 119681–141993. Guarding the *whole* new span made both keys dead on such a block; only the
+  // newly covered region must be clear.
+  const overlapping = { start_ms: 119_681, end_ms: 141_993 };
+  const block = { start_ms: 141_700, end_ms: 145_572 };
+  const next = { start_ms: 145_579, end_ms: 160_060 };
+  // 3872 ms long, and the next block starts 7 ms after this one ends: the end lands on
+  // 145579, so the start becomes 141707 and the length is unchanged.
+  assert.deepEqual(abutNeighbour(block, "next", [overlapping, block, next], 3_600_000), {
+    start_ms: 141_707,
+    end_ms: 145_579,
+  });
+  assert.deepEqual(stretchToNeighbour(block, "next", [overlapping, block, next], 3_600_000), {
+    start_ms: 141_700,
+    end_ms: 145_579,
+  });
+});
+
+test("abutNeighbour refuses to bury this block under one that overlaps its edge", () => {
+  // Real timelines contain this. `overlapper` covers the first second of `block`, so butting
+  // against `previous` would put the whole 12–20 s span on top of it — and an overlapped block
+  // is trimmed away at render time, which looks like the block was deleted.
   const previous = { start_ms: 0, end_ms: 10_000 };
-  const next = { start_ms: 25_000, end_ms: 40_000 };
-  // 18 s long, but the gap between its neighbours is only 15 s: either direction lands on top
-  // of the other block.
-  const block = { start_ms: 12_000, end_ms: 30_000 };
-  assert.equal(abutNeighbour(block, "prev", [previous, next, block], 3_600_000), null);
-  assert.equal(abutNeighbour(block, "next", [previous, next, block], 3_600_000), null);
+  const overlapper = { start_ms: 11_500, end_ms: 13_000 };
+  const block = { start_ms: 12_000, end_ms: 20_000 };
+  assert.equal(
+    abutNeighbour(block, "prev", [previous, overlapper, block], 3_600_000),
+    null,
+  );
 });
 
 test("abutNeighbour refuses an edge outside the film", () => {
@@ -415,6 +435,91 @@ test("abutNeighbour measures gaps against the neighbour's own edges", () => {
   const near = { start_ms: 3000, end_ms: 9000 };
   const block = { start_ms: 12_000, end_ms: 20_000 };
   assert.equal(abutNeighbour(block, "prev", [far, near, block], 3_600_000)?.start_ms, 9000);
+});
+
+// --- Shift+Left / Shift+Right ------------------------------------------
+
+test("stretchToNeighbour pulls the end forward to the next block", () => {
+  const block = { start_ms: 0, end_ms: 10_000 };
+  const next = { start_ms: 12_000, end_ms: 30_000 };
+  assert.deepEqual(stretchToNeighbour(block, "next", [block, next], 3_600_000), {
+    start_ms: 0,
+    end_ms: 12_000,
+  });
+});
+
+test("stretchToNeighbour pulls the start back to the previous block", () => {
+  const previous = { start_ms: 0, end_ms: 10_000 };
+  const block = { start_ms: 12_000, end_ms: 30_000 };
+  assert.deepEqual(stretchToNeighbour(block, "prev", [previous, block], 3_600_000), {
+    start_ms: 10_000,
+    end_ms: 30_000,
+  });
+});
+
+test("stretchToNeighbour never eats an overlapping block", () => {
+  // `neighbourOf("next")` only reports blocks starting at or after this block's end, so a
+  // block that already overlaps it is not a neighbour. Shrinking onto it would delete part of
+  // a block the user placed by hand, from a key that claims to extend.
+  const block = { start_ms: 0, end_ms: 20_000 };
+  const overlapping = { start_ms: 12_000, end_ms: 30_000 };
+  assert.equal(stretchToNeighbour(block, "next", [block, overlapping], 3_600_000), null);
+  assert.equal(stretchToNeighbour(overlapping, "prev", [block, overlapping], 3_600_000), null);
+});
+
+test("stretchToNeighbour does nothing without a neighbour on that side", () => {
+  const only = { start_ms: 5000, end_ms: 9000 };
+  assert.equal(stretchToNeighbour(only, "prev", [only], 3_600_000), null);
+  assert.equal(stretchToNeighbour(only, "next", [only], 3_600_000), null);
+});
+
+test("stretchToNeighbour closes a gap as small as one millisecond", () => {
+  // Grow-only, so there is no minimum-length floor to hit: the block was already long enough
+  // and only ever gets longer. A guard here would be unreachable code.
+  const block = { start_ms: 0, end_ms: 10_000 };
+  const next = { start_ms: 10_001, end_ms: 30_000 };
+  assert.equal(stretchToNeighbour(block, "next", [block, next], 3_600_000)?.end_ms, 10_001);
+});
+
+test("stretchToNeighbour does nothing when the edge is already there", () => {
+  const block = { start_ms: 10_000, end_ms: 20_000 };
+  const previous = { start_ms: 0, end_ms: 10_000 };
+  const next = { start_ms: 20_000, end_ms: 30_000 };
+  assert.equal(stretchToNeighbour(block, "prev", [previous, block, next], 3_600_000), null);
+  assert.equal(stretchToNeighbour(block, "next", [previous, block, next], 3_600_000), null);
+});
+
+test("stretchToNeighbour refuses to grow over a block that straddles the edge", () => {
+  // `straddler` starts before our end, so it is not a "next" neighbour — but the edge would
+  // land inside it. Two blocks in one place are trimmed at render time, which looks like the
+  // middle one was deleted.
+  const block = { start_ms: 0, end_ms: 10_000 };
+  const straddler = { start_ms: 8000, end_ms: 15_000 };
+  const after = { start_ms: 20_000, end_ms: 30_000 };
+  assert.equal(
+    stretchToNeighbour(block, "next", [block, straddler, after], 3_600_000),
+    null,
+  );
+});
+
+test("stretchToNeighbour butts against the nearest block beyond the gap", () => {
+  // The ordinary case: a block wholly inside the gap *is* the next neighbour, and butting
+  // against its start is exactly right.
+  const block = { start_ms: 0, end_ms: 10_000 };
+  const inside = { start_ms: 12_000, end_ms: 15_000 };
+  const after = { start_ms: 20_000, end_ms: 30_000 };
+  assert.equal(stretchToNeighbour(block, "next", [block, inside, after], 3_600_000)?.end_ms, 12_000);
+});
+
+test("stretchToNeighbour keeps the other edge exactly where it was", () => {
+  const block = { start_ms: 4000, end_ms: 10_000 };
+  const next = { start_ms: 14_000, end_ms: 30_000 };
+  assert.equal(stretchToNeighbour(block, "next", [block, next], 3_600_000)?.start_ms, 4000);
+  const previous = { start_ms: 0, end_ms: 1000 };
+  assert.equal(
+    stretchToNeighbour(block, "prev", [previous, block], 3_600_000)?.end_ms,
+    10_000,
+  );
 });
 
 // --- keeping the block on screen --------------------------------------

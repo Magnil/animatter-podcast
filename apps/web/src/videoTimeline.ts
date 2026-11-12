@@ -227,6 +227,28 @@ export function moveBlock(
   return { start_ms: start, end_ms: start + length };
 }
 
+/**
+ * Whether any *other* block covers part of ``[from, to)``.
+ *
+ * Used by both shortcuts on the region they are about to **newly** cover, not on the whole new
+ * span: real timelines contain blocks that already overlap their neighbour by a few
+ * milliseconds, and refusing to move those would make the keys dead on exactly the blocks a
+ * user is trying to tidy up. What must never happen is covering something that was clear.
+ */
+function overlapsOther<T extends { start_ms: number; end_ms: number }>(
+  others: T[],
+  block: { start_ms: number; end_ms: number },
+  from: number,
+  to: number,
+): boolean {
+  if (to <= from) return false;
+  for (const other of others) {
+    if (other === block) continue;
+    if (from < other.end_ms && other.start_ms < to) return true;
+  }
+  return false;
+}
+
 /** The neighbouring block on one side, ignoring the block being moved. */
 function neighbourOf<T extends { start_ms: number; end_ms: number }>(
   block: { start_ms: number; end_ms: number },
@@ -248,6 +270,49 @@ function neighbourOf<T extends { start_ms: number; end_ms: number }>(
     }
   }
   return best;
+}
+
+/**
+ * Stretch one edge until it meets its neighbour, leaving the other edge where it is.
+ *
+ * This is what ``Shift+←`` / ``Shift+→`` do, and it is deliberately the *sibling* of
+ * :func:`abutNeighbour` rather than a mode of it: that one keeps the length and moves the block,
+ * this one keeps one edge and changes the length. Same neighbour, opposite verb — and the two
+ * keys are next to each other on purpose, because "put this block here" and "make this block
+ * reach there" are the two things one wants after dropping something in roughly the right place.
+ *
+ * ``Shift+→`` pulls the **end** to the next block's start; ``Shift+←`` pulls the **start** to
+ * the previous block's end. Both only ever *grow* the block, because a neighbour is defined as
+ * sitting wholly on one side: reaching it is always outward. That is also the only direction the
+ * request asked for — 「延长到贴到前一个 / 后一个素材上」 — and a key that sometimes silently ate a
+ * block would be worse than one that occasionally has nothing to do.
+ *
+ * Returns ``null`` when there is nothing to do: no neighbour on that side, or the edge is
+ * already there (which is what makes the key quiet on the second press).
+ */
+export function stretchToNeighbour<T extends { start_ms: number; end_ms: number }>(
+  block: { start_ms: number; end_ms: number },
+  direction: "prev" | "next",
+  others: T[],
+  durationMs: number,
+): { start_ms: number; end_ms: number } | null {
+  const neighbour = neighbourOf(block, others, direction);
+  if (neighbour === null) return null;
+
+  const start = direction === "prev" ? neighbour.end_ms : block.start_ms;
+  const end = direction === "next" ? neighbour.start_ms : block.end_ms;
+  if (start === block.start_ms && end === block.end_ms) return null;
+  if (start < 0 || end > durationMs) return null;
+  // A block standing *inside* the gap is not a "next" neighbour (it does not start at or after
+  // this block's end), but the stretched edge would still land on top of it — and an overlapped
+  // block is trimmed away at render time, which looks like it was deleted. Only the newly
+  // covered part is checked: a block that is *already* overlapped can still be stretched.
+  const fresh =
+    direction === "prev"
+      ? overlapsOther(others, block, start, block.start_ms)
+      : overlapsOther(others, block, block.end_ms, end);
+  if (fresh) return null;
+  return { start_ms: start, end_ms: end };
 }
 
 /**
@@ -285,12 +350,13 @@ export function abutNeighbour<T extends { start_ms: number; end_ms: number }>(
   if (start === block.start_ms) return null;
   if (direction === "prev" && start > block.start_ms) return null;
   if (direction === "next" && start < block.start_ms) return null;
-  // Refuse a move that would leave the film or land on top of another block.
+  // Refuse a move that would leave the film or cover ground that is not already this block's.
   if (start < 0 || end > durationMs) return null;
-  for (const other of others) {
-    if (other === block) continue;
-    if (start < other.end_ms && other.start_ms < end) return null;
-  }
+  const fresh =
+    direction === "prev"
+      ? overlapsOther(others, block, start, block.start_ms)
+      : overlapsOther(others, block, block.end_ms, end);
+  if (fresh) return null;
   return { start_ms: start, end_ms: end };
 }
 
