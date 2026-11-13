@@ -2683,3 +2683,53 @@ M → S → S 走一遍，断言第二步落在 M 而不是「都不亮」。
 **验证**：写了一个引用审计脚本，把全仓库所有 `§19.x` 和视频文档里的裸 `19.x` 引用跟
 `video.md` 实际存在的 76 个标题对账 → 0 处悬空。四个门全绿：pytest 1382 passed / 1 skipped、
 ruff、mypy 103 files、`tsc`、`npm test` 257、`vite build`。
+
+
+## 2026-11-14 · 第 126 轮：导出提速与降内存（静帧预合成 + filter 线程数）
+
+用户第 123 轮：「视频导出这里用时太长了，而且经常出现OOM报错。哪些是内存占比大头，有哪些地方
+是可以优化吗？」第 124 轮补了一句「不要反复尝试高负载的项目」，第 125 轮拍板「按这个清单开始
+改代码，第三步等前两步做完看效果以后再决定」。
+
+**症状**：61.6 分钟的片子导出 **42.9 分钟**（第 121 轮日志 20:04:56 → 20:47:47），并且经常
+OOM——ffmpeg `exit -12`、`Cannot allocate memory`，峰值 5.6–6.1 GB，而导出时机器只剩 5.3 GB
+空闲。
+
+**两个根因都不是「片子太长」**（分块已经解决了 68 分支一次性进内存的老问题）：
+
+1. **`-filter_complex_threads` 默认等于逻辑核数（16）**。ffmpeg 每个切片自带一个 framesync
+   队列，队列里排的是 1920×1080 RGBA = 8.3 MB/帧。chunk 2 扫描：ft=1 → 3.81 GB，ft=2 →
+   4.82 GB，ft=4 → 6.22 GB，ft=8 → 6.26 GB，**auto(16) → OOM**。默认值本身就是要命的那一项。
+2. **静态素材每帧重画一遍**。`-f null` 83.5 s vs 完整编码 95.1 s，也就是 **filtergraph 占
+   88 %、x264 只占 12 %**；而全片 88 703 帧里静帧 51 791 帧 = **58.4 %**，这些帧之间一个像素
+   都不差。`boxblur=luma_radius=20:luma_power=2` 在 1440×810 上每秒算 24 次、连续 20 秒。
+
+**怎么修**（生产路径实测，只跑了低内存的 chunk 2，没跑整片）：
+
+| chunk 2（95 s，6 静帧） | 耗时 | 峰值 RSS |
+|---|---|---|
+| 改之前（实时链 + 全透明 top 链） | 65–93 s | 4.7–6.2 GB |
+| 静帧预合成 + ft=4 | **33.0 s（+1.6 s 预合成）** | **3.03 GB** |
+
+逐帧 PSNR 对实时链：**平均 48.97 dB / 最小 46.97 dB**，2286 帧全部 ≥45 dB。chunk 8（312 s，
+2 视频 + 4 静帧）单独测 top 链跳过：267.4 s → **206.4 s**，输出逐帧 **PSNR inf**（字节数都不变）。
+
+**第 123 轮那个「32 帧 <45 dB、全在段边界」没有复现。** 当时是在脚手架上（自己拼 argv）量的，
+判断成「边界差一帧」；换成生产函数重测后最低 46.97 dB、没有边界簇，所以 trim 一个字没改。
+
+**仍未解决**：含 4K 素材的块预合成后 5.52 GB（比优化前的 3.72 GB 还高）——瓶颈从 filtergraph
+搬到了 4K 解码缓冲，ft 降到 1 也还是 5.45 GB。这就是方案里的第三步，按用户要求先放着，进
+`todolist.md` D7。
+
+**试过并否掉的**：`h264_amf`（输出 4.5 倍体积、没更快）、不透明 1440×810 旧链（chunk 8 上
+366 s，比 267 s 更慢）、去掉恒等 scale（噪声内）、720p（峰值不变）、输入 `-threads 1`（峰值
+反而 10.82 GB）。
+
+**代码**：`config.video_filter_threads = 4` + `config.video_still_composite = True`（置 false
+逐字节回到旧路径）；`media/video.py::composite_still`、`BoxSegment.precomposited`、
+`box_track.with_still_sources`、`services/video_render.py::_composite_stills` 与
+`_needs_top_chain`。
+
+**验证**：pytest **1392 passed / 1 skipped**（新增 10 条），ruff、`mypy --strict` 103 files 全绿。
+新增的 `test_video_still_composite.py` 里有一条是真编码对拍：同一段 `blur_fill` 分别走实时链和
+预合成链，比 PSNR——「字符串看起来对」正是第一版把底板当素材渲染那次能过关的原因。

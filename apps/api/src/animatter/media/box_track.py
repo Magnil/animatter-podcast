@@ -95,6 +95,10 @@ class BoxSegment:
     #: ``box`` (default) keeps the picture inside the material box; ``full`` fills the whole
     #: canvas instead (§19.25). Per segment because one film can mix the two.
     placement: str = "box"
+    #: The source is already a PNG with this segment's material, its fit, its blur and the box
+    #: padding baked in (§19.28). Set only by :func:`with_still_sources`; the normaliser then
+    #: emits no ``scale``/``crop``/``pad`` at all, which is the entire point.
+    precomposited: bool = False
 
 
 @dataclass(frozen=True)
@@ -284,6 +288,13 @@ def _normalise(
     index = segment.input_index + input_base
     src = f"[{index}:v]"
 
+    if segment.precomposited:
+        # Already in the chain's target size with the fit, the blur and the padding baked in
+        # (§19.28). A `scale` here would be a full-frame swscale of a frame that is already
+        # correct — the cost this flag exists to remove. `setsar=1` stays because `overlay`
+        # honours SAR.
+        return f"{src}setsar=1"
+
     if segment.crop is not None:
         x, y, w, h = segment.crop
         return f"{src}crop={w}:{h}:{x}:{y},scale={width}:{height},setsar=1"
@@ -334,6 +345,63 @@ def _normalise(
         f"{src}scale={width}:{height}:force_original_aspect_ratio=decrease,"
         f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1"
     )
+
+
+def with_still_sources(
+    segments: list[BoxSegment],
+    sources: list[Path],
+    stills: dict[int, Path],
+) -> tuple[list[BoxSegment], list[Path]]:
+    """Point each *still* segment at its pre-composited PNG (§19.28).
+
+    ``stills`` maps a segment's **position in the chain** to a PNG that already contains that
+    segment's material with its fit, blur and box padding applied. It must be the chain's own
+    target size — the canvas for the split chain, the material box for the opaque one — because
+    the substituted segment is marked ``precomposited`` and is emitted without a ``scale``.
+
+    A video segment keeps its own kind, fit and placement: every frame of it is different, so it
+    still has to be normalised live. Placeholders (``KIND_TRANSPARENT``) are left exactly as they
+    are — they are a ``color`` source with no file and no input number, and replacing one would
+    add an input for a black frame the chain can draw for free.
+
+    Ordering is first-appearance, like :func:`animatter.media.video_chunks.rebase`, so the
+    ``-i`` list the caller emits matches the renumbered ``input_index`` values one for one.
+    """
+    ordered: list[Path] = []
+    out: list[BoxSegment] = []
+    for position, segment in enumerate(segments):
+        if segment.kind == KIND_TRANSPARENT:
+            out.append(segment)
+            continue
+        cut = stills.get(position)
+        if cut is not None:
+            ordered.append(cut)
+            out.append(
+                BoxSegment(
+                    input_index=len(ordered) - 1,
+                    duration_ms=segment.duration_ms,
+                    kind=KIND_IMAGE,
+                    # Already at the box position and already fitted: any fit would resize it.
+                    fit="stretch",
+                    loop=False,
+                    placement="full",
+                    precomposited=True,
+                )
+            )
+            continue
+        ordered.append(sources[segment.input_index])
+        out.append(
+            BoxSegment(
+                input_index=len(ordered) - 1,
+                duration_ms=segment.duration_ms,
+                kind=segment.kind,
+                fit=segment.fit,
+                crop=segment.crop,
+                loop=segment.loop,
+                placement=segment.placement,
+            )
+        )
+    return out, ordered
 
 
 def build_chain(
@@ -451,7 +519,7 @@ def build_single(
     )
 
 
-def _canvas_piece(
+def canvas_piece(
     segment: BoxSegment,
     *,
     canvas_w: int,
@@ -469,7 +537,16 @@ def _canvas_piece(
     into the material box and padded transparently out to the canvas at the box's position.
     The pad is ``black@0`` rather than black: outside the box the template's own background
     must show through, which is what the opaque chain achieved by redrawing the plate there.
+
+    A ``precomposited`` segment (§19.28) is returned as-is: its PNG is already canvas-sized RGBA
+    with the padding baked in, so the only thing the graph still owes it is ``setsar=1``.
+
+    Public because the still-pre-composite path renders **one** such piece on its own and needs
+    the exact same normalisation the chain would have applied; a second spelling of "fit this
+    file into the box" is how the preview and the film drift apart.
     """
+    if segment.precomposited:
+        return f"{_normalise(segment, canvas_w, canvas_h, input_base=input_base, tag=tag)},format=rgba"
     if segment.placement == "full":
         return f"{_normalise(segment, canvas_w, canvas_h, input_base=input_base, tag=tag)},format=rgba"
     inner = _normalise(segment, box_w, box_h, input_base=input_base, tag=tag)
@@ -518,7 +595,7 @@ def build_canvas_chain(
                 "有一段素材的时长是 0",
                 hint="把素材块的时长拉长，或者把它删掉。",
             )
-        piece = _canvas_piece(
+        piece = canvas_piece(
             segment,
             canvas_w=canvas_w,
             canvas_h=canvas_h,

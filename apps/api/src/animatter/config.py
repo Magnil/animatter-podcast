@@ -83,6 +83,28 @@ class Settings(BaseSettings):
     #: Raising it is reasonable on a machine with more RAM; it is not a knob to turn up because
     #: the CPU has cores.
     video_chunk_workers: int = 1
+    #: How many threads ffmpeg may slice the filtergraph across (§19.28).
+    #:
+    #: This is the **memory** knob, and the biggest single one. ffmpeg defaults to one slice per
+    #: logical CPU, and each slice carries its own framesync queue; a queued 1920x1080 RGBA frame
+    #: is 8.3 MB, so 16 slices ask for gigabytes. Measured on chunk 2 (95 s, 6 still segments):
+    #: auto/16 died with `Cannot allocate memory` at 5.6-6.1 GB, 8 peaked at 6.26 GB, 4 at
+    #: 5.95-6.22 GB, 2 at 4.71-4.82 GB, 1 at 3.58-3.81 GB.
+    #:
+    #: Four rather than one because the time cost is not linear — 1 thread doubles the encode
+    #: (137.8 s vs 93.3 s at two) — and because with still pre-compositing (§19.28) the graph has
+    #: only a handful of filters left, so four slices are enough to keep the CPUs busy.
+    video_filter_threads: int = 4
+    #: Pre-composite each still material segment into one canvas-sized PNG before encoding.
+    #:
+    #: The filtergraph used to redraw a static picture 24 times a second: boxblur (radius 20,
+    #: power 2) on 1440x810, then scale/overlay/format/pad up to the canvas. Measured on chunk 2,
+    #: the filtergraph was 88 % of the encode and x264 only 12 %. Rendering each still once and
+    #: looping the PNG drops that chunk from 69-93 s / 3.6-4.7 GB to 18-21 s / 2.2 GB.
+    #:
+    #: Kept as a switch, not hard-wired: an export whose stills come out wrong has one setting to
+    #: flip to get the old per-frame path back byte for byte.
+    video_still_composite: bool = True
 
     # --- Aliyun Bailian ------------------------------------------------
     dashscope_api_key: str | None = Field(default=None, validation_alias="DASHSCOPE_API_KEY")

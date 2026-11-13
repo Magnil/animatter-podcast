@@ -367,6 +367,7 @@ def render(
     frames: int | None = None,
     preset: str = PRESET,
     crf: str = CRF,
+    filter_threads: int | None = None,
 ) -> VideoResult:
     """Encode the silent video track.
 
@@ -393,6 +394,12 @@ def render(
     ``frames`` frames so concatenating the chunks cannot drift. A frame count rather than a
     duration on purpose: at 24 fps one frame is 41.67 ms, not representable in milliseconds, and
     rounding per chunk would accumulate.
+
+    ``filter_threads`` caps ``-filter_complex_threads`` (§19.28). ffmpeg defaults it to one
+    slice per logical CPU and each slice carries its own framesync queue, so a 1920x1080 RGBA
+    frame is queued 16 times: measured on this project's chunk 2, the default peaked at 5.6-6.1
+    GB and died with ``Cannot allocate memory``, two threads at 4.71-4.82 GB, one at 3.58-3.81 GB.
+    ``None`` leaves ffmpeg's own default alone, which is the still-preview path and the tests.
     """
     if duration_ms <= 0 and not frames:
         raise AppError("video_duration_invalid", "视频时长为 0", hint="先渲染音频。")
@@ -438,6 +445,8 @@ def render(
         "-y",
         "-loglevel",
         "error",
+        # A *global* option, so it must come before the first `-i` like any other global.
+        *(["-filter_complex_threads", str(filter_threads)] if filter_threads else []),
         "-loop",
         "1",
         "-t",
@@ -735,6 +744,79 @@ def render_still(
     if not target.exists() or target.stat().st_size == 0:
         raise AppError("preview_failed", "静帧预览生成失败", hint="检查 ffmpeg 日志。")
     return VideoResult(path=target, duration_ms=0, frames=1)
+
+
+def composite_still(
+    ffmpeg: str,
+    *,
+    target: Path,
+    width: int,
+    height: int,
+    segment: box_track.BoxSegment,
+    source: Path,
+    box_w: int,
+    box_h: int,
+    box_x: int,
+    box_y: int,
+) -> Path:
+    """Render **one still material segment** into a single PNG (§19.28).
+
+    The point is that a static picture is static: the chain used to redraw it 24 times a second
+    — ``boxblur`` radius 20 power 2 on 1440x810, then scale/overlay/format/pad onto the canvas.
+    Measured on chunk 2 of 费那奇MV, the filtergraph was 88 % of the encode and x264 only 12 %;
+    looping one PNG instead dropped that chunk from 69-93 s / 3.6-4.7 GB to 18-21 s / 2.22 GB.
+
+    ``width``/``height`` are the chain's own target size — the canvas for the split (RGBA) chain,
+    the material box for the opaque one — and ``box_w``/``box_h``/``box_x``/``box_y`` describe
+    where the box sits inside it. The normalisation is :func:`box_track.canvas_piece`, the very
+    function the chain calls, rather than a second spelling of "fit this file into the box": the
+    arithmetic that is easy to get wrong is the *input number* inside that fragment, and a
+    duplicate implementation is how the preview and the export start to disagree.
+
+    The PNG keeps its alpha channel. Outside the box the chain's pad is ``black@0`` so the
+    template's own plate and artwork still show through, and the composite has to preserve that
+    or the box would sit on a black rectangle.
+    """
+    piece = box_track.canvas_piece(
+        segment,
+        canvas_w=width,
+        canvas_h=height,
+        box_w=box_w,
+        box_h=box_h,
+        box_x=box_x,
+        box_y=box_y,
+        # This command declares exactly one input, so the segment's film-wide input number has
+        # to be shifted all the way to 0. Anything else reads a stream that does not exist.
+        input_base=-segment.input_index,
+        tag=0,
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _run(
+        [
+            ffmpeg,
+            "-nostdin",
+            "-y",
+            "-loglevel",
+            "error",
+            "-i",
+            str(source),
+            "-filter_complex",
+            f"{piece}[out]",
+            "-map",
+            "[out]",
+            "-frames:v",
+            "1",
+            "-update",
+            "1",
+            "-c:v",
+            "png",
+            str(target),
+        ],
+        timeout=300,
+    )
+    if not target.is_file() or target.stat().st_size == 0:
+        raise AppError("preview_failed", "静帧合成失败", hint="检查 ffmpeg 日志。")
+    return target
 
 
 @dataclass(frozen=True)

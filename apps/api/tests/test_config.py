@@ -35,3 +35,17 @@ def test_ensure_dirs(tmp_path) -> None:
 def test_unknown_log_level_rejected(tmp_path) -> None:
     with pytest.raises(ValueError, match="log level"):
         Settings(data_dir=tmp_path, log_level="verbose")
+
+
+def test_export_memory_settings_have_the_measured_defaults(tmp_path) -> None:
+    """These two numbers are the whole point of §19.28; a silent default change is a regression.
+
+    ``video_filter_threads`` is the memory lever (ffmpeg's own default is one slice per logical
+    CPU, i.e. 16 here, and that is what ran the machine out of memory), and
+    ``video_still_composite`` is the time lever. Both are read by the export and by nothing else,
+    so a wrong default shows up as an OOM 20 minutes into a full-film render.
+    """
+    settings = Settings(data_dir=tmp_path)
+    assert settings.video_filter_threads == 4
+    assert settings.video_still_composite is True
+    assert settings.video_chunk_workers == 1

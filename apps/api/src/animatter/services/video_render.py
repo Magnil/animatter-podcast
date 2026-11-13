@@ -919,6 +919,7 @@ def _chain_for(
     *,
     out_label: str,
     start_ms: int = 0,
+    stills: dict[int, Path] | None = None,
 ) -> tuple[box_track.BoxChain, list[box_track.BoxSegment], list[Path]]:
     """One chunk's material chain, with its inputs renumbered and its files narrowed (§19.27).
 
@@ -935,8 +936,14 @@ def _chain_for(
     Returns the **renumbered** segments and their files, not the plan's: the renderer emits its
     ``-i`` list by indexing ``sources[segment.input_index]``, so handing it the plan-wide indices
     alongside a narrowed file list reads past the end (and did, the first time).
+
+    ``stills`` maps a position **within this slice** to an already-composited PNG (§19.28); those
+    segments are swapped for ``precomposited`` ones by :func:`box_track.with_still_sources` before
+    the chain is built, so the chain never sees the original file.
     """
     renumbered, ordered = video_chunks.rebase(segments, sources)
+    if stills:
+        renumbered, ordered = box_track.with_still_sources(renumbered, ordered, stills)
     if plan.split is None:
         chain = box_track.build_chain(
             renumbered,
@@ -960,6 +967,82 @@ def _chain_for(
             start_ms=start_ms,
         )
     return chain, renumbered, ordered
+
+
+def _needs_top_chain(segments: list[box_track.BoxSegment]) -> bool:
+    """Whether the upper chain of a chunk draws anything at all (§19.28).
+
+    The split plan gives every chunk two chains: the lower one draws box blocks and placeholders,
+    the upper one draws 全屏 blocks and placeholders (§19.26). A chunk with no 全屏 block
+    therefore has an upper chain made entirely of ``color=black@0`` — a full-canvas RGBA branch
+    that costs framesync queues and draws nothing. Measured on chunk 8 of 费那奇MV: skipping it
+    is pixel-identical (frame-by-frame PSNR ``inf``) and 23 % faster (267.4 s -> 206.4 s).
+
+    Pure and module-level so the decision can be tested without a session or an encode.
+    """
+    return any(segment.kind != box_track.KIND_TRANSPARENT for segment in segments)
+
+
+def _composite_stills(
+    settings: Settings,
+    plan: video_box.BoxPlan,
+    segments: list[box_track.BoxSegment],
+    sources: list[Path],
+    *,
+    work_dir: Path,
+    tag: str,
+) -> dict[int, Path]:
+    """Composite every **still** segment of one chunk into a PNG (§19.28).
+
+    Returns position-in-slice -> PNG, which :func:`_chain_for` hands to
+    ``box_track.with_still_sources``. Video segments are left out: every frame of one is
+    different, so it has to stay on the live chain.
+
+    Placeholders are left out too. They are a ``color`` source with no file (§19.26), and
+    rendering one would turn a zero-cost filter into a 1920x1080 transparent PNG decoded 24 times
+    a second.
+
+    The PNG is the chain's own target size: the canvas when the plan is split (RGBA, padded at the
+    box), the box rect otherwise (opaque, drawn straight onto the plate). Getting that wrong does
+    not error — it renders a still scaled into the wrong rectangle.
+
+    Measured on chunk 2 of 费那奇MV (95 s, 6 stills) through this exact path: 65.2 s / 4.7-6.2 GB
+    before, **33.0 s / 3.03 GB** after, plus 1.6 s for the six composites. Frame-by-frame PSNR
+    against the live chain: mean 48.97 dB, minimum 46.97 dB, all 2286 frames >=45 dB.
+    """
+    renumbered, _ordered = video_chunks.rebase(segments, sources)
+    split = plan.split is not None
+    if split:
+        # The split chain is canvas-sized RGBA with the box padding baked in, so the piece has to
+        # be canvas-sized too or the transparent margin would be lost.
+        width, height = plan.canvas_w, plan.canvas_h
+        box_x, box_y = plan.box_x, plan.box_y
+    else:
+        # The opaque chain is box-sized and drawn straight at the box rect: a canvas-sized piece
+        # here would be scaled again by the overlay, which is exactly the double fit the
+        # `precomposited` flag exists to avoid. Padding to the same size at 0:0 is a no-op.
+        width, height = plan.width, plan.height
+        box_x, box_y = 0, 0
+    out: dict[int, Path] = {}
+    for position, segment in enumerate(renumbered):
+        if segment.kind in (box_track.KIND_VIDEO, box_track.KIND_TRANSPARENT):
+            continue
+        target = work_dir / f"still-{tag}-{position:02d}.png"
+        if not target.is_file():
+            video_media.composite_still(
+                settings.ffmpeg_path,
+                target=target,
+                width=width,
+                height=height,
+                segment=segment,
+                source=_ordered[segment.input_index],
+                box_w=plan.width,
+                box_h=plan.height,
+                box_x=box_x,
+                box_y=box_y,
+            )
+        out[position] = target
+    return out
 
 
 def _render_picture(
@@ -1029,6 +1112,11 @@ def _render_picture(
     chunk_dir.mkdir(parents=True, exist_ok=True)
     for stale in chunk_dir.glob("*.mp4"):
         stale.unlink()
+    # A previous export that died mid-chunk leaves its still composites behind, and they are
+    # named by chunk index, so a re-export of the *same* film would happily reuse them. Delete
+    # them rather than trust them: they are one ffmpeg call each to rebuild (§19.28).
+    for stale in chunk_dir.glob("still-*.png"):
+        stale.unlink()
 
     def render_one(index: int, chunk: video_chunks.Chunk) -> Path:
         piece = chunk_dir / f"chunk-{index:04d}.mp4"
@@ -1038,6 +1126,18 @@ def _render_picture(
         top_parts: list[box_track.BoxSegment] = []
         top_inputs: list[Path] = []
         if not plan.empty:
+            stills = (
+                _composite_stills(
+                    settings,
+                    plan,
+                    lower[chunk.first : chunk.last],
+                    lower_sources,
+                    work_dir=chunk_dir,
+                    tag=f"chunk-{index:04d}",
+                )
+                if settings.video_still_composite
+                else {}
+            )
             # The renumbered segments, not the plan's slice: the renderer indexes
             # `sources[segment.input_index]`, and a chunk's file list is narrowed to its own.
             box_chain, box_parts, box_inputs = _chain_for(
@@ -1046,8 +1146,14 @@ def _render_picture(
                 lower_sources,
                 out_label="boxout",
                 start_ms=chunk.start_ms,
+                stills=stills,
             )
-            if upper:
+            # A top chain of nothing but `color=black@0` placeholders is pure overhead: the
+            # lower chain already shows the plate everywhere a 全屏 block is not, and this
+            # film has exactly one such block, so 13 of its 14 chunks would pay for a
+            # full-canvas RGBA branch that draws nothing. Measured on chunk 8: skipping it is
+            # pixel-identical (PSNR inf) and 23 % faster (267.4 s -> 206.4 s).
+            if upper and _needs_top_chain(upper[chunk.first : chunk.last]):
                 top_chain, top_parts, top_inputs = _chain_for(
                     plan,
                     upper[chunk.first : chunk.last],
@@ -1097,6 +1203,7 @@ def _render_picture(
             subtitles=subtitles,
             start_ms=chunk.start_ms,
             frames=chunk.frames(video_media.FPS),
+            filter_threads=settings.video_filter_threads,
         )
         return piece
 
@@ -1138,6 +1245,10 @@ def _render_picture(
     # The chunks are ~1 GB of intermediate files; leaving them would quietly double the film's
     # disk cost every export.
     for leftover in piece_dir.glob("chunk-*"):
+        leftover.unlink(missing_ok=True)
+    # And the per-chunk still composites (§19.28): a handful of 1080p PNGs per chunk, regenerated
+    # from scratch every export and named by chunk, so nothing ever reuses one.
+    for leftover in piece_dir.glob("still-*"):
         leftover.unlink(missing_ok=True)
     # Same for the per-chunk avatar tracks: 14 chunks x 2 slots x ~3 MB is small, but they are
     # regenerated on every export and are named by chunk, so nothing ever reuses them. Left

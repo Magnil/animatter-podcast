@@ -176,7 +176,19 @@ D:\Videos\费那奇MV-1080p24-v2.mp4
 ```
 
 
-### 进度一览（2026-11-13 订正）
+### 视频 P6 交付清单（2026-11-14，第 123–126 轮）
+
+导出提速与降内存。设计、实测表和排除项在 `docs/video.md` §19.28，决策是 `decisions.md` D18。
+
+| 交付物 | 落在哪 | 验收 |
+|---|---|---|
+| `-filter_complex_threads` 不再跟 ffmpeg 默认（16 片 → OOM） | `config.video_filter_threads = 4`、`media/video.py::render(filter_threads=...)` | 命令里出现在**第一个 `-i` 之前**（它是全局选项），测试钉住 |
+| 静帧素材段预合成一张 PNG，只循环它 | `media/video.py::composite_still`、`box_track.with_still_sources`、`BoxSegment.precomposited`、`services/video_render.py::_composite_stills` | chunk 2 生产路径 **33.0 s / 3.03 GB**（改前 65–93 s / 4.7–6.2 GB）；逐帧 PSNR 对实时链 **最小 46.97 dB / 平均 48.97 dB**，2286 帧全部 ≥45 dB |
+| 全透明的 top 链不建 | `services/video_render.py::_needs_top_chain` | chunk 8 **267.4 s → 206.4 s**，输出逐帧 **PSNR inf**、字节数不变 |
+| 一个开关可逐字节回退 | `config.video_still_composite` | 置 `false` 走原来的实时链，图里仍有 `boxblur`（两条路径都有测试） |
+| 预合成残留不会跨导出让复用 | `_render_picture` 每块导出前删 `still-*.png`、收尾再删一遍 | 失败残留与下次同名，不删会被静默复用 |
+
+### 进度一览（2026-11-14 订正）
 
 ```
 M0 ✅ 骨架          M1 ✅ 转写闭环       M2a ✅ 热词库
@@ -185,11 +197,12 @@ M4 ✅ 剪辑+时间轴   M5a ✅ 字幕导出       M5b ✅ 文稿(md)
 M6 ⬜ 稳定性
 工作台 ✅  时间轴对齐(整体) ✅  视频 P1–P4 ✅（2026-11-11）
 视频 P5 ✅（2026-11-12 → 11-13）：模板可编辑、双时间轴、S/全屏、分块渲染、1080p24
+视频 P6 ✅（2026-11-14）：过滤线程数封顶、静帧预合成（chunk 2 33 s / 3.03 GB）、top 链跳过
 真机成片 ✅  3,695.9 秒 / 88,702 帧 / 24 fps（第 121 轮，两个 bug 修完后重导）
 ```
 
-**验证规模（2026-11-13，第 121 轮收尾）**：后端 1382 用例通过 / 1 skipped，`mypy --strict` 103 个
-源文件零错误，`ruff` 干净；前端 257 条 `node --test` 用例，`tsc --noEmit` 与 `vite build` 干净。
+**验证规模（2026-11-14，第 126 轮收尾）**：后端 1392 用例通过 / 1 skipped，`mypy --strict` 103 个
+源文件零错误，`ruff` 干净。
 
 > 这张表 2026-11-05 之后四天没更新，期间一直把 M5b 记成「待做」，而它已经落地
 > （`c3226fb` feat: ShowNotes and 文稿 generation）。**里程碑是自报状态，不是从代码推断的，
