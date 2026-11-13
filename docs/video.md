@@ -2034,10 +2034,13 @@ chunk 8（312 s，2 个视频 + 4 静帧）预合成后 **70.3 s / 5.52 GB**，�
   当成了素材」）。
 - PNG 命名带 chunk 号、随 chunk 一起清理，并且**每次导出前先删一遍**：中途失败的残留会被下一次
   同名导出静默复用。
-- 不 split 的片子走 `build_chain`（不透明 1440×810），那条路径**没有**跟改成预合成。它的量级是
-  chunk 8 上 366 s vs 267 s，慢但不至于 OOM，本轮只动 split 路径。
+- 两条链都吃这条优化：split 片子合成到画布尺寸（带 padding 的 RGBA），不 split 的片子合成到
+  素材框尺寸（不透明，直接画在底板上）。`_composite_stills` 按 `plan.split` 选尺寸，选错不会
+  报错——只会把一张图缩放到错误的矩形里，所以两种情况各有一条测试。
+- 不 split 的片子仍走 `build_chain`（不透明 1440×810），与 `build_canvas_chain` 的量级对比
+  （chunk 8 上 366 s vs 267 s）是另一件事，不在本轮优化范围内。
 
-**验证**：pytest **1392 passed / 1 skipped**（新增 10 条：`test_video_still_composite.py` 9 条
+**验证**：pytest **1393 passed / 1 skipped**（新增 10 条：`test_video_still_composite.py` 9 条
 + `test_config.py` 1 条）、ruff、`mypy --strict` 103 files 全绿。两条真实链路对照只跑了 chunk 2
 （95 s，纯静帧，低内存），没有跑整片——第 123/124 轮两次跑重活把 DSH 自己搞崩了，用户明确要求
 不再反复试高负载的事。

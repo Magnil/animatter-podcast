@@ -262,6 +262,80 @@ def test_a_composited_still_renders_the_same_picture_as_the_live_chain(
     assert max(differences) <= 12, "a channel moved by more than an 8-bit round trip"
 
 
+def test_the_still_is_composited_at_the_size_the_chain_will_draw_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The composite's target size depends on which chain the film uses, and both exist.
+
+    A **split** film (one 全屏 block somewhere) draws its chain canvas-sized with the box padded
+    transparently, so the PNG has to be the canvas or the margin is lost. A film with no 全屏
+    block draws the opaque box-sized chain, and there a canvas-sized PNG would be scaled *again*
+    by the overlay — the double fit `precomposited` exists to avoid. Neither mistake errors; both
+    just render the still into the wrong rectangle.
+    """
+    from animatter.config import Settings
+    from animatter.services import video_render
+    from animatter.services.video_box import BoxPlan, BoxSplit
+
+    sizes: list[tuple[int, int, int, int]] = []
+
+    def fake(ffmpeg: str, **kwargs: object) -> Path:
+        sizes.append(
+            (
+                kwargs["width"],  # type: ignore[arg-type]
+                kwargs["height"],  # type: ignore[arg-type]
+                kwargs["box_x"],  # type: ignore[arg-type]
+                kwargs["box_y"],  # type: ignore[arg-type]
+            )
+        )
+        target = kwargs["target"]
+        assert isinstance(target, Path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"png")
+        return target
+
+    monkeypatch.setattr(video_module, "composite_still", fake)
+    settings = Settings(data_dir=tmp_path)
+    still = _segment(KIND_IMAGE)
+    video = _segment(KIND_VIDEO, input_index=1)
+    # A video segment must be left live: no PNG can play a clip, and compositing one would
+    # silently freeze the picture on its first frame.
+    mixed = [still, video]
+
+    def plan(*, split: bool) -> BoxPlan:
+        if not split:
+            return BoxPlan(
+                segments=mixed, sources=[Path("photo.jpg"), Path("clip.mp4")],
+                width=144, height=81, box_x=24, box_y=20,
+            )
+        return BoxPlan(
+            segments=mixed, sources=[Path("photo.jpg"), Path("clip.mp4")],
+            width=144, height=81, box_x=24, box_y=20,
+            split=BoxSplit(
+                lower=(mixed[0], video),
+                lower_sources=(Path("photo.jpg"), Path("clip.mp4")),
+                upper=(_segment(KIND_TRANSPARENT), _segment(KIND_TRANSPARENT)),
+                upper_sources=(),
+            ),
+        )
+
+    cut = video_render._composite_stills(
+        settings, plan(split=True), mixed, [Path("photo.jpg"), Path("clip.mp4")],
+        work_dir=tmp_path / "split", tag="a",
+    )
+    assert list(cut) == [0], "only the still is composited, not the video"
+    # Canvas-sized (BoxPlan's default canvas) with the box's own offset, because the split chain
+    # pads to the canvas at that offset and the PNG has to line up with it.
+    assert sizes[-1] == (1920, 1080, 24, 20)
+
+    plain = video_render._composite_stills(
+        settings, plan(split=False), mixed, [Path("photo.jpg"), Path("clip.mp4")],
+        work_dir=tmp_path / "plain", tag="b",
+    )
+    assert list(plain) == [0]
+    assert sizes[-1] == (144, 81, 0, 0)
+
+
 def test_the_graph_the_composite_chain_builds_is_the_export_graph() -> None:
     """The preview and the film go through one builder (§19.7); this keeps that true.
 

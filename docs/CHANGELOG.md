@@ -2730,6 +2730,6 @@ OOM——ffmpeg `exit -12`、`Cannot allocate memory`，峰值 5.6–6.1 GB，�
 `box_track.with_still_sources`、`services/video_render.py::_composite_stills` 与
 `_needs_top_chain`。
 
-**验证**：pytest **1392 passed / 1 skipped**（新增 10 条），ruff、`mypy --strict` 103 files 全绿。
+**验证**：pytest **1393 passed / 1 skipped**（新增 10 条），ruff、`mypy --strict` 103 files 全绿。
 新增的 `test_video_still_composite.py` 里有一条是真编码对拍：同一段 `blur_fill` 分别走实时链和
 预合成链，比 PSNR——「字符串看起来对」正是第一版把底板当素材渲染那次能过关的原因。
