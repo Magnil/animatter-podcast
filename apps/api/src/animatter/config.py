@@ -53,6 +53,37 @@ class Settings(BaseSettings):
     ffmpeg_path: str = "ffmpeg"
     ffprobe_path: str = "ffprobe"
 
+    # --- video export ---------------------------------------------------
+    #: How many material segments one ffmpeg process may hold (§19.28).
+    #:
+    #: This is a *memory* limit, not a speed one. The filtergraph spends one branch per
+    #: segment, ffmpeg is push-based, so every branch that is not yet current still receives
+    #: frames. Measured on the 68-segment 费那奇MV project: 6 branches peak at 1.2 GB, 20 at
+    #: 2.7 GB, 40 at 5.2 GB, 68 at 9.2-10.1 GB — where the machine's 15.9 GB runs out and
+    #: ffmpeg dies with `Cannot allocate memory`. Six keeps a chunk near 1.2 GB.
+    video_chunk_segments: int = 6
+    #: How many seconds of film one ffmpeg process may encode.
+    #:
+    #: Segments are never split, so one long segment is one chunk however big it is; this
+    #: bounds everything else. `费那奇MV` has a 591 s 全屏 clip, which is why the default is
+    #: generous: 240 s would not have cut it, and cutting it is not possible without
+    #: re-encoding the same material twice.
+    video_chunk_seconds: int = 600
+    #: Parallel ffmpeg processes during an export.
+    #:
+    #: One, and this is a *memory* bound rather than a speed one. The 1.2 GB figure above is not
+    #: what a chunk costs at 1080p24 in practice: measured on this project, chunk 6 (6 materials,
+    #: 204 s) peaks at 3.70 GB and chunk 8 (6 materials, 312 s, two 300 MB video sources) at
+    #: 3.44 GB — the filtergraph's frame queues, not the branch count, dominate once the canvas is
+    #: 1920x1080 RGBA. Three workers therefore ask for ~10 GB on a 15.9 GB machine that also runs
+    #: the API and the browser, and the export died at 46% with ffmpeg `exit -12 Cannot allocate
+    #: memory` (chunk 8's PNG decoder failing to get a buffer). One worker uses ~4 GB peak and
+    #: takes ~25 min for this 61-minute film instead of ~15.
+    #:
+    #: Raising it is reasonable on a machine with more RAM; it is not a knob to turn up because
+    #: the CPU has cores.
+    video_chunk_workers: int = 1
+
     # --- Aliyun Bailian ------------------------------------------------
     dashscope_api_key: str | None = Field(default=None, validation_alias="DASHSCOPE_API_KEY")
     dashscope_workspace_id: str | None = Field(default=None, validation_alias="DASHSCOPE_WORKSPACE_ID")

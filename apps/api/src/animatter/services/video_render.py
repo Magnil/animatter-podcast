@@ -25,8 +25,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import threading
-from concurrent.futures import Future, ThreadPoolExecutor
+from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -36,10 +38,11 @@ from sqlalchemy.orm import Session
 from animatter.config import Settings
 from animatter.core.edl import Edl
 from animatter.core.video_avatar import Interval, lit_at, track_pieces
+from animatter.core.video_avatar import pieces_in as track_pieces_in
 from animatter.errors import AppError
 from animatter.ids import new_id, utcnow_iso
 from animatter.log import get_logger
-from animatter.media import avatar_track, box_track
+from animatter.media import avatar_track, box_track, video_chunks
 from animatter.media import text_overlay as overlay_media
 from animatter.media import video as video_media
 from animatter.media.subtitle_ass import AssCue, SubtitleStyle, write_ass
@@ -285,6 +288,21 @@ def prepare(
     )
 
 
+def _cues_for(
+    session: Session, version_id: str, edl: Edl
+) -> list[AssCue]:
+    """The burned-in subtitles in **output** time, before any chunking.
+
+    Kept separate from ``_ass_for`` because a chunked export needs the cues themselves: each
+    chunk gets its own ASS re-based to chunk-local time (§19.28). Building one whole-film ASS
+    and slicing the text would put every cue in every chunk — the burn is relative to the
+    frame's PTS, and every chunk starts at 0.
+    """
+    time_map = edl.time_map() if edl.removed_ms else None
+    cues, _issues = subtitle_service.build_cues(session, version_id, time_map=time_map)
+    return [AssCue(start_ms=cue.start_ms, end_ms=cue.end_ms, text=cue.text) for cue in cues]
+
+
 def _ass_for(
     session: Session,
     version_id: str,
@@ -293,9 +311,7 @@ def _ass_for(
     target: Path,
 ) -> Path:
     """Build the burned-in subtitle file in output time."""
-    time_map = edl.time_map() if edl.removed_ms else None
-    cues, _issues = subtitle_service.build_cues(session, version_id, time_map=time_map)
-    ass_cues = [AssCue(start_ms=cue.start_ms, end_ms=cue.end_ms, text=cue.text) for cue in cues]
+    ass_cues = _cues_for(session, version_id, edl)
     if not ass_cues:
         raise AppError(
             "no_subtitle_cues",
@@ -502,20 +518,41 @@ def _avatar_layers(
     *,
     duration_ms: int,
     work_dir: Path,
+    start_ms: int = 0,
+    end_ms: int | None = None,
+    tag: str = "",
 ) -> list[video_media.AvatarLayer]:
     """Render one lit/dim track per bound slot, ready to overlay.
 
     Measured 1.5 s and 55 MB per 600 s of track, so the cost is small next to the encode
     itself. Rendering them here rather than in ``prepare`` keeps the request that queues an
     export fast: the user is watching a progress bar either way.
+
+    ``start_ms``/``end_ms`` render a **short track for one chunk** instead of the whole film
+    (§19.28). Seeking the whole-film track into a chunk does not work: it is a sparse VFR clip
+    (298 frames over 61 minutes), and `-ss <start> -t <seconds>` makes ffmpeg both drop frames
+    and end the stream early. Measured on 费那奇MV: a 133 s window declared with `-t` yielded 7
+    of 298 frames, last at 67 s, and because the overlay uses `eof_action=pass` the avatar then
+    stopped being drawn for the rest of the chunk — the "avatar frame vanishes" bug. A fresh
+    handful of stills per chunk has no seek to get wrong, and `concat` is exact.
+
+    ``tag`` disambiguates the file names; the same slot appears in every chunk.
     """
     layers: list[video_media.AvatarLayer] = []
     for track in tracks:
-        sequence = track_pieces(track.lit, total_ms=duration_ms)
+        if end_ms is None:
+            sequence = track_pieces(track.lit, total_ms=duration_ms)
+        else:
+            sequence = track_pieces_in(track.lit, start_ms=start_ms, end_ms=end_ms)
+        if not sequence:
+            # A chunk with no lit piece and no dim piece is impossible (the sequence tiles the
+            # slice), but an empty list would make `build_track` raise; skipping is the honest
+            # answer for a zero-length chunk.
+            continue
         pieces = avatar_track.pieces_of(
             lit=[track.lit_path], dim=track.dim_path, sequence=sequence
         )
-        target = work_dir / f"avatar-{_slug(track.name)}.mov"
+        target = work_dir / f"avatar-{_slug(track.name)}{tag}.mov"
         avatar_track.build_track(
             settings.ffmpeg_path, target=target, pieces=pieces, work_dir=work_dir
         )
@@ -875,6 +912,235 @@ def _run(
             _futures.pop(render_id, None)
 
 
+def _chain_for(
+    plan: video_box.BoxPlan,
+    segments: list[box_track.BoxSegment],
+    sources: list[Path],
+    *,
+    out_label: str,
+    start_ms: int = 0,
+) -> tuple[box_track.BoxChain, list[box_track.BoxSegment], list[Path]]:
+    """One chunk's material chain, with its inputs renumbered and its files narrowed (§19.28).
+
+    A chunk declares only the files it actually shows, so its ``-i`` list is as short as its
+    segment list. That is the whole point: the memory cost tracked the number of *inputs*, and
+    a chunk of six segments needs at most six.
+
+    ``start_ms`` is where the chunk begins on the output timeline. The chain counts each
+    segment's frames from the **film's** frame grid, not from the chunk's own zero, or the
+    chunk's internal boundaries land on the wrong side of a half-frame and the join between two
+    chunks shows a one-frame jump (measured: the sample film's picture started one frame early
+    in a three-chunk export).
+
+    Returns the **renumbered** segments and their files, not the plan's: the renderer emits its
+    ``-i`` list by indexing ``sources[segment.input_index]``, so handing it the plan-wide indices
+    alongside a narrowed file list reads past the end (and did, the first time).
+    """
+    renumbered, ordered = video_chunks.rebase(segments, sources)
+    if plan.split is None:
+        chain = box_track.build_chain(
+            renumbered,
+            width=plan.width,
+            height=plan.height,
+            x=plan.box_x,
+            y=plan.box_y,
+            out_label=out_label,
+            start_ms=start_ms,
+        )
+    else:
+        chain = box_track.build_canvas_chain(
+            renumbered,
+            canvas_w=plan.canvas_w,
+            canvas_h=plan.canvas_h,
+            box_w=plan.width,
+            box_h=plan.height,
+            box_x=plan.box_x,
+            box_y=plan.box_y,
+            out_label=out_label,
+            start_ms=start_ms,
+        )
+    return chain, renumbered, ordered
+
+
+def _render_picture(
+    db: object,
+    settings: Settings,
+    *,
+    render_id: str,
+    prepared: PreparedVideo,
+    plan: video_box.BoxPlan,
+    cues: list[AssCue],
+    style: SubtitleStyle,
+    burn_subtitles: bool,
+    work_dir: Path,
+    stem: str,
+    target: Path,
+    report: Callable[[float], None],
+) -> None:
+    """Encode the whole picture track, **one chunk of the timeline per ffmpeg process** (§19.28).
+
+    The reason is memory, not speed. The material chain puts one branch per segment into the
+    filtergraph, ffmpeg is push-based, and every branch that is not yet current still receives
+    frames — so peak RSS tracks the number of branches and not the frame size. Measured on the
+    68-segment / 3696 s 费那奇MV project: 6 branches 1.2 GB, 20 branches 2.7 GB, 40 branches
+    5.2 GB, 68 branches 9.2-10.1 GB, where a 16 GB machine runs out and ffmpeg exits -12. At 720p
+    the peak was unchanged (8.8 GB), which is what ruled out "just export smaller".
+
+    Chunks are joined with ``-c copy``, so the film costs one extra read/write of its own bytes
+    and no quality. Boundaries are segment boundaries and each chunk is asked for an exact frame
+    count, so the join is frame-exact: verified 88702 frames == 3695.93 s @ 24 fps, and a chunk
+    rendered losslessly matched ``preview_still`` to within 1/255.
+
+    A film short enough to be one chunk takes the same path with a rename instead of a concat,
+    so there is only ever one code path and the tests keep exercising it.
+    """
+    canvas_w = prepared.template.canvas_w or 1920
+    canvas_h = prepared.template.canvas_h or 1080
+    layers = _layers(prepared.template)
+    text_png = text_png_for(
+        prepared.template,
+        work_dir=work_dir,
+        width=canvas_w,
+        height=canvas_h,
+        visible_avatars={track.name for track in prepared.avatars} or None,
+        avatar_names=prepared.avatar_names,
+    )
+
+    if plan.empty:
+        # A film with a background and subtitles but no material at all. `whole` is the one
+        # chunk, and it has no chain — the unchunked graph, untouched.
+        chunks = video_chunks.whole(prepared.duration_ms)
+        lower: list[box_track.BoxSegment] = []
+        lower_sources: list[Path] = []
+        upper: list[box_track.BoxSegment] = []
+        upper_sources: list[Path] = []
+    else:
+        lower = list(plan.segments if plan.split is None else plan.split.lower)
+        lower_sources = list(plan.sources if plan.split is None else plan.split.lower_sources)
+        upper = list(plan.split.upper) if plan.split is not None else []
+        upper_sources = list(plan.split.upper_sources) if plan.split is not None else []
+        chunks = video_chunks.split(
+            lower,
+            max_segments=settings.video_chunk_segments,
+            max_ms=settings.video_chunk_seconds * 1000,
+        )
+
+    chunk_dir = work_dir / f"{stem}-chunks"
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+    for stale in chunk_dir.glob("*.mp4"):
+        stale.unlink()
+
+    def render_one(index: int, chunk: video_chunks.Chunk) -> Path:
+        piece = chunk_dir / f"chunk-{index:04d}.mp4"
+        box_chain = top_chain = None
+        box_parts: list[box_track.BoxSegment] = []
+        box_inputs: list[Path] = []
+        top_parts: list[box_track.BoxSegment] = []
+        top_inputs: list[Path] = []
+        if not plan.empty:
+            # The renumbered segments, not the plan's slice: the renderer indexes
+            # `sources[segment.input_index]`, and a chunk's file list is narrowed to its own.
+            box_chain, box_parts, box_inputs = _chain_for(
+                plan,
+                lower[chunk.first : chunk.last],
+                lower_sources,
+                out_label="boxout",
+                start_ms=chunk.start_ms,
+            )
+            if upper:
+                top_chain, top_parts, top_inputs = _chain_for(
+                    plan,
+                    upper[chunk.first : chunk.last],
+                    upper_sources,
+                    out_label="topout",
+                    start_ms=chunk.start_ms,
+                )
+
+        subtitles: Path | None = None
+        if burn_subtitles:
+            # Re-based to chunk-local time. Reusing one whole-film ASS would draw every cue on
+            # every chunk, because libass decides from the frame's PTS and every chunk is at 0.
+            subtitles = write_ass(
+                piece.with_suffix(".ass"),
+                video_chunks.slice_cues(cues, chunk),
+                style=style,
+            )
+
+        # A **short track for this chunk** (see `_avatar_layers`): seeking the whole-film track
+        # into the chunk truncated it and the avatar vanished for the rest of the chunk.
+        avatars = _avatar_layers(
+            settings,
+            prepared.avatars,
+            duration_ms=prepared.duration_ms,
+            work_dir=work_dir,
+            start_ms=chunk.start_ms,
+            end_ms=chunk.end_ms,
+            tag=f"-{index:04d}",
+        )
+
+        video_media.render(
+            settings.ffmpeg_path,
+            target=piece,
+            duration_ms=chunk.duration_ms,
+            width=canvas_w,
+            height=canvas_h,
+            background=prepared.background_path,
+            layers=layers,
+            box=box_chain,
+            box_segments=box_parts or None,
+            box_sources=box_inputs or None,
+            top=top_chain,
+            top_segments=top_parts or None,
+            top_sources=top_inputs or None,
+            avatars=avatars,
+            text=None if text_png is None else video_media.Layer(path=text_png, x=0, y=0),
+            subtitles=subtitles,
+            start_ms=chunk.start_ms,
+            frames=chunk.frames(video_media.FPS),
+        )
+        return piece
+
+    pieces: list[Path] = [chunk_dir / f"chunk-{index:04d}.mp4" for index in range(len(chunks))]
+    if len(chunks) == 1:
+        pieces[0] = render_one(0, chunks[0])
+    else:
+        log.info(
+            "video.chunked",
+            render_id=render_id,
+            chunks=len(chunks),
+            segments=len(lower),
+            workers=settings.video_chunk_workers,
+        )
+        done = 0
+        progress_lock = threading.Lock()
+        with ThreadPoolExecutor(
+            max_workers=max(1, settings.video_chunk_workers),
+            thread_name_prefix=f"chunk-{render_id}",
+        ) as pool:
+            futures = {
+                pool.submit(render_one, index, chunk): index
+                for index, chunk in enumerate(chunks)
+            }
+            for future in as_completed(futures):
+                pieces[futures[future]] = future.result()
+                with progress_lock:
+                    done += 1
+                    report(0.9 * done / len(chunks))
+
+    if len(pieces) == 1:
+        # One chunk: a rename, not a stream copy. Copying a 1 GB file to itself would be the
+        # most expensive thing in the export.
+        os.replace(pieces[0], target)
+        piece_dir = chunk_dir
+    else:
+        video_media.concat(settings.ffmpeg_path, parts=pieces, target=target)
+        piece_dir = chunk_dir
+    # The chunks are ~1 GB of intermediate files; leaving them would quietly double the film's
+    # disk cost every export.
+    for leftover in piece_dir.glob("chunk-*"):
+        leftover.unlink(missing_ok=True)
+
+
 def _encode(
     db: object,
     settings: Settings,
@@ -920,13 +1186,6 @@ def _encode(
                 # 100 % while the mux runs.
                 row.progress = round(min(0.9, fraction * 0.9), 4)
 
-    subtitles: Path | None = None
-    if options.burn_subtitles:
-        with db.session() as session:
-            subtitles = _ass_for(
-                session, version_id, prepared.edl, options.style(), out / f"{stem}.ass"
-            )
-
     with db.session() as session:
         plan = _box(
             session,
@@ -936,44 +1195,33 @@ def _encode(
             items=prepared.items,
             edl=prepared.edl,
         )
-        box_chain = None if plan.empty else _box_chain(plan)
-        top_chain = None if plan.empty else _top_chain(plan)
+        # The cues themselves, not one whole-film ASS: each chunk burns its own re-based copy
+        # (§19.28). A single ASS would put every cue in every chunk, because the burn is
+        # relative to the frame's PTS and every chunk starts at 0.
+        cues = _cues_for(session, version_id, prepared.edl) if options.burn_subtitles else []
+    if options.burn_subtitles and not cues:
+        # Same refusal as `_ass_for`, kept here so the error lands before any encoding.
+        raise AppError(
+            "no_subtitle_cues",
+            "这个版本没有可烧入的字幕",
+            hint="先完成转写并确认字幕内容。",
+        )
 
-    text_png = text_png_for(
-        prepared.template,
+    # The text PNG and the avatar tracks are built by `_render_picture`, once per export: it is
+    # the only consumer, and building them twice would re-render the same file.
+    _render_picture(
+        db,
+        settings,
+        render_id=render_id,
+        prepared=prepared,
+        plan=plan,
+        cues=cues,
+        style=options.style(),
+        burn_subtitles=options.burn_subtitles,
         work_dir=out,
-        width=prepared.template.canvas_w or 1920,
-        height=prepared.template.canvas_h or 1080,
-        visible_avatars={track.name for track in prepared.avatars} or None,
-        avatar_names=prepared.avatar_names,
-    )
-
-    video_media.render(
-        settings.ffmpeg_path,
+        stem=stem,
         target=silent,
-        duration_ms=prepared.duration_ms,
-        width=prepared.template.canvas_w or 1920,
-        height=prepared.template.canvas_h or 1080,
-        background=prepared.background_path,
-        layers=_layers(prepared.template),
-        box=box_chain,
-        box_segments=None
-        if plan.empty
-        else (plan.segments if plan.split is None else list(plan.split.lower)),
-        box_sources=None
-        if plan.empty
-        else (plan.sources if plan.split is None else list(plan.split.lower_sources)),
-        top=top_chain,
-        top_segments=None if plan.split is None else list(plan.split.upper),
-        top_sources=None if plan.split is None else list(plan.split.upper_sources),
-        avatars=_avatar_layers(
-            settings,
-            prepared.avatars,
-            duration_ms=prepared.duration_ms,
-            work_dir=out,
-        ),
-        text=None if text_png is None else video_media.Layer(path=text_png, x=0, y=0),
-        subtitles=subtitles,
+        report=report,
     )
     report(0.95)
 

@@ -120,6 +120,39 @@ def track_pieces(lit: list[Interval], *, total_ms: int) -> list[TrackPiece]:
     return [piece for piece in pieces if piece.duration_ms > 0]
 
 
+def pieces_in(lit: list[Interval], *, start_ms: int, end_ms: int) -> list[TrackPiece]:
+    """The lit/dim sequence for one **slice** of the film, rebased to start at 0.
+
+    Used by the chunked export (§19.28). A chunk cannot simply seek the whole-film track: the
+    track is a sparse VFR clip (298 frames over 61 minutes), and cutting it with
+    ``-ss <start> -t <seconds>`` makes ffmpeg drop frames and then end the stream early — with
+    ``eof_action=pass`` on the overlay, "ends early" means the avatar silently stops being drawn
+    for the rest of the chunk. Measured on the 费那奇MV film: a 133 s chunk declaring the track
+    with ``-t`` got 7 of 298 frames (last at 67 s) while the avatar stayed on screen only to
+    67 s.
+
+    Building a fresh short track per chunk is the fix: it is a handful of stills, the concat
+    demuxer is exact, and there is no seek to get wrong. ``start_ms`` mid-interval keeps the
+    state that was current at that instant, so a chunk that begins while someone is talking
+    starts lit rather than dipping to dim for one frame.
+    """
+    if end_ms <= start_ms:
+        return []
+    out: list[TrackPiece] = []
+    cursor = 0
+    for piece in track_pieces(lit, total_ms=end_ms):
+        piece_end = cursor + piece.duration_ms
+        if piece_end <= start_ms:
+            cursor = piece_end
+            continue
+        begin = max(cursor, start_ms)
+        end = min(piece_end, end_ms)
+        if end > begin:
+            out.append(TrackPiece(lit=piece.lit, duration_ms=end - begin))
+        cursor = piece_end
+    return out
+
+
 def lit_at(lit: list[Interval], at_ms: int) -> bool:
     """Whether the slot is lit at one instant — used by the still preview.
 

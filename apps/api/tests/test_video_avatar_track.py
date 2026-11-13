@@ -73,21 +73,42 @@ def test_the_list_ends_with_a_bare_file_line(tmp_path: Path) -> None:
 
 
 def test_durations_are_snapped_to_the_frame_grid(tmp_path: Path) -> None:
-    """1.500 s becomes 1.520 at 25 fps: the demuxer rounds each duration up a frame."""
+    """A 1010 ms piece becomes 1042 at 24 fps: the demuxer rounds each duration up a frame.
+
+    24 fps, so one frame is 41.667 ms. ``1010 / 41.667 = 24.24`` → 25 frames → 1041.667 ms,
+    written as ``1.042``. The remaining 990 ms lands on the 2000 ms film end exactly.
+    """
     lit = make_still(tmp_path, "lit.png", (250, 250, 250))
     script = write_concat_list(
-        tmp_path / "list.txt", [AvatarPiece(lit, 1500), AvatarPiece(lit, 500)]
+        tmp_path / "list.txt", [AvatarPiece(lit, 1010), AvatarPiece(lit, 990)]
     )
     durations = [
         line.split()[1]
         for line in script.read_text(encoding="utf-8").splitlines()
         if line.startswith("duration")
     ]
-    assert durations == ["1.520", "0.480"]
+    assert durations == ["1.042", "0.958"]
+
+
+def test_a_whole_frame_multiple_is_not_moved(tmp_path: Path) -> None:
+    """1500 ms is exactly 36 frames at 24 fps, so it must come out as 1.500 — not 1.500 ± 1.
+
+    At 25 fps the same piece was 37.5 frames and had to be rounded up, which is why the old
+    expectation was 1.520. The default rate changed in round 118, and a test that still
+    asserted the rounding would have hidden the change.
+    """
+    lit = make_still(tmp_path, "lit.png", (250, 250, 250))
+    lit_path = write_concat_list(tmp_path / "list.txt", [AvatarPiece(lit, 1500)])
+    duration = next(
+        line.split()[1]
+        for line in lit_path.read_text(encoding="utf-8").splitlines()
+        if line.startswith("duration")
+    )
+    assert duration == "1.500"
 
 
 def test_snapping_is_cumulative_not_per_piece(tmp_path: Path) -> None:
-    """Ten 103 ms pieces must not each round to 120 ms and drift a full second."""
+    """Ten 103 ms pieces must not each round up and drift a full frame."""
     lit = make_still(tmp_path, "lit.png", (250, 250, 250))
     pieces = [AvatarPiece(lit, 103)] * 10
     script = write_concat_list(tmp_path / "list.txt", pieces)
@@ -96,7 +117,12 @@ def test_snapping_is_cumulative_not_per_piece(tmp_path: Path) -> None:
         for line in script.read_text(encoding="utf-8").splitlines()
         if line.startswith("duration")
     ]
-    assert sum(durations) == pytest.approx(1.04, abs=0.001), "1030 ms → 1040 ms, not 1200"
+    # 1030 ms is 24.72 frames at 24 fps. Rounding every piece up would give 10 x 125 ms =
+    # 1250 ms, i.e. more than a frame of drift. Snapping the cumulative boundary instead gives
+    # 25 frames = 1041.67 ms, printed as alternating 0.125 / 0.083 gaps, which sum to 1.040
+    # because each printed duration is itself truncated to a millisecond.
+    assert sum(durations) == pytest.approx(1.040, abs=0.001), "25 frames at 24 fps"
+    assert sum(durations) < 1.25, "a per-piece round-up would drift a whole extra frame"
 
 
 def test_a_missing_piece_is_refused(tmp_path: Path) -> None:

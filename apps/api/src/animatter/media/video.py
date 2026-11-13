@@ -42,10 +42,12 @@ from animatter.media.subtitle_ass import ensure_font as ensure_font_installed
 
 log = get_logger(__name__)
 
-#: 1080p25 is the deliverable. 25 rather than 30 because Chinese broadcast and
-#: most podcast video here is 25, and a mismatched rate would judder on a 25 Hz
-#: timeline for no benefit.
-FPS: Final[int] = 25
+#: 1080p24 is the deliverable. 24 fps rather than 25 (round 118): the artwork and the archive
+#: this film is cut against run at 24, and a 25 fps encode of 24 fps material judders on every
+#: fifth frame for no benefit. The output rate is also the *only* rate the timeline uses —
+#: ``box_track.FPS`` must stay equal to this one, or ``concat`` duplicates frames at every
+#: material boundary.
+FPS: Final[int] = 24
 CRF: Final[str] = "20"
 #: `veryfast` measured 9.42 s per 60 s against `ultrafast`'s 8.06 s, at a third of
 #: the file size. The 15 % is not worth tripling the upload.
@@ -308,7 +310,9 @@ def _run(command: list[str], *, timeout: int = 7200) -> None:
 
 
 def _chain_inputs(
-    segments: list[box_track.BoxSegment], sources: list[Path]
+    segments: list[box_track.BoxSegment],
+    sources: list[Path],
+    frame_counts: list[int],
 ) -> list[str]:
     """The `-i` declarations for one material chain, one per distinct source.
 
@@ -318,7 +322,13 @@ def _chain_inputs(
     same file twice, and either way every later input (avatars, text, the other chain) shifts by
     one. This is the input-numbering half of the split; `build_canvas_chain.inputs` counts by
     the same rule and the two must agree.
+
+    ``frame_counts`` is the chain's own per-segment frame list (``BoxChain.frames``): each input
+    is declared long enough for the longest stretch that reads it, so a trim that rounds up is
+    never starved by its input running out. A chain whose trim is exact would mostly not need
+    this, but "mostly" is how a missing frame in the middle of a 61-minute film happens.
     """
+    needs = box_track.frames_per_input(segments, frame_counts)
     out: list[str] = []
     seen: set[int] = set()
     for segment in segments:
@@ -327,7 +337,11 @@ def _chain_inputs(
         if segment.input_index in seen:
             continue
         seen.add(segment.input_index)
-        out += box_track.input_args(segment, sources[segment.input_index])
+        out += box_track.input_args(
+            segment,
+            sources[segment.input_index],
+            frames=needs.get(segment.input_index),
+        )
     return out
 
 
@@ -349,6 +363,8 @@ def render(
     avatars: list[AvatarLayer] | None = None,
     text: Layer | None = None,
     subtitles: Path | None = None,
+    start_ms: int = 0,
+    frames: int | None = None,
     preset: str = PRESET,
     crf: str = CRF,
 ) -> VideoResult:
@@ -370,8 +386,15 @@ def render(
     **after** the text overlay, i.e. last, because that is the order the graph overlays them
     in. Keeping them a separate triple rather than one list of chains is the same choice the
     box already made: the media layer sees segments and paths, not a service-layer plan.
+
+    ``start_ms``/``frames`` render **one chunk** of a longer film (§19.28). The graph is built
+    only from the chunk's own segments (the caller narrows the plan), the avatar tracks are
+    seeked to ``start_ms`` because each covers the whole film, and the output is cut to exactly
+    ``frames`` frames so concatenating the chunks cannot drift. A frame count rather than a
+    duration on purpose: at 24 fps one frame is 41.67 ms, not representable in milliseconds, and
+    rounding per chunk would accumulate.
     """
-    if duration_ms <= 0:
+    if duration_ms <= 0 and not frames:
         raise AppError("video_duration_invalid", "视频时长为 0", hint="先渲染音频。")
     if not background.is_file():
         raise AppError(
@@ -394,7 +417,7 @@ def render(
         ensure_font_ok(subtitles)
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    seconds = f"{duration_ms / 1000:.3f}"
+    seconds = f"{frames / FPS:.6f}" if frames else f"{duration_ms / 1000:.3f}"
 
     graph = build_filtergraph(
         width=width,
@@ -432,7 +455,9 @@ def render(
 
     if box_segments and box_sources:
         # One input per *distinct* source, in the order the chain's indices refer to.
-        command += _chain_inputs(box_segments, box_sources)
+        command += _chain_inputs(
+            box_segments, box_sources, box.frames if box is not None else []
+        )
 
     for avatar in avatars or []:
         if not avatar.path.is_file():
@@ -442,6 +467,18 @@ def render(
                 hint="重新导出；如果反复失败，把项目里的头像位重新绑定一次。",
                 status=409,
             )
+        # **No `-ss` and no `-t`.** The track handed to a chunk already covers exactly that
+        # chunk (`services.video_render._avatar_layers` builds a short one per chunk), so both
+        # bounds are not just redundant but destructive:
+        #
+        # * `-ss` used to seek the whole-film track; on this sparse VFR clip it delivered 7 of
+        #   298 frames.
+        # * `-t` cuts the terminator frame that the concat demuxer appends to give the previous
+        #   frame its display duration. Losing it makes the frame before it end immediately —
+        #   measured: a 137.57 s track copied with `-t 137.573` kept 9 frames ending at 129.68 s
+        #   instead of 10 ending at 137.60 s, so the avatar stopped drawing 8 s before the
+        #   chunk did. `eof_action=pass` then shows the plate for the rest of the chunk, which
+        #   is the "头像框消失" bug exactly.
         command += ["-i", str(avatar.path)]
 
     if text is not None:
@@ -460,7 +497,9 @@ def render(
     # after the text. Order here is the input numbering the graph assumes; reversing the two
     # would draw the text as a full-frame poster and the block as a title.
     if top_segments and top_sources:
-        command += _chain_inputs(top_segments, top_sources)
+        command += _chain_inputs(
+            top_segments, top_sources, top.frames if top is not None else []
+        )
 
     command += [
         "-filter_complex_script",
@@ -471,6 +510,10 @@ def render(
         str(FPS),
         "-fps_mode",
         "cfr",
+    ]
+    if frames:
+        command += ["-frames:v", str(frames)]
+    command += [
         "-c:v",
         "libx264",
         "-preset",
@@ -479,10 +522,13 @@ def render(
         crf,
         "-pix_fmt",
         "yuv420p",
-        "-movflags",
-        "+faststart",
-        str(target),
     ]
+    if not frames:
+        # A chunk is never served as-is: it gets `-c copy`-concatenated, which cannot carry a
+        # moov atom that has been moved to the front. Paying for faststart on every chunk
+        # would rewrite each file for nothing.
+        command += ["-movflags", "+faststart"]
+    command += [str(target)]
 
     log.info(
         "video.render",
@@ -490,13 +536,19 @@ def render(
         layers=len(layers),
         graph_chars=len(graph),
         subtitles=subtitles is not None,
+        start_ms=start_ms,
+        frames=frames,
     )
     _run(command)
     script.unlink(missing_ok=True)
 
     if not target.exists() or target.stat().st_size == 0:
         raise AppError("video_render_empty", "视频产出为空文件", hint="检查 ffmpeg 日志与磁盘空间。")
-    return VideoResult(path=target, duration_ms=duration_ms, frames=duration_ms * FPS // 1000)
+    return VideoResult(
+        path=target,
+        duration_ms=duration_ms,
+        frames=frames or duration_ms * FPS // 1000,
+    )
 
 
 def ensure_font_ok(subtitles: Path) -> None:
@@ -522,6 +574,73 @@ def _font_family_from_ass(path: Path) -> str | None:
             fields = line.split(",")
             return fields[1].strip() if len(fields) > 1 else None
     return None
+
+
+def concat(
+    ffmpeg: str,
+    *,
+    parts: list[Path],
+    target: Path,
+) -> VideoResult:
+    """Join chunks with the concat demuxer and ``-c copy`` (§19.28).
+
+    Stream copy, not a re-encode: every chunk was produced by the same encoder with the same
+    settings, so joining them costs one read and one write per byte — measured 3.1 s for 1078 MB
+    — and cannot change a pixel. Re-encoding here would throw away the only reason the chunks
+    exist.
+
+    The list is written **absolute** with forward slashes: the demuxer resolves relative paths
+    against the *script's* directory, so a relative entry silently points at a file that is not
+    there and fails as "视频渲染失败" naming the wrong thing (§19.24 trap).
+    """
+    if not parts:
+        raise AppError("video_concat_empty", "没有可拼接的分段")
+    for part in parts:
+        if not part.is_file() or part.stat().st_size == 0:
+            raise AppError(
+                "video_concat_missing",
+                f"分段文件不见了：{part.name}",
+                hint="重新导出；如果反复失败，检查磁盘空间。",
+            )
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    script = target.with_suffix(target.suffix + ".concat.txt")
+    script.write_text(
+        "".join(f"file '{part.resolve().as_posix()}'\n" for part in parts),
+        encoding="utf-8",
+        newline="\n",
+    )
+    try:
+        _run(
+            [
+                ffmpeg,
+                "-nostdin",
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(script),
+                "-c",
+                "copy",
+                "-movflags",
+                "+faststart",
+                str(target),
+            ]
+        )
+    finally:
+        script.unlink(missing_ok=True)
+
+    if not target.is_file() or target.stat().st_size == 0:
+        raise AppError("video_concat_empty_file", "拼接产出为空文件", hint="检查 ffmpeg 日志。")
+    # ``frames`` is unknown without decoding the whole file, and the caller does not need it:
+    # the film's length comes from the probe. Same posture as :func:`mux`.
+    return VideoResult(
+        path=target, duration_ms=_probe_duration_ms(ffmpeg, target), frames=0
+    )
 
 
 def render_still(

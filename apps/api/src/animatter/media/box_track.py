@@ -35,7 +35,7 @@ pixel-for-pixel over the plate, which is what "no content" is supposed to look l
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
@@ -44,7 +44,11 @@ from animatter.errors import AppError
 #: Matches the film's frame rate. A mismatch makes ``concat`` duplicate or drop frames at
 #: every boundary, which stutters exactly where a picture changes — the one moment the
 #: viewer is looking.
-FPS: Final[int] = 25
+#:
+#: 24 rather than 25 (round 118): 24 is what the archive and the artwork actually use, and the
+#: film is a 24 fps deliverable. It is defined here as well as in ``media.video`` because this
+#: module must not import the video module — ``media.video`` imports *this* one.
+FPS: Final[int] = 24
 
 #: Blurred backdrop for ``blur_fill``. Radius 20 at 1440×810 makes text in the backdrop
 #: unreadable (the point of the effect) without turning it to mush; ``boxblur`` is
@@ -114,6 +118,13 @@ class BoxChain:
     #: overlay comes *after* the box, and getting the count wrong asks ffmpeg for the wrong
     #: stream, which fails with "Error binding filtergraph inputs/outputs".
     inputs: int = 1
+    #: Frames each segment contributes, in chain order — the same numbers the trim uses.
+    #:
+    #: The caller needs them to declare each input long enough: the trim counts frames while
+    #: ``-t`` bounds them by time, and a boundary that rounds up asks for a frame the input's
+    #: own duration would not have produced. :func:`frames_per_input` folds this list into the
+    #: per-input requirement.
+    frames: list[int] = field(default_factory=list)
 
     @property
     def input_count(self) -> int:
@@ -137,12 +148,70 @@ class BoxChain:
         )
 
 
-def input_args(segment: BoxSegment, source: Path) -> list[str]:
+def frames_of(segments: list[BoxSegment], *, start_ms: int = 0) -> list[int]:
+    """How many frames each segment must contribute, counted on the film's frame grid.
+
+    This exists because ``trim=duration`` silently rounds **down**: it keeps the frames whose
+    end lands within the duration, so a 1399 ms segment at 24 fps (33.58 frames) emits 33 and
+    the chain runs a frame short — a different amount short at every boundary, and by an amount
+    that depends on where the chain was cut into chunks. Measured on the sample project: a
+    one-chunk export and a three-chunk export of the same film disagreed about where a picture
+    starts even though both were exactly 394 frames long.
+
+    Counting from two rounded boundaries instead makes the chain *tile* the film: segment ``i``
+    gets ``round(end_i * fps / 1000) - round(start_i * fps / 1000)`` frames, so the sum over the
+    chain telescopes to the film's own frame count and no surplus accumulates.
+
+    ``start_ms`` is the chain's absolute start on the output timeline. A chunk that begins at
+    10.8 s must count from there, not from 0, or its internal boundaries land on the wrong side
+    of a half-frame and the join between chunks shows a one-frame jump.
+
+    A segment shorter than half a frame still gets one frame: a zero-frame trim is an empty
+    branch, and ``concat`` refuses it. That can make the sum exceed the film by a frame or two,
+    which is why the caller must cut the *output* to its own frame count rather than trust this
+    sum to be exactly the film length.
+    """
+    out: list[int] = []
+    cursor = start_ms
+    for segment in segments:
+        begin = round(cursor * FPS / 1000)
+        cursor += segment.duration_ms
+        out.append(max(1, round(cursor * FPS / 1000) - begin))
+    return out
+
+
+def frames_per_input(segments: list[BoxSegment], frame_counts: list[int]) -> dict[int, int]:
+    """How many frames each distinct input must be able to supply.
+
+    One file can appear in several segments (a gallery image shown twice), and each of those
+    branches reads the stream from its own start — ffmpeg inserts a ``split`` for a stream with
+    two consumers — so the input has to be long enough for the **longest** stretch that uses it,
+    not for their sum.
+    """
+    needs: dict[int, int] = {}
+    for segment, count in zip(segments, frame_counts, strict=True):
+        if segment.kind == KIND_TRANSPARENT:
+            continue
+        needs[segment.input_index] = max(needs.get(segment.input_index, 0), count)
+    return needs
+
+
+def input_args(segment: BoxSegment, source: Path, *, frames: int | None = None) -> list[str]:
     """The ffmpeg input declaration for one segment.
 
     A still needs ``-loop 1`` *and* ``-t``: without the explicit duration ffmpeg loops
     forever and the encode never ends. A clip needs neither, but a looping one needs
     ``-stream_loop -1`` so it repeats rather than running out.
+
+    ``-framerate`` is declared for stills. The image2 demuxer otherwise assumes 25 fps and the
+    chain's ``fps=24`` then has to resample it, which decides frame availability by the 25→24
+    pattern rather than by the segment's own length. Declaring the real rate removes the resample
+    and makes ``-t`` mean what the arithmetic assumes.
+
+    ``frames`` is the number of frames the chain will ask this input for. ``-t`` is then set one
+    frame *longer* than that: the trim counts frames while the input bounds them by time, and a
+    branch whose boundary rounds up needs a frame the input's own duration would not have
+    produced. Without the slack the last frame of such a segment is simply missing.
     """
     if not source.is_file():
         raise AppError(
@@ -151,11 +220,15 @@ def input_args(segment: BoxSegment, source: Path) -> list[str]:
             hint="在素材库里重新导入这张图或这段视频。",
             status=404,
         )
-    seconds = f"{segment.duration_ms / 1000:.3f}"
+    seconds = (
+        f"{(frames + 1) / FPS:.6f}"
+        if frames is not None
+        else f"{segment.duration_ms / 1000:.3f}"
+    )
     if segment.kind == KIND_VIDEO:
         prefix = ["-stream_loop", "-1"] if segment.loop else []
         return [*prefix, "-t", seconds, "-i", str(source)]
-    return ["-loop", "1", "-t", seconds, "-i", str(source)]
+    return ["-loop", "1", "-framerate", str(FPS), "-t", seconds, "-i", str(source)]
 
 
 def _blurred_backdrop(
@@ -272,12 +345,18 @@ def build_chain(
     y: int = 0,
     input_base: int = 0,
     out_label: str = "boxout",
+    start_ms: int = 0,
 ) -> BoxChain:
     """Concatenate every segment into one ``width×height`` chain.
 
-    ``trim`` is applied per segment even though the inputs are already bounded by ``-t``:
-    a looping still emits at its own rate, and ``trim`` is what makes the *output* length
-    exact rather than "close enough".
+    ``trim=end_frame`` is applied per segment even though the inputs are already bounded by
+    ``-t``: a looping still emits at its own rate, and the trim is what makes the *output*
+    length exact rather than "close enough". It is a frame count and not a duration because
+    ``trim=duration`` rounds down — a 1399 ms segment at 24 fps emitted 33 frames instead of
+    34, and the loss accumulated along the chain. See :func:`frames_of`.
+
+    ``start_ms`` is where this chain begins on the output timeline, so a chunk's boundaries are
+    counted from the film's grid rather than from zero.
 
     ``input_index`` in each segment is an **ffmpeg input number**, so the caller's ``-i``
     list and this chain must agree. They do by construction: the caller asks
@@ -291,9 +370,10 @@ def build_chain(
             hint="先往时间轴上放一个素材块。",
         )
 
+    counts = frames_of(segments, start_ms=start_ms)
     parts: list[str] = []
     labels: list[str] = []
-    for position, segment in enumerate(segments):
+    for position, (segment, count) in enumerate(zip(segments, counts, strict=True)):
         if segment.duration_ms <= 0:
             raise AppError(
                 "box_segment_empty",
@@ -304,7 +384,7 @@ def build_chain(
         # can legitimately be concatenated twice, and two filters cannot share a label.
         parts.append(
             f"{_normalise(segment, width, height, input_base=input_base, tag=position)},"
-            f"fps={FPS},trim=duration={segment.duration_ms / 1000:.3f},"
+            f"fps={FPS},trim=end_frame={count},"
             f"setpts=PTS-STARTPTS[bxs{position}]"
         )
         labels.append(f"[bxs{position}]")
@@ -322,8 +402,6 @@ def build_chain(
         height=height,
         sources=[],
         input_base=input_base,
-        # Placeholders are color filters, not -i inputs, so they must not be counted: this
-        # number is what tells the compositor where the *next* layer's inputs begin.
         inputs=len(
             {
                 segment.input_index
@@ -331,6 +409,7 @@ def build_chain(
                 if segment.kind != KIND_TRANSPARENT
             }
         ),
+        frames=counts,
     )
 
 
@@ -353,10 +432,12 @@ def build_single(
     and the frame we want is that far in.
     """
     shift = f",setpts=PTS-{source_offset_ms / 1000:.3f}/TB" if source_offset_ms else ""
-    remaining = max(1, segment.duration_ms - source_offset_ms)
+    # A still is one frame, so the trim is not a length but a bound: `end_frame=1` keeps exactly
+    # the frame the PTS shift selected, whatever the input rate turns out to be. `render_still`
+    # asks for one output frame anyway, so a longer trim would only decode more than it uses.
     text = (
         f"{_normalise(segment, width, height, input_base=input_base, tag=0)}{shift},fps={FPS},"
-        f"trim=duration={remaining / 1000:.3f},setpts=PTS-STARTPTS[{out_label}]"
+        f"trim=end_frame=1,setpts=PTS-STARTPTS[{out_label}]"
     )
     return BoxChain(
         text=text,
@@ -409,12 +490,16 @@ def build_canvas_chain(
     box_y: int = 0,
     input_base: int = 0,
     out_label: str = "boxout",
+    start_ms: int = 0,
 ) -> BoxChain:
     """Like :func:`build_chain`, but padded out to the whole canvas so 全屏 blocks fit.
 
     Only used when at least one block is ``placement='full'``. A separate function rather than
     a flag on :func:`build_chain` on purpose: this chain is RGBA and canvas-sized, and the
     default path must not change shape because an option exists.
+
+    ``start_ms`` is where this chain begins on the output timeline, passed through to
+    :func:`frames_of` so a chunk's frame counts are counted from the film's grid.
     """
     if not segments:
         raise AppError(
@@ -425,7 +510,8 @@ def build_canvas_chain(
 
     parts: list[str] = []
     labels: list[str] = []
-    for position, segment in enumerate(segments):
+    counts = frames_of(segments, start_ms=start_ms)
+    for position, (segment, count) in enumerate(zip(segments, counts, strict=True)):
         if segment.duration_ms <= 0:
             raise AppError(
                 "box_segment_empty",
@@ -444,7 +530,7 @@ def build_canvas_chain(
             tag=position,
         )
         parts.append(
-            f"{piece},fps={FPS},trim=duration={segment.duration_ms / 1000:.3f},"
+            f"{piece},fps={FPS},trim=end_frame={count},"
             f"setpts=PTS-STARTPTS[bxs{position}]"
         )
         labels.append(f"[bxs{position}]")
@@ -472,4 +558,5 @@ def build_canvas_chain(
                 if segment.kind != KIND_TRANSPARENT
             }
         ),
+        frames=counts,
     )

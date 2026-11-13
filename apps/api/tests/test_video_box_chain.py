@@ -256,15 +256,39 @@ def test_a_zero_length_segment_is_refused() -> None:
         build_chain([segment(duration_ms=0)], width=800, height=450)
 
 
-def test_every_segment_is_trimmed_to_an_exact_duration() -> None:
-    """``trim`` is what makes the output length exact rather than "close enough"."""
+def test_every_segment_is_trimmed_to_an_exact_frame_count() -> None:
+    """``trim`` is what makes the output length exact rather than "close enough".
+
+    A **frame count**, not a duration (round 118). `trim=duration` keeps the frames whose end
+    lands within the duration, so a 1399 ms segment at 24 fps (33.58 frames) emitted 33 and the
+    shortfall accumulated along the chain — a three-chunk export of the sample film put a
+    picture boundary one frame earlier than a one-chunk export of the same film.
+    ``end_frame`` is counted from two rounded cumulative boundaries, so the chain tiles the
+    film's frame grid by construction: 1500 ms = 36 frames, 2500 ms = 60.
+    """
     chain = build_chain(
         [segment(duration_ms=1500), segment(input_index=1, duration_ms=2500)],
         width=800,
         height=450,
     )
-    assert "trim=duration=1.500" in chain.text
-    assert "trim=duration=2.500" in chain.text
+    assert "trim=end_frame=36" in chain.text
+    assert "trim=end_frame=60" in chain.text
+    assert chain.frames == [36, 60]
+
+
+def test_a_segment_that_is_not_a_whole_number_of_frames_rounds_on_the_grid() -> None:
+    """1399 ms is 33.58 frames and 1399 more is 67.15: 34 then 33, summing to the film's 67.
+
+    The point is the *pair*: rounding each segment independently to 34 and 34 would make the
+    chain a frame longer than the timeline, and every later boundary would slide.
+    """
+    chain = build_chain(
+        [segment(duration_ms=1399), segment(input_index=1, duration_ms=1399)],
+        width=800,
+        height=450,
+    )
+    assert chain.frames == [34, 33]
+    assert sum(chain.frames) == round(2798 * 24 / 1000)
 
 
 # --- the still-preview variant ------------------------------------------
@@ -276,7 +300,9 @@ def test_single_segment_seeks_within_itself() -> None:
     )
     # Negative: ffmpeg starts the input at 0 and the wanted frame is that far in.
     assert "setpts=PTS-1.250/TB" in chain.text
-    assert "trim=duration=2.750" in chain.text
+    # A still is one frame, so the trim bounds it rather than measuring it: whatever the input
+    # rate turns out to be, exactly the shifted frame survives.
+    assert "trim=end_frame=1" in chain.text
 
 
 def test_single_segment_at_zero_needs_no_shift() -> None:
@@ -286,12 +312,17 @@ def test_single_segment_at_zero_needs_no_shift() -> None:
     assert "/TB" not in chain.text
 
 
-def test_single_segment_never_trims_to_nothing() -> None:
-    """Landing on the last frame must still produce a frame, not a zero-length trim."""
+def test_single_segment_never_emits_more_than_one_frame() -> None:
+    """Seeking to the very end must still produce a frame, and only one.
+
+    The old shape trimmed to a *duration* and had to clamp it to 1 ms so the trim was not empty;
+    a frame count says the same thing directly and cannot be emptied by arithmetic.
+    """
     chain = build_single(
         segment(duration_ms=2000), source_offset_ms=2000, width=1440, height=810
     )
-    assert "trim=duration=0.001" in chain.text
+    assert "trim=end_frame=1" in chain.text
+    assert "trim=duration" not in chain.text
 
 
 # --- 全屏 (round 111, §19.26) --------------------------------------------

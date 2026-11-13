@@ -12,6 +12,7 @@ are the ones that produce a *wrong picture* rather than an error:
 
 from __future__ import annotations
 
+import importlib
 import shutil
 import subprocess
 from pathlib import Path
@@ -19,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from animatter.core.video_avatar import Interval
+from animatter.errors import AppError
 from animatter.media.video import AvatarLayer, Layer, build_filtergraph
 
 FFMPEG = shutil.which("ffmpeg")
@@ -227,6 +229,57 @@ def test_a_real_encode_switches_the_avatar_at_the_right_frame(tmp_path: Path) ->
     after = pixel(30)  # 1.20 s
     assert before[0] > 200, f"0.48 s should be lit, got {before}"
     assert after[0] < 150, f"1.20 s should be dim, got {after}"
+
+
+def test_a_chunk_track_is_declared_without_a_time_bound(tmp_path: Path) -> None:
+    """The whole-track declaration is bare `-i`: no `-ss`, no `-t` (§19.29).
+
+    Both bounds are destructive on a track that already covers exactly the chunk:
+
+    * `-ss` on the sparse whole-film clip delivered 7 of 298 frames;
+    * `-t` cuts the terminator frame the concat demuxer uses to give the previous frame its
+      duration, so the avatar stopped drawing 8 s before the chunk ended.
+
+    `eof_action=pass` then shows the plate underneath, which is the reported "头像框消失".
+    """
+    background = tmp_path / "bg.png"
+    background.write_bytes(b"x")
+    track = tmp_path / "track.mov"
+    track.write_bytes(b"x")
+    seen: list[list[str]] = []
+
+    def capture(command: list[str], *, timeout: int = 0) -> None:
+        seen.append(command)
+
+    video = importlib.import_module("animatter.media.video")
+    original = video._run
+    video._run = capture  # type: ignore[assignment]
+    try:
+        with pytest.raises(AppError):  # the fake ffmpeg writes no file, so the tail check fires
+            video.render(
+                "ffmpeg",
+                target=tmp_path / "out.mp4",
+                duration_ms=2000,
+                width=1920,
+                height=1080,
+                background=background,
+                layers=[],
+                avatars=[AvatarLayer(path=track, x=10, y=10, width=64, height=64)],
+                frames=48,
+            )
+    finally:
+        video._run = original  # type: ignore[assignment]
+
+    command = seen[0]
+    position = command.index(str(track))
+    # Walk back to the option group that introduced this input.
+    start = position - 1
+    while start > 0 and command[start - 1] != "-i":
+        start -= 1
+    assert command[position - 1] == "-i", command[max(0, position - 4):position + 1]
+    group = command[start:position]
+    assert "-ss" not in group, group
+    assert "-t" not in group, group
 
 
 def test_interval_import_is_used() -> None:

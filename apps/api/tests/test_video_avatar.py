@@ -19,6 +19,7 @@ from animatter.core.video_avatar import (
     invert,
     lit_at,
     merge,
+    pieces_in,
     track_pieces,
 )
 
@@ -144,6 +145,49 @@ def test_two_turns_produce_five_pieces() -> None:
         [Interval(1000, 2000), Interval(3000, 4000)], total_ms=5000
     )
     assert [piece.lit for piece in pieces] == [False, True, False, True, False]
+
+
+# --- slices (the chunked export) -----------------------------------------
+
+
+def test_a_slice_keeps_the_state_that_was_current_at_its_start() -> None:
+    """A chunk that begins while someone is talking must start lit, not dip for one frame.
+
+    The per-chunk track is rebuilt from the intervals (§19.29), so ``start_ms`` mid-interval has
+    to keep that interval's state rather than producing a leading dim piece.
+    """
+    pieces = pieces_in([Interval(0, 4000)], start_ms=1500, end_ms=3000)
+    assert [(piece.lit, piece.duration_ms) for piece in pieces] == [(True, 1500)]
+
+
+def test_a_slice_is_as_long_as_the_chunk_and_no_longer() -> None:
+    """The track must cover exactly the chunk: short leaves the overlay dead, long pushes PTS."""
+    for start, end in ((0, 5000), (1234, 9876), (1000, 1000 + 1)):
+        pieces = pieces_in([Interval(500, 9000)], start_ms=start, end_ms=end)
+        assert sum(piece.duration_ms for piece in pieces) == end - start
+
+
+def test_a_slice_rebases_its_turns_to_zero() -> None:
+    pieces = pieces_in(
+        [Interval(2000, 3000), Interval(4000, 5000)], start_ms=1000, end_ms=5000
+    )
+    assert [piece.lit for piece in pieces] == [False, True, False, True]
+    assert sum(piece.duration_ms for piece in pieces) == 4000
+
+
+def test_a_slice_that_ends_inside_a_lit_interval_stops_lit() -> None:
+    pieces = pieces_in([Interval(0, 10_000)], start_ms=0, end_ms=1500)
+    assert [(piece.lit, piece.duration_ms) for piece in pieces] == [(True, 1500)]
+
+
+def test_an_empty_slice_has_no_pieces() -> None:
+    """A zero-length chunk cannot make a track at all; `build_track` refuses empty input."""
+    assert pieces_in([Interval(0, 5000)], start_ms=2000, end_ms=2000) == []
+
+
+def test_a_slice_of_a_never_lit_slot_is_one_dim_piece() -> None:
+    pieces = pieces_in([], start_ms=500, end_ms=2500)
+    assert [(piece.lit, piece.duration_ms) for piece in pieces] == [(False, 2000)]
 
 
 # --- point queries -------------------------------------------------------

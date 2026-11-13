@@ -313,10 +313,18 @@ def test_mux_reports_a_missing_video(tmp_path: Path) -> None:
 
 
 def test_encoder_settings_are_the_measured_ones() -> None:
-    """``veryfast`` measured 9.42 s/60 s at a third of ``ultrafast``'s size."""
+    """``veryfast`` measured 9.42 s/60 s at a third of ``ultrafast``'s size.
+
+    24 fps, not 25 (round 118): the artwork and the archive the film is cut against are 24.
+    The two chain builders must also agree about the rate, or ``concat`` duplicates a frame at
+    every material boundary — a stutter exactly where the picture changes.
+    """
+    from animatter.media import box_track
+
     assert PRESET == "veryfast"
     assert CRF == "20"
-    assert FPS == 25
+    assert FPS == 24
+    assert box_track.FPS == FPS
 
 
 def test_a_still_puts_its_full_frame_segment_on_the_top_chain() -> None:
