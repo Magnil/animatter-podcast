@@ -434,6 +434,41 @@ export function VideoPanel({
   };
 
   /**
+   * 「S」: replace the podcast with this block's sound, or stop doing so (§19.25).
+   *
+   * Pressing it also clears the block's mute on the server — the two are one control, and a
+   * block that is both silent and replacing would be a state nothing can draw.
+   */
+  const doSolo = async (item: VideoItem, solo: boolean): Promise<void> => {
+    try {
+      await api.patchVideoItem(item.id, { solo });
+      await load();
+      onNotice(
+        solo
+          ? `这一段的播客音频会被 ${blockName(item)} 自己的声音顶替（导出时生效）`
+          : `恢复 ${blockName(item)} 这一段原本的播客音频（导出时生效）`,
+      );
+    } catch (caught) {
+      onNotice(caught instanceof Error ? caught.message : String(caught));
+    }
+  };
+
+  /** 素材框 / 全屏 (§19.26). Both are visible immediately — the still proves it. */
+  const doPlacement = async (item: VideoItem, placement: string): Promise<void> => {
+    try {
+      await api.patchVideoItem(item.id, { placement });
+      await load();
+      onNotice(
+        placement === "full"
+          ? `${blockName(item)} 改为全屏展现`
+          : `${blockName(item)} 改回画在素材框里`,
+      );
+    } catch (caught) {
+      onNotice(caught instanceof Error ? caught.message : String(caught));
+    }
+  };
+
+  /**
    * Move an orphaned block onto the next slot that still has audio.
    *
    * The action has to be **deterministic and explainable**, not clever: pick the next
@@ -732,6 +767,8 @@ export function VideoPanel({
             selectedId={selected?.id ?? null}
             onFit={(item, fit) => void doFit(item, fit)}
             onMute={(item, muted) => void doMute(item, muted)}
+            onSolo={(item, solo) => void doSolo(item, solo)}
+            onPlacement={(item, placement) => void doPlacement(item, placement)}
             onDelete={(item) => void doDeleteItem(item)}
             onZoom={onZoom}
             onPan={onPan}

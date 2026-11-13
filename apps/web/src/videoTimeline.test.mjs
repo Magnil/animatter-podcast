@@ -27,6 +27,7 @@ import {
   layoutBlock,
   MIN_BLOCK_MS,
   moveBlock,
+  PLACEMENTS,
   msToX,
   orphanedBlocks,
   resizeBlock,
@@ -535,4 +536,33 @@ test("viewAround clamps at the start and the end", () => {
   assert.equal(viewAround(0, { from: 0, to: 20000 }, 120000).from, 0);
   const atEnd = viewAround(120000, { from: 0, to: 20000 }, 120000);
   assert.equal(atEnd.to, 120000);
+});
+// --- 展现方式 (§19.26) ----------------------------------------------------
+
+test("PLACEMENTS is 素材框 then 全屏, and nothing else", () => {
+  // Order matters: this select sits **before** the fit select in the bubble, so its first entry
+  // is what a project defaults to on screen. Two entries, because there are two rectangles.
+  assert.deepEqual(
+    PLACEMENTS.map((option) => option.id),
+    ["box", "full"],
+  );
+  assert.deepEqual(
+    PLACEMENTS.map((option) => option.label),
+    ["素材框", "全屏"],
+  );
+});
+
+test("PLACEMENTS carries no hint text", () => {
+  // The user's constraint was 「气泡面板上不要出现说明，否则太长了」: the bubble shows two selects,
+  // two letters and a delete, and any prose here would be rendered into it. `title` on the
+  // select is where an explanation may live; this list must stay label-only.
+  for (const option of PLACEMENTS) {
+    assert.deepEqual(Object.keys(option).sort(), ["id", "label"], JSON.stringify(option));
+  }
+});
+
+test("box is the first entry, so it is the default on screen", () => {
+  // The default has to be 「目前的做法」. Rendering `placement` therefore falls back to
+  // `PLACEMENTS[0].id` when a block predates the column.
+  assert.equal(PLACEMENTS[0].id, "box");
 });

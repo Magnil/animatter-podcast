@@ -161,6 +161,20 @@ export const FITS: { id: string; label: string; hint: string }[] = [
   { id: "stretch", label: "拉伸", hint: "会变形" },
 ];
 
+/**
+ * Where a block is drawn: inside the template's material box, or over the whole canvas.
+ *
+ * Shown **before** the fit list in the bubble (§19.26) because it answers a bigger question:
+ * the fit decides how the picture fills its rectangle, and this decides which rectangle. Picking
+ * 全屏 with 完整显示 is meaningful; so is 素材框 with 填满裁切.
+ *
+ * Two entries, no hints — the bubble must stay short, and both words say what they do.
+ */
+export const PLACEMENTS: { id: string; label: string }[] = [
+  { id: "box", label: "素材框" },
+  { id: "full", label: "全屏" },
+];
+
 /** Blocks whose audio was deleted in full, sorted so the list is stable. */
 export function orphanedBlocks<T extends { orphaned: boolean; start_ms: number }>(blocks: T[]): T[] {
   return blocks.filter((block) => block.orphaned).sort((a, b) => a.start_ms - b.start_ms);

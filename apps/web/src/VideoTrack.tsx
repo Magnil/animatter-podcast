@@ -34,6 +34,7 @@ import type { View } from "./waveView";
 import {
   FITS,
   MIN_BLOCK_MS,
+  PLACEMENTS,
   abutNeighbour,
   blockAt,
   blockName,
@@ -66,6 +67,13 @@ export interface VideoTrackProps {
   onFit: (item: VideoItem, fit: string) => void;
   /** Toggle the block's own sound on or off (§19.20). */
   onMute: (item: VideoItem, muted: boolean) => void;
+  /**
+   * 「S」: replace the podcast with this block's sound over its stretch, or stop doing so. One
+   * setter for both letters because they are one three-state control (§19.25).
+   */
+  onSolo: (item: VideoItem, solo: boolean) => void;
+  /** 素材框 / 全屏 (§19.26). */
+  onPlacement: (item: VideoItem, placement: string) => void;
   onDelete: (item: VideoItem) => void;
   /** Zoom/pan the **shared** window — the same one the audio waveform uses. */
   onZoom: (anchorMs: number, factor: number) => void;
@@ -97,6 +105,8 @@ export function VideoTrack({
   selectedId,
   onFit,
   onMute,
+  onSolo,
+  onPlacement,
   onDelete,
   onZoom,
   onPan,
@@ -439,8 +449,25 @@ export function VideoTrack({
           onPointerDown={(event) => event.stopPropagation()}
         >
           <span className="video-bubble-name">{blockName(bubbleItem)}</span>
+          {/*
+            Neither select gets a label: 素材框 / 全屏 and 模糊填充 / 模糊裁切 say what they are, and
+            with the labels the bubble wrapped onto a second line. The explanation lives in
+            `title`, which costs nothing until someone opens it.
+          */}
           <label className="video-bubble-fit">
-            <span>填充</span>
+            <select
+              value={bubbleItem.placement || "box"}
+              title="素材框：画在模板的素材框里；全屏：铺满整个画面"
+              onChange={(event) => onPlacement(bubbleItem, event.target.value)}
+            >
+              {PLACEMENTS.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="video-bubble-fit">
             <select
               value={bubbleItem.fit}
               title={FITS.find((fit) => fit.id === bubbleItem.fit)?.hint ?? ""}
@@ -454,27 +481,49 @@ export function VideoTrack({
             </select>
           </label>
           {/*
-            One letter, and only where it can do something. A still has no sound, so the
-            button is *absent* rather than disabled: a permanently greyed-out M asks "what is
+            Two letters, and only where they can do something. A still has no sound, so both
+            buttons are *absent* rather than disabled: a permanently greyed-out M asks "what is
             wrong with this block", and the answer is "nothing".
+
+            They are one three-state control (§19.25):
+              neither pressed → the block is silent, which is the default;
+              M pressed       → its sound is mixed **under** the podcast;
+              S pressed       → its sound **replaces** the podcast over this stretch.
+            `aria-pressed` therefore reads the flag directly on each, and the server keeps them
+            exclusive, so the two can never both claim to be pressed.
           */}
           {bubbleItem.has_audio ? (
-            <button
-              type="button"
-              className={`ghost small icon${bubbleItem.muted ? "" : " is-on"}`}
-              // Pressed **is** muted: this button silences the block, so a pressed M is a
-              // silent block. The inverse read as "pressed means audible" and told the user
-              // the opposite of the truth on every silent block.
-              aria-pressed={bubbleItem.muted}
-              title={
-                bubbleItem.muted
-                  ? `让 ${blockName(bubbleItem)} 自己的声音也进成片`
-                  : `只留播客的声音，静音 ${blockName(bubbleItem)}`
-              }
-              onClick={() => onMute(bubbleItem, !bubbleItem.muted)}
-            >
-              M
-            </button>
+            <>
+              <button
+                type="button"
+                className={`ghost small icon${bubbleItem.muted ? "" : " is-on"}`}
+                // Pressed **is** muted: this button silences the block, so a pressed M is a
+                // silent block. The inverse read as "pressed means audible" and told the user
+                // the opposite of the truth on every silent block.
+                aria-pressed={bubbleItem.muted}
+                title={
+                  bubbleItem.muted
+                    ? `让 ${blockName(bubbleItem)} 自己的声音也进成片（混在播客下面）`
+                    : `只留播客的声音，静音 ${blockName(bubbleItem)}`
+                }
+                onClick={() => onMute(bubbleItem, !bubbleItem.muted)}
+              >
+                M
+              </button>
+              <button
+                type="button"
+                className={`ghost small icon${bubbleItem.solo ? " is-on" : ""}`}
+                aria-pressed={bubbleItem.solo}
+                title={
+                  bubbleItem.solo
+                    ? `恢复播客的声音：${blockName(bubbleItem)} 不再顶替这一段的音频`
+                    : `用 ${blockName(bubbleItem)} 自己的声音顶替这一段的播客音频`
+                }
+                onClick={() => onSolo(bubbleItem, !bubbleItem.solo)}
+              >
+                S
+              </button>
+            </>
           ) : null}
           <button
             type="button"

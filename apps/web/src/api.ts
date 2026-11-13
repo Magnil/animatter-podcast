@@ -1007,6 +1007,8 @@ export const api = {
       gallery_json?: string;
       /** `true` (silent) is the server default; only pass it to create a speaking block. */
       muted?: boolean;
+      solo?: boolean;
+      placement?: string;
     },
   ) =>
     request<VideoItem>(`/api/versions/${versionId}/video/items`, {
@@ -1025,6 +1027,8 @@ export const api = {
       gallery_json?: string;
       snap?: boolean;
       muted?: boolean;
+      solo?: boolean;
+      placement?: string;
     },
   ) =>
     request<VideoItem>(`/api/video/items/${itemId}`, {
@@ -1298,6 +1302,17 @@ export interface VideoItem {
    * user asks for. So an untouched project sounds exactly as it did before the feature.
    */
   muted: boolean;
+  /**
+   * 「S」: the block's own sound **replaces** the podcast over its stretch instead of being mixed
+   * under it (§19.25). Mutually exclusive with `muted` — the server clears whichever was pressed
+   * last, so `muted && solo` is never stored.
+   */
+  solo: boolean;
+  /**
+   * `box` draws the block inside the template's material box (the default); `full` fills the
+   * whole canvas (§19.26).
+   */
+  placement: string;
   /**
    * Whether unmuting would bring sound back: `false` for a still, a deck, or a silent clip.
    *
