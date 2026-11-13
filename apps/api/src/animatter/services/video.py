@@ -59,6 +59,10 @@ ITEM_KINDS = frozenset({"media", "gallery", "slide"})
 FITS = frozenset({"contain", "cover", "blur_fill", "blur_crop", "stretch"})
 MOTIONS = frozenset({"none", "kenburns"})
 
+#: Where a block is drawn: inside the template's material box, or over the whole
+#: canvas (§19.26). Two values, and ``box`` is the default so nothing changes.
+PLACEMENTS = frozenset({"box", "full"})
+
 
 @dataclass(frozen=True)
 class Grid:
@@ -107,6 +111,12 @@ class ItemView:
             #: Whether this block is silent. The UI draws 「M」 pressed when it is, and the
             #: renderer mixes the asset's sound back in when it is not (§19.20).
             "muted": self.item.muted,
+            #: Whether this block's own sound *replaces* the podcast over its stretch (§19.25).
+            #: Only meaningful when the block is not muted; the UI treats the two as one
+            #: three-state control so "muted and solo" cannot be stored by accident.
+            "solo": self.item.solo,
+            #: ``box`` or ``full`` (§19.26).
+            "placement": self.item.placement or "box",
             #: Whether unmuting would do anything — a still has no sound to bring back. Read
             #: from the asset (or from the gallery's first member) rather than left to the
             #: front end, which does not have the asset rows on the timeline payload.
@@ -373,13 +383,15 @@ def _is_orphaned(row: VideoItem) -> bool:
 # --- writes -------------------------------------------------------------
 
 
-def _validate(kind: str, fit: str, motion: str) -> None:
+def _validate(kind: str, fit: str, motion: str, placement: str = "box") -> None:
     if kind not in ITEM_KINDS:
         raise AppError("video_item_kind_invalid", f"未知的素材块类型 {kind}")
     if fit not in FITS:
         raise AppError("video_item_fit_invalid", f"未知的填充方式 {fit}")
     if motion not in MOTIONS:
         raise AppError("video_item_motion_invalid", f"未知的运镜方式 {motion}")
+    if placement not in PLACEMENTS:
+        raise AppError("video_item_placement_invalid", f"未知的展现方式 {placement}")
 
 
 def create_item(
@@ -397,8 +409,10 @@ def create_item(
     slide_id: str | None = None,
     gallery_json: str = "[]",
     muted: bool = True,
+    solo: bool = False,
+    placement: str = "box",
 ) -> VideoItem:
-    _validate(kind, fit, motion)
+    _validate(kind, fit, motion, placement)
     if end_ms <= start_ms:
         raise AppError(
             "video_item_empty",
@@ -421,6 +435,8 @@ def create_item(
         gallery_json=gallery_json,
         orphaned=False,
         muted=muted,
+        solo=solo,
+        placement=placement,
         created_at=now,
         updated_at=now,
     )
@@ -444,6 +460,8 @@ def update_item(
     slide_id: str | None = None,
     gallery_json: str | None = None,
     muted: bool | None = None,
+    solo: bool | None = None,
+    placement: str | None = None,
 ) -> VideoItem:
     """Patch a block. ``None`` means "leave alone", so a cleared field must pass ``""``."""
     row = session.get(VideoItem, item_id)
@@ -453,7 +471,8 @@ def update_item(
     new_kind = kind if kind is not None else row.kind
     new_fit = fit if fit is not None else row.fit
     new_motion = motion if motion is not None else row.motion
-    _validate(new_kind, new_fit, new_motion)
+    new_placement = placement if placement is not None else (row.placement or "box")
+    _validate(new_kind, new_fit, new_motion, new_placement)
 
     row.kind = new_kind
     row.fit = new_fit
@@ -470,6 +489,17 @@ def update_item(
         row.gallery_json = gallery_json
     if muted is not None:
         row.muted = muted
+    if solo is not None:
+        row.solo = solo
+    # 「S」 and 「M」 are exclusive (§19.25). Storing both would leave the renderer guessing whether
+    # a block replaces the podcast with silence, so the later press wins: S un-mutes, M un-solos.
+    # Resolved on the **write**, not in the UI, because the API is a second writer.
+    if solo is True:
+        row.muted = False
+    elif muted is True:
+        row.solo = False
+    if placement is not None:
+        row.placement = new_placement
 
     new_start = start_ms if start_ms is not None else row.start_ms
     new_end = end_ms if end_ms is not None else row.end_ms

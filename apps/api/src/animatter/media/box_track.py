@@ -83,6 +83,9 @@ class BoxSegment:
     fit: str = "cover"
     crop: tuple[int, int, int, int] | None = None
     loop: bool = False
+    #: ``box`` (default) keeps the picture inside the material box; ``full`` fills the whole
+    #: canvas instead (§19.26). Per segment because one film can mix the two.
+    placement: str = "box"
 
 
 @dataclass(frozen=True)
@@ -339,4 +342,101 @@ def build_single(
         sources=[],
         input_base=input_base,
         inputs=1,
+    )
+
+
+def _canvas_piece(
+    segment: BoxSegment,
+    *,
+    canvas_w: int,
+    canvas_h: int,
+    box_w: int,
+    box_h: int,
+    box_x: int,
+    box_y: int,
+    input_base: int,
+    tag: int,
+) -> str:
+    """One segment normalised into a canvas-sized RGBA frame (§19.26).
+
+    A ``full`` segment is normalised straight into the canvas; anything else is normalised
+    into the material box and padded transparently out to the canvas at the box's position.
+    The pad is ``black@0`` rather than black: outside the box the template's own background
+    must show through, which is what the opaque chain achieved by redrawing the plate there.
+    """
+    if segment.placement == "full":
+        return f"{_normalise(segment, canvas_w, canvas_h, input_base=input_base, tag=tag)},format=rgba"
+    inner = _normalise(segment, box_w, box_h, input_base=input_base, tag=tag)
+    return (
+        f"{inner},format=rgba,"
+        f"pad={canvas_w}:{canvas_h}:{box_x}:{box_y}:color=black@0,setsar=1"
+    )
+
+
+def build_canvas_chain(
+    segments: list[BoxSegment],
+    *,
+    canvas_w: int,
+    canvas_h: int,
+    box_w: int,
+    box_h: int,
+    box_x: int = 0,
+    box_y: int = 0,
+    input_base: int = 0,
+    out_label: str = "boxout",
+) -> BoxChain:
+    """Like :func:`build_chain`, but padded out to the whole canvas so 全屏 blocks fit.
+
+    Only used when at least one block is ``placement='full'``. A separate function rather than
+    a flag on :func:`build_chain` on purpose: this chain is RGBA and canvas-sized, and the
+    default path must not change shape because an option exists.
+    """
+    if not segments:
+        raise AppError(
+            "box_track_empty",
+            "素材框里没有任何内容",
+            hint="先往时间轴上放一个素材块。",
+        )
+
+    parts: list[str] = []
+    labels: list[str] = []
+    for position, segment in enumerate(segments):
+        if segment.duration_ms <= 0:
+            raise AppError(
+                "box_segment_empty",
+                "有一段素材的时长是 0",
+                hint="把素材块的时长拉长，或者把它删掉。",
+            )
+        piece = _canvas_piece(
+            segment,
+            canvas_w=canvas_w,
+            canvas_h=canvas_h,
+            box_w=box_w,
+            box_h=box_h,
+            box_x=box_x,
+            box_y=box_y,
+            input_base=input_base,
+            tag=position,
+        )
+        parts.append(
+            f"{piece},fps={FPS},trim=duration={segment.duration_ms / 1000:.3f},"
+            f"setpts=PTS-STARTPTS[bxs{position}]"
+        )
+        labels.append(f"[bxs{position}]")
+
+    if len(labels) == 1:
+        parts.append(f"{labels[0]}null[{out_label}]")
+    else:
+        parts.append(f"{''.join(labels)}concat=n={len(labels)}:v=1:a=0[{out_label}]")
+
+    return BoxChain(
+        text=";\n".join(parts),
+        # The canvas, not the box: this chain covers the frame, so it is placed at the origin.
+        x=0,
+        y=0,
+        width=canvas_w,
+        height=canvas_h,
+        sources=[],
+        input_base=input_base,
+        inputs=len({segment.input_index for segment in segments}),
     )

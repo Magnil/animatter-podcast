@@ -557,11 +557,16 @@ class AudioMix:
     ``start_ms``/``end_ms`` are **output** milliseconds (§19.3): the block may be longer on
     the original timeline than what the film plays of it. The clip is always read from its own
     beginning, because that is what its picture does.
+
+    ``solo`` is 「S」 (§19.25): the podcast is cut out over this stretch and the clip plays
+    alone, instead of the two being summed. One flag rather than a second list, because a
+    stretch cannot sensibly be both mixed and replacing.
     """
 
     start_ms: int
     end_ms: int
     path: Path
+    solo: bool = False
 
 
 def mux(
@@ -579,10 +584,10 @@ def mux(
     audio the user already exported and approved. That path is kept for the **silent**
     case, which is the default and every project until someone unmutes a block (§19.20).
 
-    ``mix`` is the unmuted stretches. Mixing cannot be a stream copy — two audio tracks have
-    to be resampled, delayed and summed — so that case re-encodes the podcast audio once, at
-    a bitrate high enough that the difference is inaudible. It is opt-in per block, so nobody
-    pays it by accident.
+    ``mix`` is the audible stretches, each labelled ``solo`` or not. Either way it cannot be a
+    stream copy — two audio tracks have to be resampled, delayed and summed — so that case
+    re-encodes the podcast audio once, at a bitrate high enough that the difference is
+    inaudible. It is opt-in per block, so nobody pays it by accident.
 
     ``-shortest`` is deliberately **not** used: the two tracks are both derived from
     the same EDL, and if they ever disagree slightly, silently truncating one hides a
@@ -684,14 +689,28 @@ def _mix_graph(stretches: list[AudioMix]) -> tuple[str, list[str]]:
     inputs, which would quietly halve the podcast's volume the moment one block is unmuted —
     a change nobody asked for, in the direction of "the film sounds worse but only sometimes".
 
+    With 「S」 in play the podcast is silent wherever the clip speaks, so the two never sum to
+    more than either one — which is why the limiter below is left alone rather than retuned. A
+    solo stretch that happens to overlap a mixed one is the caller's business, not this
+    function's: the plan refuses to produce both for the same block (§19.25.1).
+
     ``alimiter`` is the other half of that decision, and it was measured rather than assumed:
     with ``normalize=0`` and both inputs at full scale, **36 000 of 96 000 samples** landed on
     the 16-bit ceiling. ``:latency=1`` is not decoration either — the limiter delays its output
     by 239 samples (5 ms) by default, which would put every clip's sound 5 ms behind its
     picture. Measured with an impulse: 0 samples of delay with the flag.
     """
+    # Every 「S」 stretch silences the podcast over its own span. Doing it with `volume=enable`
+    # rather than by splitting and concatenating keeps the podcast one continuous stream: its
+    # duration stays exactly the film's, so `amix:duration=first` still ends the film correctly.
+    muted_spans = "".join(
+        f",volume=enable='between(t,{stretch.start_ms / 1000:.3f},"
+        f"{stretch.end_ms / 1000:.3f})':volume=0"
+        for stretch in stretches
+        if stretch.solo
+    )
     parts: list[str] = [
-        f"[1:a]aresample={MIX_SAMPLE_RATE},aformat=channel_layouts=stereo[pod]"
+        f"[1:a]aresample={MIX_SAMPLE_RATE},aformat=channel_layouts=stereo{muted_spans}[pod]"
     ]
     labels = ["[pod]"]
     args: list[str] = []

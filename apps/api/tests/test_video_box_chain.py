@@ -25,6 +25,7 @@ from animatter.media.box_track import (
     KIND_PLATE,
     KIND_VIDEO,
     BoxSegment,
+    build_canvas_chain,
     build_chain,
     build_single,
     input_args,
@@ -291,3 +292,81 @@ def test_single_segment_never_trims_to_nothing() -> None:
         segment(duration_ms=2000), source_offset_ms=2000, width=1440, height=810
     )
     assert "trim=duration=0.001" in chain.text
+
+
+# --- 全屏 (round 111, §19.26) --------------------------------------------
+
+
+def test_a_full_frame_segment_is_normalised_into_the_canvas() -> None:
+    chain = build_canvas_chain(
+        [segment(placement="full")], canvas_w=1920, canvas_h=1080, box_w=1440, box_h=810
+    )
+    assert "scale=1920:1080" in chain.text
+    assert "pad=" not in chain.text
+
+
+def test_a_box_segment_is_padded_into_the_canvas_at_the_box() -> None:
+    """Its own fit is applied to the **box**, then the box is placed inside the canvas."""
+    chain = build_canvas_chain(
+        [segment(placement="box")],
+        canvas_w=1920,
+        canvas_h=1080,
+        box_w=1440,
+        box_h=810,
+        box_x=240,
+        box_y=209,
+    )
+    assert "scale=1440:810" in chain.text
+    assert "pad=1920:1080:240:209:color=black@0" in chain.text
+
+
+def test_the_canvas_chain_is_placed_at_the_origin() -> None:
+    chain = build_canvas_chain(
+        [segment(placement="full")], canvas_w=1920, canvas_h=1080, box_w=1440, box_h=810
+    )
+    assert (chain.x, chain.y) == (0, 0)
+    assert (chain.width, chain.height) == (1920, 1080)
+
+
+def test_the_canvas_chain_is_rgba() -> None:
+    """The pad colour is transparent, which only means anything in an alpha format."""
+    chain = build_canvas_chain(
+        [segment(placement="box")], canvas_w=1920, canvas_h=1080, box_w=1440, box_h=810
+    )
+    assert "format=rgba" in chain.text
+
+
+def test_a_mixed_canvas_chain_concatenates_both_kinds() -> None:
+    chain = build_canvas_chain(
+        [segment(placement="full"), segment(placement="box")],
+        canvas_w=1920,
+        canvas_h=1080,
+        box_w=1440,
+        box_h=810,
+    )
+    assert "concat=n=2" in chain.text
+    assert "pad=1920:1080:0:0" in chain.text
+
+
+def test_the_default_chain_is_untouched_by_the_new_builder() -> None:
+    """A project with no 全屏 block must render through exactly the code it did before."""
+    boxed = build_chain([segment(placement="box")], width=1440, height=810, x=240, y=209)
+    assert "pad=" not in boxed.text
+    assert "format=rgba" not in boxed.text
+    assert (boxed.x, boxed.y, boxed.width, boxed.height) == (240, 209, 1440, 810)
+
+
+def test_a_plate_inside_a_canvas_chain_is_padded_too() -> None:
+    """The plate only exists inside the box, so in a full-frame chain it must be padded."""
+    plate = segment(kind=KIND_PLATE, crop=(240, 209, 1440, 810), placement="box")
+    chain = build_canvas_chain(
+        [plate],
+        canvas_w=1920,
+        canvas_h=1080,
+        box_w=1440,
+        box_h=810,
+        box_x=240,
+        box_y=209,
+    )
+    assert "crop=1440:810:240:209" in chain.text
+    assert "pad=1920:1080:240:209" in chain.text

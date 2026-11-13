@@ -284,3 +284,63 @@ def test_shift_items_moves_every_block_by_the_same_delta(
     assert moved == 2
     starts = sorted(row.start_ms for row in session.query(VideoItem).all())
     assert starts == [250, 650]
+
+
+# --- solo and placement (round 111) -------------------------------------
+
+
+def test_a_new_block_is_box_placed_and_not_soloed(
+    client: TestClient, session: Session
+) -> None:
+    _project, version = seed(client, session)
+    created = add_item(client, version, 0, 3000)
+    assert created["placement"] == "box"
+    assert created["solo"] is False
+    assert created["muted"] is True
+
+
+def test_placement_round_trips_through_the_api(client: TestClient, session: Session) -> None:
+    _project, version = seed(client, session)
+    created = add_item(client, version, 0, 3000)
+    patched = client.patch(f"/api/video/items/{created['id']}", json={"placement": "full"}).json()
+    assert patched["placement"] == "full"
+
+
+def test_an_unknown_placement_is_refused(client: TestClient, session: Session) -> None:
+    _project, version = seed(client, session)
+    created = add_item(client, version, 0, 3000)
+    response = client.patch(f"/api/video/items/{created['id']}", json={"placement": "canvas"})
+    assert response.status_code >= 400
+    assert response.json()["error"]["code"] == "video_item_placement_invalid"
+
+
+def test_pressing_s_clears_the_mute(client: TestClient, session: Session) -> None:
+    """`S` means "replace the podcast", which cannot also mean "this block is silent"."""
+    _project, version = seed(client, session)
+    created = add_item(client, version, 0, 3000)
+    assert created["muted"] is True
+    patched = client.patch(f"/api/video/items/{created['id']}", json={"solo": True}).json()
+    assert patched["solo"] is True
+    assert patched["muted"] is False
+
+
+def test_pressing_m_clears_the_solo(client: TestClient, session: Session) -> None:
+    """The mirror rule: muting a block stops it replacing anything."""
+    _project, version = seed(client, session)
+    created = add_item(client, version, 0, 3000)
+    client.patch(f"/api/video/items/{created['id']}", json={"solo": True})
+    patched = client.patch(f"/api/video/items/{created['id']}", json={"muted": True}).json()
+    assert patched["muted"] is True
+    assert patched["solo"] is False
+
+
+def test_setting_both_in_one_request_is_resolved_not_stored(
+    client: TestClient, session: Session
+) -> None:
+    """A client that sends both must not be able to create the impossible state."""
+    _project, version = seed(client, session)
+    created = add_item(client, version, 0, 3000)
+    patched = client.patch(
+        f"/api/video/items/{created['id']}", json={"solo": True, "muted": True}
+    ).json()
+    assert not (patched["solo"] and patched["muted"]), patched

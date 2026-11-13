@@ -548,5 +548,13 @@ class VideoItem(Base):
     #: podcast, and until this round that was the only thing in it. A block's sound is an extra
     #: the user asks for, so an untouched project sounds exactly as it did before.
     muted: Mapped[bool] = mapped_column(Boolean, default=True)
+    #: ``Solo``: this block's own sound **replaces** the podcast for its stretch, instead of
+    #: being mixed under it (§19.25). Off by default — mixing is the gentler of the two, and a
+    #: project that never presses S must keep the podcast audible everywhere.
+    solo: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: ``box`` (draw inside the material box) or ``full`` (draw over the whole canvas,
+    #: §19.26). ``box`` is the default so a project stored before this column existed renders
+    #: byte-identically.
+    placement: Mapped[str] = mapped_column(String(8), default="box")
     created_at: Mapped[str] = mapped_column(String(32))
     updated_at: Mapped[str] = mapped_column(String(32))

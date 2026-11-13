@@ -359,6 +359,8 @@ class ItemOut(BaseModel):
     orphaned: bool
     muted: bool
     has_audio: bool
+    solo: bool
+    placement: str
 
 
 class TimelineOut(BaseModel):
@@ -408,6 +410,11 @@ class ItemIn(BaseModel):
     #: ``True`` (silent) is the default, matching the column: the film's sound is the podcast,
     #: and a block's own audio is additional (§19.20).
     muted: bool = True
+    #: ``S``: this block's sound **replaces** the podcast over its stretch (§19.25). Implies
+    #: ``muted=False``; the service clears the mute rather than storing a state where silence
+    #: and replacement are both claimed.
+    solo: bool = False
+    placement: str = "box"
 
 
 class ItemPatchIn(BaseModel):
@@ -423,6 +430,8 @@ class ItemPatchIn(BaseModel):
     gallery_json: str | None = None
     snap: bool = True
     muted: bool | None = None
+    solo: bool | None = None
+    placement: str | None = None
 
 
 def _snapped(
@@ -469,6 +478,8 @@ def create_item(
         slide_id=payload.slide_id,
         gallery_json=payload.gallery_json,
         muted=payload.muted,
+        solo=payload.solo,
+        placement=payload.placement,
     )
     edl = clipping_service.build_edl(session, settings, version)
     keeps = [(keep.orig_start, keep.orig_end) for keep in edl.keeps]
@@ -508,6 +519,8 @@ def patch_item(
         slide_id=payload.slide_id,
         gallery_json=payload.gallery_json,
         muted=payload.muted,
+        solo=payload.solo,
+        placement=payload.placement,
     )
     edl = clipping_service.build_edl(session, settings, version)
     keeps = [(keep.orig_start, keep.orig_end) for keep in edl.keeps]

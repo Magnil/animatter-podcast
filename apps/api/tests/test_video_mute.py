@@ -105,6 +105,57 @@ def test_no_mix_means_no_extra_ffmpeg_inputs() -> None:
     assert "copy" in video_media.mux.__doc__
 
 
+# --- 「S」: replace, not mix (round 111) ---------------------------------
+
+
+def test_a_solo_stretch_silences_the_podcast_over_its_own_span() -> None:
+    """`S` is a replacement, so the podcast must be **zero** exactly where the clip speaks.
+
+    ``volume=enable='between(t,a,b)':volume=0`` is what makes it a cut rather than a duck: the
+    podcast stream stays one continuous track (so the film's length is unchanged) while its
+    samples are silenced inside the stretch.
+    """
+    graph, _args = video_media._mix_graph(
+        [video_media.AudioMix(start_ms=1500, end_ms=3000, path=Path("a.mp4"), solo=True)]
+    )
+    assert "volume=enable='between(t,1.500,3.000)':volume=0" in graph
+
+
+def test_a_mixed_stretch_leaves_the_podcast_alone() -> None:
+    """Without `S` the podcast keeps its level: that is the M path and it must not regress."""
+    graph, _args = video_media._mix_graph(
+        [video_media.AudioMix(start_ms=1500, end_ms=3000, path=Path("a.mp4"), solo=False)]
+    )
+    assert "volume=enable" not in graph
+
+
+def test_only_solo_stretches_silence_the_podcast() -> None:
+    graph, _args = video_media._mix_graph(
+        [
+            video_media.AudioMix(start_ms=0, end_ms=1000, path=Path("a.mp4"), solo=False),
+            video_media.AudioMix(start_ms=2000, end_ms=2500, path=Path("b.mp4"), solo=True),
+        ]
+    )
+    assert graph.count("volume=enable") == 1
+    assert "between(t,2.000,2.500)" in graph
+
+
+def test_the_solo_span_uses_output_time() -> None:
+    """The same rule as every other time in this pipeline: `[start, end)` in output ms."""
+    graph, _args = video_media._mix_graph(
+        [video_media.AudioMix(start_ms=61_500, end_ms=63_250, path=Path("a.mp4"), solo=True)]
+    )
+    assert "between(t,61.500,63.250)" in graph
+
+
+def test_solo_still_ends_the_film_with_the_podcast() -> None:
+    """`amix:duration=first` is what makes a stretch past the end harmless; solo must keep it."""
+    graph, _args = video_media._mix_graph(
+        [video_media.AudioMix(start_ms=0, end_ms=1000, path=Path("a.mp4"), solo=True)]
+    )
+    assert "duration=first" in graph
+
+
 def test_the_mix_graph_is_empty_but_valid_for_no_stretches() -> None:
     graph, args = video_media._mix_graph([])
     assert args == []

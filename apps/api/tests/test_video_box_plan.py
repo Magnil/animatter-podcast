@@ -87,6 +87,8 @@ def make_item(
     gallery_json: str = "[]",
     fit: str = "cover",
     muted: bool = True,
+    solo: bool = False,
+    placement: str = "box",
 ) -> VideoItem:
     row = VideoItem(
         id=new_id("vitem"),
@@ -103,6 +105,8 @@ def make_item(
         gallery_json=gallery_json,
         orphaned=False,
         muted=muted,
+        solo=solo,
+        placement=placement,
         created_at=utcnow_iso(),
         updated_at=utcnow_iso(),
     )
@@ -696,3 +700,146 @@ def test_a_template_without_a_box_is_refused(
             edl=edl_of((0, 1000), original=1000),
         )
     assert "素材框" in str(caught.value)
+
+
+# --- placement (round 111, §19.26) ---------------------------------------
+
+
+def test_every_segment_a_block_emits_inherits_its_placement(
+    session: Session, project: str, tmp_path: Path
+) -> None:
+    """Including a gallery's later members, which are rebuilt in a loop.
+
+    Losing the flag there would look like "the first image fills the screen and the second one
+    jumps back into the box" — a bug with no error attached to it.
+    """
+    first = make_asset(session, project, tmp_path)
+    second = make_asset(session, project, tmp_path)
+    gallery = make_item(
+        session,
+        project,
+        start_ms=0,
+        end_ms=10_000,
+        kind="gallery",
+        gallery_json=json.dumps([{"asset_id": first.id}, {"asset_id": second.id}]),
+        placement="full",
+    )
+    plan = video_box.plan(
+        session,
+        template_background=Path("plate.png"),
+        box_rect=BOX,
+        items=[gallery],
+        edl=edl_of((0, 10_000), original=10_000),
+    )
+    assert len(plan.segments) >= 2
+    assert {segment.placement for segment in plan.segments} == {"full"}
+
+
+def test_a_box_block_stays_put_when_its_neighbour_is_full(
+    session: Session, project: str, tmp_path: Path
+) -> None:
+    asset = make_asset(session, project, tmp_path)
+    full = make_item(session, project, start_ms=0, end_ms=5000, asset_id=asset.id, placement="full")
+    boxed = make_item(
+        session, project, start_ms=5000, end_ms=10_000, asset_id=asset.id, placement="box"
+    )
+    plan = video_box.plan(
+        session,
+        template_background=Path("plate.png"),
+        box_rect=BOX,
+        items=[full, boxed],
+        edl=edl_of((0, 10_000), original=10_000),
+    )
+    assert [segment.placement for segment in plan.segments] == ["full", "box"]
+
+
+def test_one_full_block_makes_the_plan_full_frame(
+    session: Session, project: str, tmp_path: Path
+) -> None:
+    asset = make_asset(session, project, tmp_path)
+    full = make_item(session, project, start_ms=0, end_ms=5000, asset_id=asset.id, placement="full")
+    plan = video_box.plan(
+        session,
+        template_background=Path("plate.png"),
+        box_rect=BOX,
+        items=[full],
+        edl=edl_of((0, 5000), original=5000),
+    )
+    assert plan.full_frame is True
+
+
+def test_a_film_of_box_blocks_is_not_full_frame(
+    session: Session, project: str, tmp_path: Path
+) -> None:
+    """This flag is what keeps every existing project on the chain it already renders with."""
+    asset = make_asset(session, project, tmp_path)
+    boxed = make_item(session, project, start_ms=0, end_ms=5000, asset_id=asset.id)
+    plan = video_box.plan(
+        session,
+        template_background=Path("plate.png"),
+        box_rect=BOX,
+        items=[boxed],
+        edl=edl_of((0, 5000), original=5000),
+    )
+    assert plan.full_frame is False
+
+
+def test_a_gap_next_to_a_full_block_is_still_a_box_plate(
+    session: Session, project: str, tmp_path: Path
+) -> None:
+    """A gap is the plate seen through the box, regardless of what its neighbour does."""
+    asset = make_asset(session, project, tmp_path)
+    full = make_item(session, project, start_ms=4000, end_ms=8000, asset_id=asset.id, placement="full")
+    plan = video_box.plan(
+        session,
+        template_background=Path("plate.png"),
+        box_rect=BOX,
+        items=[full],
+        edl=edl_of((0, 10_000), original=10_000),
+    )
+    plates = [segment for segment in plan.segments if segment.kind == KIND_PLATE]
+    assert plates, "开头 4 秒应该是 plate"
+    for segment in plates:
+        assert segment.placement == "box"
+        assert segment.crop == (BOX["x"], BOX["y"], BOX["w"], BOX["h"])
+
+
+# --- 「S」 rides on the plan too -------------------------------------------
+
+
+def test_the_plan_records_which_stretches_replace_the_podcast(
+    session: Session, project: str, tmp_path: Path
+) -> None:
+    asset = make_asset(session, project, tmp_path, kind=KIND_VIDEO, duration_ms=5000, has_audio=True)
+    solo = make_item(
+        session, project, start_ms=0, end_ms=5000, asset_id=asset.id, muted=False, solo=True
+    )
+    mixed = make_item(
+        session, project, start_ms=5000, end_ms=10_000, asset_id=asset.id, muted=False, solo=False
+    )
+    plan = video_box.plan(
+        session,
+        template_background=Path("plate.png"),
+        box_rect=BOX,
+        items=[solo, mixed],
+        edl=edl_of((0, 10_000), original=10_000),
+    )
+    assert [(item.start_ms, item.solo) for item in plan.audible] == [(0, True), (5000, False)]
+
+
+def test_a_muted_block_is_never_audible_even_when_soloed(
+    session: Session, project: str, tmp_path: Path
+) -> None:
+    """The server keeps M and S exclusive, but the plan must not depend on that being true."""
+    asset = make_asset(session, project, tmp_path, kind=KIND_VIDEO, duration_ms=5000, has_audio=True)
+    row = make_item(
+        session, project, start_ms=0, end_ms=5000, asset_id=asset.id, muted=True, solo=True
+    )
+    plan = video_box.plan(
+        session,
+        template_background=Path("plate.png"),
+        box_rect=BOX,
+        items=[row],
+        edl=edl_of((0, 5000), original=5000),
+    )
+    assert plan.audible == ()

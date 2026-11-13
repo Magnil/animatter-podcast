@@ -66,6 +66,8 @@ class AudibleStretch:
     start_ms: int
     end_ms: int
     path: Path
+    #: 「S」: replace the podcast over this stretch instead of mixing under it (§19.25).
+    solo: bool = False
 
 
 @dataclass(frozen=True)
@@ -85,6 +87,10 @@ class BoxPlan:
     audible: tuple[AudibleStretch, ...] = ()
     #: True when every segment is a plate excerpt: the film genuinely has no box content.
     empty: bool = True
+    #: True when at least one block is ``placement='full'`` (§19.26). The renderer then builds
+    #: a canvas-sized RGBA chain padded at the box, because a full-frame block cannot be drawn
+    #: inside a box-sized overlay.
+    full_frame: bool = False
 
     @property
     def total_ms(self) -> int:
@@ -155,6 +161,9 @@ def _stretches_for(
     rather than appearing at the wrong moment.
     """
     fit = item.fit or "blur_fill"
+    # Every stretch this block emits inherits its placement: a gallery's images, a deck's pages
+    # and a clip's pieces are all "wherever this block is drawn".
+    placement = item.placement or "box"
 
     if item.kind == "slide":
         return _slide_stretches(
@@ -188,6 +197,7 @@ def _stretches_for(
                         duration_ms=piece.duration_ms,
                         kind=row.kind,
                         fit=fit,
+                        placement=placement,
                         # An image has no intrinsic length; a clip shorter than its
                         # stretch repeats rather than freezing on its last frame.
                         loop=row.kind == box_track.KIND_VIDEO
@@ -210,6 +220,7 @@ def _stretches_for(
                     duration_ms=output_ms,
                     kind=row.kind,
                     fit=fit,
+                    placement=placement,
                     loop=row.kind == box_track.KIND_VIDEO
                     and row.duration_ms > 0
                     and row.duration_ms < output_ms,
@@ -248,6 +259,8 @@ def _slide_stretches(
     嘉宾介绍. A page owns ``[start, next_start)``, so the page on screen at an instant is the
     last one starting at or before it.
     """
+    # A deck block's pages are drawn wherever the block is drawn (§19.26).
+    placement = item.placement or "box"
     pages = sorted(
         (start, slide_id)
         for start, slide_id in slide_starts.get(item.deck_id or "", [])
@@ -297,6 +310,7 @@ def _slide_stretches(
                     kind=box_track.KIND_IMAGE,
                     fit=item.fit or "contain",
                     loop=False,
+                    placement=placement,
                 ),
                 slide_images[slide_id],
             )
@@ -316,6 +330,7 @@ def _slide_stretches(
                     kind=first_segment.kind,
                     fit=first_segment.fit,
                     loop=False,
+                    placement=first_segment.placement,
                 ),
                 first_path,
             )
@@ -429,12 +444,14 @@ def plan(
                 fit=segment.fit,
                 crop=segment.crop,
                 loop=segment.loop,
+                placement=segment.placement,
             )
         )
 
     audible = _audible_stretches(session, cache, planned, time_map)
 
     empty = not any(segment.kind != box_track.KIND_PLATE for segment in final)
+    full_frame = any(segment.placement == "full" for segment in final)
     log.info(
         "box.planned",
         segments=len(final),
@@ -454,6 +471,7 @@ def plan(
         box_y=box_y,
         orphaned=orphaned,
         empty=empty,
+        full_frame=full_frame,
         audible=tuple(audible),
     )
 
@@ -474,6 +492,9 @@ def _audible_stretches(
     but its sound is whatever clip a member happens to carry, so the *first* member with audio
     speaks for the whole block. Mixing each member in turn would restart the sound at every
     image and produce a stutter nobody asked for.
+
+    ``solo`` rides along on the same stretch: 「S」 and 「M」 are answered by the same loop, so a
+    block cannot end up mixed under the podcast *and* replacing it.
     """
 
     out: list[AudibleStretch] = []
@@ -493,7 +514,12 @@ def _audible_stretches(
             if mapped is None or mapped[1] <= mapped[0]:
                 continue
             out.append(
-                AudibleStretch(start_ms=mapped[0], end_ms=mapped[1], path=Path(row.path))
+                AudibleStretch(
+                    start_ms=mapped[0],
+                    end_ms=mapped[1],
+                    path=Path(row.path),
+                    solo=bool(block.item.solo),
+                )
             )
             break
     return out
@@ -580,6 +606,9 @@ def _trim_start(
                     fit=segment.fit,
                     crop=segment.crop,
                     loop=segment.loop,
+                    # Losing the placement here would turn a 全屏 block back into a box block
+                    # the moment it overlapped its neighbour — a visual bug with no error.
+                    placement=segment.placement,
                 ),
                 source,
             )

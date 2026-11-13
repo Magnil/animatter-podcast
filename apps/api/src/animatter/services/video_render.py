@@ -392,6 +392,31 @@ def _box(
     )
 
 
+
+def _box_chain(plan: video_box.BoxPlan, template: VideoTemplate) -> box_track.BoxChain:
+    """The chain for one plan, canvas-sized when a block is 全屏 (§19.26).
+
+    Both branches read the *plan*, never the timeline: the plan is what already resolved each
+    block onto the output clock, and asking the blocks again would let the two disagree.
+    """
+    if plan.full_frame:
+        return box_track.build_canvas_chain(
+            plan.segments,
+            canvas_w=template.canvas_w or 1920,
+            canvas_h=template.canvas_h or 1080,
+            box_w=plan.width,
+            box_h=plan.height,
+            box_x=plan.box_x,
+            box_y=plan.box_y,
+        )
+    return box_track.build_chain(
+        plan.segments,
+        width=plan.width,
+        height=plan.height,
+        x=plan.box_x,
+        y=plan.box_y,
+    )
+
 def avatar_tracks(
     session: Session,
     template: VideoTemplate,
@@ -580,6 +605,8 @@ def preview_still(
         f"still-{at_ms:09d}-"
         f"{_still_digest(resolved_style, at_ms, plan, tracks, template, burn_subtitles, plates)}.png"
     )
+    canvas_w = template.canvas_w or 1920
+    canvas_h = template.canvas_h or 1080
     box_chain: box_track.BoxChain | None = None
     box_segment: box_track.BoxSegment | None = None
     box_source: Path | None = None
@@ -599,14 +626,19 @@ def preview_still(
                 fit=found.fit,
                 crop=found.crop,
                 loop=found.loop,
+                placement=found.placement,
             )
+            # A 全屏 block is normalised into the canvas and placed at the origin; everything
+            # else keeps the box. Built from the same rule as the export so the still and the
+            # film cannot disagree about where a block is drawn.
+            full = found.placement == "full"
             box_chain = box_track.build_single(
                 box_segment,
                 source_offset_ms=offset,
-                width=plan.width,
-                height=plan.height,
-                x=plan.box_x,
-                y=plan.box_y,
+                width=canvas_w if full else plan.width,
+                height=canvas_h if full else plan.height,
+                x=0 if full else plan.box_x,
+                y=0 if full else plan.box_y,
             )
 
     video_media.render_still(
@@ -759,7 +791,7 @@ def _video_signature(prepared: PreparedVideo, options: ExportOptions) -> str:
                 f"{item.asset_id or ''}:{item.deck_id or ''}:{item.gallery_json}:{item.motion}:"
                 # The mute flag changes what the film sounds like, so an export cached
                 # across a click on 「M」 would hand back the previous audio silently.
-                f"{'muted' if item.muted else 'audible'}"
+                f"{'muted' if item.muted else ('solo' if item.solo else 'audible')}"
                 for item in prepared.items
             ).encode()
         ).hexdigest(),
@@ -855,17 +887,7 @@ def _encode(
             items=prepared.items,
             edl=prepared.edl,
         )
-        box_chain = (
-            None
-            if plan.empty
-            else box_track.build_chain(
-                plan.segments,
-                width=plan.width,
-                height=plan.height,
-                x=plan.box_x,
-                y=plan.box_y,
-            )
-        )
+        box_chain = None if plan.empty else _box_chain(plan, prepared.template)
 
     text_png = text_png_for(
         prepared.template,
@@ -906,7 +928,9 @@ def _encode(
         # Empty unless the user unmuted something (§19.20), which is what keeps the silent
         # case on the `-c copy` path it was designed around.
         mix=[
-            video_media.AudioMix(start_ms=item.start_ms, end_ms=item.end_ms, path=item.path)
+            video_media.AudioMix(
+                start_ms=item.start_ms, end_ms=item.end_ms, path=item.path, solo=item.solo
+            )
             for item in plan.audible
         ],
     )
