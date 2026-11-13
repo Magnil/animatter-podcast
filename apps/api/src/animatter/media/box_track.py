@@ -59,6 +59,11 @@ KIND_IMAGE = "image"
 KIND_VIDEO = "video"
 #: A stretch of timeline with no block: show the plate, so the overlay stays opaque.
 KIND_PLATE = "plate"
+#: A placeholder in the other of the two chains (§19.27). The lower chain draws box blocks and
+#: the top chain draws 全屏 blocks; each still has to span the whole film, so wherever a chain
+#: must draw nothing it draws this. It is a `color` **source filter**, not a file: no `-i`, no
+#: entry in `sources`, no input number to get wrong.
+KIND_TRANSPARENT = "transparent"
 
 
 @dataclass(frozen=True)
@@ -190,9 +195,21 @@ def _normalise(
     image shown again), and two filters cannot share a label — ffmpeg then reports "label
     already used" and names a variable, not a cause.
     """
+    label = tag
+
+    if segment.kind == KIND_TRANSPARENT:
+        # A filter-only source, so this branch never touches `index`. Alpha is forced to 0
+        # *after* the format conversion rather than written as `c=black@0.0`: the colour
+        # filter's own alpha round-trip depends on its output format, while
+        # `colorchannelmixer=aa=0` means the same thing in every ffmpeg build.
+        seconds = f"{segment.duration_ms / 1000:.3f}"
+        return (
+            f"color=c=black:s={width}x{height}:r={FPS}:d={seconds},"
+            f"format=rgba,colorchannelmixer=aa=0,setsar=1"
+        )
+
     index = segment.input_index + input_base
     src = f"[{index}:v]"
-    label = tag
 
     if segment.crop is not None:
         x, y, w, h = segment.crop
@@ -305,7 +322,15 @@ def build_chain(
         height=height,
         sources=[],
         input_base=input_base,
-        inputs=len({segment.input_index for segment in segments}),
+        # Placeholders are color filters, not -i inputs, so they must not be counted: this
+        # number is what tells the compositor where the *next* layer's inputs begin.
+        inputs=len(
+            {
+                segment.input_index
+                for segment in segments
+                if segment.kind != KIND_TRANSPARENT
+            }
+        ),
     )
 
 
@@ -438,5 +463,13 @@ def build_canvas_chain(
         height=canvas_h,
         sources=[],
         input_base=input_base,
-        inputs=len({segment.input_index for segment in segments}),
+        # Placeholders are color filters, not -i inputs, so they must not be counted: this
+        # number is what tells the compositor where the *next* layer's inputs begin.
+        inputs=len(
+            {
+                segment.input_index
+                for segment in segments
+                if segment.kind != KIND_TRANSPARENT
+            }
+        ),
     )

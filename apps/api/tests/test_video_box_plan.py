@@ -27,7 +27,13 @@ from tests.test_corrections import seed_version
 
 from animatter.core.edl import Deletion, Edl, Keep
 from animatter.ids import new_id, utcnow_iso
-from animatter.media.box_track import KIND_IMAGE, KIND_PLATE, KIND_VIDEO
+from animatter.media.box_track import (
+    KIND_IMAGE,
+    KIND_PLATE,
+    KIND_TRANSPARENT,
+    KIND_VIDEO,
+    build_canvas_chain,
+)
 from animatter.models import VideoAsset, VideoItem
 from animatter.services import video_box
 
@@ -843,3 +849,142 @@ def test_a_muted_block_is_never_audible_even_when_soloed(
         edl=edl_of((0, 5000), original=5000),
     )
     assert plan.audible == ()
+
+
+# --- 两条链：框内在下，全屏在上 (§19.27) --------------------------------
+
+
+def test_a_plan_without_a_full_block_has_no_split(
+    session: Session, project: str, tmp_path: Path
+) -> None:
+    """`split is None` is what keeps every existing project on the single opaque chain."""
+    asset = make_asset(session, project, tmp_path)
+    boxed = make_item(session, project, start_ms=0, end_ms=5000, asset_id=asset.id)
+    plan = video_box.plan(
+        session,
+        template_background=Path("plate.png"),
+        box_rect=BOX,
+        items=[boxed],
+        edl=edl_of((0, 5000), original=5000),
+    )
+    assert plan.split is None
+
+
+def test_the_two_halves_have_the_same_boundaries(
+    session: Session, project: str, tmp_path: Path
+) -> None:
+    """Segment N is the same instant in both chains, or the two overlays drift apart."""
+    asset = make_asset(session, project, tmp_path)
+    full = make_item(session, project, start_ms=0, end_ms=5000, asset_id=asset.id, placement="full")
+    boxed = make_item(
+        session, project, start_ms=5000, end_ms=10_000, asset_id=asset.id, placement="box"
+    )
+    plan = video_box.plan(
+        session,
+        template_background=Path("plate.png"),
+        box_rect=BOX,
+        items=[full, boxed],
+        edl=edl_of((0, 10_000), original=10_000),
+    )
+    assert plan.split is not None
+    lower = [(segment.duration_ms, segment.placement) for segment in plan.split.lower]
+    upper = [(segment.duration_ms, segment.placement) for segment in plan.split.upper]
+    assert [duration for duration, _ in lower] == [duration for duration, _ in upper]
+    assert sum(duration for duration, _ in lower) == 10_000
+
+
+def test_a_box_block_is_drawn_by_the_lower_chain_only(
+    session: Session, project: str, tmp_path: Path
+) -> None:
+    asset = make_asset(session, project, tmp_path)
+    boxed = make_item(session, project, start_ms=0, end_ms=5000, asset_id=asset.id)
+    full = make_item(session, project, start_ms=5000, end_ms=10_000, asset_id=asset.id, placement="full")
+    plan = video_box.plan(
+        session,
+        template_background=Path("plate.png"),
+        box_rect=BOX,
+        items=[boxed, full],
+        edl=edl_of((0, 10_000), original=10_000),
+    )
+    assert plan.split is not None
+    assert [segment.kind for segment in plan.split.lower] == [
+        KIND_IMAGE,
+        KIND_TRANSPARENT,
+    ]
+    assert [segment.kind for segment in plan.split.upper] == [
+        KIND_TRANSPARENT,
+        KIND_IMAGE,
+    ]
+
+
+def test_each_half_declares_only_its_own_inputs(
+    session: Session, project: str, tmp_path: Path
+) -> None:
+    """Per-half input lists are what stop the upper chain having to count the lower one's."""
+    first = make_asset(session, project, tmp_path)
+    second = make_asset(session, project, tmp_path)
+    boxed = make_item(session, project, start_ms=0, end_ms=5000, asset_id=first.id)
+    full = make_item(
+        session, project, start_ms=5000, end_ms=10_000, asset_id=second.id, placement="full"
+    )
+    plan = video_box.plan(
+        session,
+        template_background=Path("plate.png"),
+        box_rect=BOX,
+        items=[boxed, full],
+        edl=edl_of((0, 10_000), original=10_000),
+    )
+    assert plan.split is not None
+    assert list(plan.split.lower_sources) == [Path(first.path)]
+    assert list(plan.split.upper_sources) == [Path(second.path)]
+    # …and the indices point into their own list, not into the plan's.
+    assert plan.split.lower[0].input_index == 0
+    assert plan.split.upper[1].input_index == 0
+
+
+def test_a_gap_is_transparent_in_both_halves(
+    session: Session, project: str, tmp_path: Path
+) -> None:
+    """A gap draws the plate through the box in the lower chain and nothing on top."""
+    asset = make_asset(session, project, tmp_path)
+    full = make_item(
+        session, project, start_ms=5000, end_ms=10_000, asset_id=asset.id, placement="full"
+    )
+    plan = video_box.plan(
+        session,
+        template_background=Path("plate.png"),
+        box_rect=BOX,
+        items=[full],
+        edl=edl_of((0, 10_000), original=10_000),
+    )
+    assert plan.split is not None
+    # The leading gap is a plate excerpt for the lower chain and a placeholder for the top one.
+    assert plan.split.lower[0].kind == KIND_PLATE
+    assert plan.split.upper[0].kind == KIND_TRANSPARENT
+
+
+def test_a_placeholder_is_not_an_input(
+    session: Session, project: str, tmp_path: Path
+) -> None:
+    """Placeholders are `color` filters. Counting one as an input shifts every later layer."""
+    asset = make_asset(session, project, tmp_path)
+    full = make_item(
+        session, project, start_ms=5000, end_ms=10_000, asset_id=asset.id, placement="full"
+    )
+    plan = video_box.plan(
+        session,
+        template_background=Path("plate.png"),
+        box_rect=BOX,
+        items=[full],
+        edl=edl_of((0, 10_000), original=10_000),
+    )
+    assert plan.split is not None
+    lower = build_canvas_chain(
+        list(plan.split.lower),
+        canvas_w=1920,
+        canvas_h=1080,
+        box_w=BOX["w"],
+        box_h=BOX["h"],
+    )
+    # plate + placeholder → still exactly one real input (the plate)
+    assert lower.inputs == 1

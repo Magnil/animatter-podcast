@@ -55,6 +55,25 @@ class PlannedBlock:
 
 
 @dataclass(frozen=True)
+class BoxSplit:
+    """The same timeline cut into two chains: under the text, and over it (§19.27).
+
+    Both halves are **complete**: each spans the whole film and their segment boundaries line
+    up one for one, with :data:`box_track.KIND_TRANSPARENT` standing in wherever a half has
+    nothing to draw. That is what makes "the same instant in both chains" true by
+    construction rather than by arithmetic that has to be kept in sync.
+
+    ``*_sources`` are per-half: a chain's ``input_index`` points into its own list, so the two
+    halves never have to agree about input numbering.
+    """
+
+    lower: tuple[box_track.BoxSegment, ...]
+    lower_sources: tuple[Path, ...]
+    upper: tuple[box_track.BoxSegment, ...]
+    upper_sources: tuple[Path, ...]
+
+
+@dataclass(frozen=True)
 class AudibleStretch:
     """One block's own sound, placed on the **output** timeline (§19.20).
 
@@ -80,6 +99,9 @@ class BoxPlan:
     height: int
     box_x: int
     box_y: int
+    #: The film's own frame. Only the 全屏 chains need it — the box chain is sized by the box.
+    canvas_w: int = 1920
+    canvas_h: int = 1080
     #: Blocks dropped because their audio no longer exists. Reported, never silent.
     orphaned: int = 0
     #: Stretches that should be mixed under the podcast, in output time. Empty unless the user
@@ -88,9 +110,13 @@ class BoxPlan:
     #: True when every segment is a plate excerpt: the film genuinely has no box content.
     empty: bool = True
     #: True when at least one block is ``placement='full'`` (§19.26). The renderer then builds
-    #: a canvas-sized RGBA chain padded at the box, because a full-frame block cannot be drawn
-    #: inside a box-sized overlay.
+    #: canvas-sized RGBA chains, because a full-frame block cannot be drawn inside a box-sized
+    #: overlay.
     full_frame: bool = False
+    #: ``None`` when no block is 全屏: the film renders through the single box chain it always
+    #: did. Otherwise the two halves of §19.27 — the lower one goes under the avatars and the
+    #: text, the upper one over them.
+    split: BoxSplit | None = None
 
     @property
     def total_ms(self) -> int:
@@ -346,6 +372,8 @@ def plan(
     edl: Edl,
     settings: object | None = None,
     project_id: str = "",
+    canvas_w: int = 1920,
+    canvas_h: int = 1080,
 ) -> BoxPlan:
     """Build the full chain for one export, in output time.
 
@@ -452,6 +480,7 @@ def plan(
 
     empty = not any(segment.kind != box_track.KIND_PLATE for segment in final)
     full_frame = any(segment.placement == "full" for segment in final)
+    split = _split_placement(final, sources) if full_frame else None
     log.info(
         "box.planned",
         segments=len(final),
@@ -469,10 +498,85 @@ def plan(
         height=height,
         box_x=box_x,
         box_y=box_y,
+        canvas_w=canvas_w,
+        canvas_h=canvas_h,
         orphaned=orphaned,
         empty=empty,
         full_frame=full_frame,
+        split=split,
         audible=tuple(audible),
+    )
+
+
+def _split_placement(
+    segments: list[box_track.BoxSegment], sources: list[Path]
+) -> BoxSplit:
+    """Cut the laid-out timeline into 「框内」 and 「全屏」, each spanning the whole film.
+
+    A segment that does not belong to a half becomes a transparent placeholder of the same
+    duration, so the two halves stay aligned segment for segment. Inputs are **re-based per
+    half**: the upper chain must not have to know how many inputs the lower one happened to
+    consume, and a placeholder consumes none at all.
+
+    Written from the segments, not from the blocks, on purpose: by this point every block has
+    already been resolved onto the output clock, clipped against its neighbours and split into
+    pages and gallery members. Asking the blocks again would be a second answer to a question
+    that already has one.
+    """
+    lower_paths: list[Path] = []
+    upper_paths: list[Path] = []
+    lower_index: dict[str, int] = {}
+    upper_index: dict[str, int] = {}
+    lower: list[box_track.BoxSegment] = []
+    upper: list[box_track.BoxSegment] = []
+
+    for segment in segments:
+        is_full = segment.placement == "full"
+        if segment.kind == box_track.KIND_TRANSPARENT:
+            # Nothing to draw anywhere; keep the duration so the halves stay aligned.
+            placeholder = box_track.BoxSegment(
+                input_index=0, duration_ms=segment.duration_ms, kind=box_track.KIND_TRANSPARENT
+            )
+            lower.append(placeholder)
+            upper.append(placeholder)
+            continue
+        lower.append(_rebase(segment, sources, lower_paths, lower_index, keep=not is_full))
+        upper.append(_rebase(segment, sources, upper_paths, upper_index, keep=is_full))
+
+    return BoxSplit(
+        lower=tuple(lower),
+        lower_sources=tuple(lower_paths),
+        upper=tuple(upper),
+        upper_sources=tuple(upper_paths),
+    )
+
+
+def _rebase(
+    segment: box_track.BoxSegment,
+    sources: list[Path],
+    paths: list[Path],
+    index: dict[str, int],
+    *,
+    keep: bool,
+) -> box_track.BoxSegment:
+    """One segment for one half: either the real thing with a compacted input, or nothing."""
+    if not keep:
+        return box_track.BoxSegment(
+            input_index=0, duration_ms=segment.duration_ms, kind=box_track.KIND_TRANSPARENT
+        )
+    source = sources[segment.input_index]
+    key = str(source)
+    if key not in index:
+        index[key] = len(paths)
+        paths.append(source)
+    return box_track.BoxSegment(
+        input_index=index[key],
+        duration_ms=segment.duration_ms,
+        kind=segment.kind,
+        fit=segment.fit,
+        crop=segment.crop,
+        loop=segment.loop,
+        placement=segment.placement,
     )
 
 

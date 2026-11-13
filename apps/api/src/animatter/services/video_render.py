@@ -389,32 +389,67 @@ def _box(
         edl=edl,
         settings=settings,
         project_id=template.project_id,
+        # The canvas, not the box: a 全屏 block is normalised into the frame (§19.26).
+        canvas_w=template.canvas_w or 1920,
+        canvas_h=template.canvas_h or 1080,
     )
 
 
 
-def _box_chain(plan: video_box.BoxPlan, template: VideoTemplate) -> box_track.BoxChain:
-    """The chain for one plan, canvas-sized when a block is 全屏 (§19.26).
+def _box_chain(plan: video_box.BoxPlan) -> box_track.BoxChain:
+    """The lower chain: what is drawn **under** the avatars and the text (§19.27).
 
-    Both branches read the *plan*, never the timeline: the plan is what already resolved each
-    block onto the output clock, and asking the blocks again would let the two disagree.
+    With no 全屏 block this is the whole timeline, built exactly as it always was — the opaque,
+    box-sized chain. That is the branch every existing project takes, and it is why the feature
+    changed no pixels for anyone who does not use it.
     """
-    if plan.full_frame:
-        return box_track.build_canvas_chain(
+    if plan.split is None:
+        return box_track.build_chain(
             plan.segments,
-            canvas_w=template.canvas_w or 1920,
-            canvas_h=template.canvas_h or 1080,
-            box_w=plan.width,
-            box_h=plan.height,
-            box_x=plan.box_x,
-            box_y=plan.box_y,
+            width=plan.width,
+            height=plan.height,
+            x=plan.box_x,
+            y=plan.box_y,
         )
-    return box_track.build_chain(
-        plan.segments,
-        width=plan.width,
-        height=plan.height,
-        x=plan.box_x,
-        y=plan.box_y,
+    return _canvas_chain(plan, plan.split.lower)
+
+
+def _top_chain(plan: video_box.BoxPlan) -> box_track.BoxChain | None:
+    """The upper chain: the 全屏 blocks, drawn **over** the avatars and the text.
+
+    ``None`` when nothing is 全屏, so the caller passes nothing and the graph keeps the shape it
+    had before the feature existed.
+    """
+    if plan.split is None:
+        return None
+    return _canvas_chain(plan, plan.split.upper, out_label="topout")
+
+
+def _canvas_chain(
+    plan: video_box.BoxPlan,
+    segments: tuple[box_track.BoxSegment, ...],
+    *,
+    out_label: str = "boxout",
+) -> box_track.BoxChain:
+    """One half of a split plan, at canvas size.
+
+    The half's input list is its own (`split.lower_sources` / `split.upper_sources`), and the
+    segment indices already point into it — see `video_box._split_placement`, which is where
+    the re-basing happens. That is deliberate: doing it here would mean this function had to
+    know which half it was handed.
+    """
+    return box_track.build_canvas_chain(
+        list(segments),
+        canvas_w=plan.canvas_w,
+        canvas_h=plan.canvas_h,
+        box_w=plan.width,
+        box_h=plan.height,
+        box_x=plan.box_x,
+        box_y=plan.box_y,
+        # Two chains in one graph must not share a label: uild_filtergraph reads the lower
+        # one as [boxout] and the upper as [topout], and a duplicate makes ffmpeg report
+        # "output 0 (boxout) unconnected" — an error that names neither chain.
+        out_label=out_label,
     )
 
 def avatar_tracks(
@@ -607,19 +642,25 @@ def preview_still(
     )
     canvas_w = template.canvas_w or 1920
     canvas_h = template.canvas_h or 1080
+    # The still draws exactly one stretch, and it goes to the same layer the export would put
+    # it on (§19.27): a 全屏 block above the avatars and the text, everything else below them.
+    # ``None`` for both chains means "this frame has nothing to draw", which is a plate gap.
     box_chain: box_track.BoxChain | None = None
     box_segment: box_track.BoxSegment | None = None
     box_source: Path | None = None
+    top_chain: box_track.BoxChain | None = None
+    top_segment: box_track.BoxSegment | None = None
+    top_source: Path | None = None
     if not plan.empty:
         covered = video_box.covering(plan, at_ms=at_ms)
         if covered is not None:
-            found, box_source, offset = covered
+            found, source, offset = covered
             # ``found.input_index`` indexes into the *plan's* deduplicated input list, but
-            # the preview only declares one box input. Passing it through unchanged asked
+            # the preview declares one input per chain. Passing it through unchanged asked
             # ffmpeg for `[5:v]` on a two-input command, which fails as
             # "Error binding filtergraph inputs/outputs: Invalid argument" — an error that
             # names neither the box nor the preview.
-            box_segment = box_track.BoxSegment(
+            single = box_track.BoxSegment(
                 input_index=0,
                 duration_ms=found.duration_ms,
                 kind=found.kind,
@@ -628,18 +669,23 @@ def preview_still(
                 loop=found.loop,
                 placement=found.placement,
             )
-            # A 全屏 block is normalised into the canvas and placed at the origin; everything
-            # else keeps the box. Built from the same rule as the export so the still and the
-            # film cannot disagree about where a block is drawn.
             full = found.placement == "full"
-            box_chain = box_track.build_single(
-                box_segment,
+            chain = box_track.build_single(
+                single,
                 source_offset_ms=offset,
                 width=canvas_w if full else plan.width,
                 height=canvas_h if full else plan.height,
                 x=0 if full else plan.box_x,
                 y=0 if full else plan.box_y,
+                # Two chains in one graph must not share a label. The still graph uses the same
+                # names the export does: [boxout] for the lower chain, [topout] for the
+                # upper one.
+                out_label="topout" if full else "boxout",
             )
+            if full:
+                top_chain, top_segment, top_source = chain, single, source
+            else:
+                box_chain, box_segment, box_source = chain, single, source
 
     video_media.render_still(
         settings.ffmpeg_path,
@@ -652,6 +698,9 @@ def preview_still(
         box=box_chain,
         box_segment=box_segment,
         box_source=box_source,
+        top=top_chain,
+        top_segment=top_segment,
+        top_source=top_source,
         avatars=_avatar_stills(tracks, at_ms=at_ms),
         text=None if text_png is None else video_media.Layer(path=text_png, x=0, y=0),
         subtitles=out_dir / "preview.ass" if burn_subtitles else None,
@@ -687,7 +736,7 @@ def _still_digest(
         # Name only, not the full path: the file lives under a data dir that differs per test
         # run, and a digest that moves with the temp directory is not about the pixels.
         segment = (
-            f"{found.kind}/{found.fit}/{found.duration_ms}/"
+            f"{found.kind}/{found.fit}/{found.placement}/{found.duration_ms}/"
             f"{found.crop}/{found.loop}/{Path(covered[1]).name}"
         )
     lit = ",".join(f"{track.name}@{int(lit_at(track.lit, at_ms))}" for track in tracks)
@@ -887,7 +936,8 @@ def _encode(
             items=prepared.items,
             edl=prepared.edl,
         )
-        box_chain = None if plan.empty else _box_chain(plan, prepared.template)
+        box_chain = None if plan.empty else _box_chain(plan)
+        top_chain = None if plan.empty else _top_chain(plan)
 
     text_png = text_png_for(
         prepared.template,
@@ -907,8 +957,15 @@ def _encode(
         background=prepared.background_path,
         layers=_layers(prepared.template),
         box=box_chain,
-        box_segments=None if plan.empty else plan.segments,
-        box_sources=None if plan.empty else plan.sources,
+        box_segments=None
+        if plan.empty
+        else (plan.segments if plan.split is None else list(plan.split.lower)),
+        box_sources=None
+        if plan.empty
+        else (plan.sources if plan.split is None else list(plan.split.lower_sources)),
+        top=top_chain,
+        top_segments=None if plan.split is None else list(plan.split.upper),
+        top_sources=None if plan.split is None else list(plan.split.upper_sources),
         avatars=_avatar_layers(
             settings,
             prepared.avatars,

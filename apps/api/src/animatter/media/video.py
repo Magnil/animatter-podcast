@@ -126,6 +126,7 @@ def build_filtergraph(
     subtitle_path: Path | None,
     offset_ms: int = 0,
     box: box_track.BoxChain | None = None,
+    top: box_track.BoxChain | None = None,
     avatars: list[AvatarLayer] | None = None,
     text: Layer | None = None,
     out_label: str = "vout",
@@ -140,6 +141,13 @@ def build_filtergraph(
     layers so the frame stroke sits on top of the picture, and after the background so the
     picture covers the plate. Its inputs come last, which is why it needs to know how many
     inputs came before it — see ``input_base``.
+
+    ``top`` is the 全屏 half of the material chain (§19.27). It goes **after** ``text`` and
+    before the subtitles: a full-frame block covers the whole canvas, so an avatar or a title
+    left on top of it would look like the block failed to render. The lower ``box`` chain is
+    the other half — the same timeline with the full-frame stretches replaced by transparent
+    placeholders — so a film that mixes both still has one consistent timeline, drawn in two
+    passes around the avatars and the text.
 
     ``avatars`` are P3's lit/dim tracks. They are overlaid **after** the box and before the
     subtitles: an avatar sits beside the box rather than inside it, so the order only
@@ -230,6 +238,23 @@ def build_filtergraph(
         )
         current = "withtext"
 
+    if top is not None:
+        # Input number derived, never passed: the chain's own segments start after the
+        # background, the artwork, the lower box chain, the avatars and the text.
+        top_input = (
+            1
+            + len(layers)
+            + (box.input_count if box is not None else 0)
+            + len(avatars or [])
+            + (1 if text is not None else 0)
+        )
+        parts.append(top.text_for(input_base=top_input))
+        # `format=auto` rather than `format=rgba`: the overlay is the last thing before the
+        # subtitle burn, and a mid-graph format change costs a copy of every frame. The chain
+        # already carries its own alpha, and `overlay` reads it either way.
+        parts.append(f"[{current}][topout]overlay=x={top.x}:y={top.y}:format=auto[withtop]")
+        current = "withtop"
+
     if subtitle_path is not None:
         parts.append(f"[{current}]ass=filename='{escape_filter_path(subtitle_path)}'[{out_label}]")
     elif current != out_label:
@@ -282,6 +307,30 @@ def _run(command: list[str], *, timeout: int = 7200) -> None:
         )
 
 
+def _chain_inputs(
+    segments: list[box_track.BoxSegment], sources: list[Path]
+) -> list[str]:
+    """The `-i` declarations for one material chain, one per distinct source.
+
+    **Placeholders are skipped.** A transparent segment (§19.27) is a `color` filter with no
+    file behind it, and its `input_index` is 0 — the same number a real segment's first source
+    uses. Declaring it would either ask `input_args` for a path that does not exist or emit the
+    same file twice, and either way every later input (avatars, text, the other chain) shifts by
+    one. This is the input-numbering half of the split; `build_canvas_chain.inputs` counts by
+    the same rule and the two must agree.
+    """
+    out: list[str] = []
+    seen: set[int] = set()
+    for segment in segments:
+        if segment.kind == box_track.KIND_TRANSPARENT:
+            continue
+        if segment.input_index in seen:
+            continue
+        seen.add(segment.input_index)
+        out += box_track.input_args(segment, sources[segment.input_index])
+    return out
+
+
 def render(
     ffmpeg: str,
     *,
@@ -294,6 +343,9 @@ def render(
     box: box_track.BoxChain | None = None,
     box_segments: list[box_track.BoxSegment] | None = None,
     box_sources: list[Path] | None = None,
+    top: box_track.BoxChain | None = None,
+    top_segments: list[box_track.BoxSegment] | None = None,
+    top_sources: list[Path] | None = None,
     avatars: list[AvatarLayer] | None = None,
     text: Layer | None = None,
     subtitles: Path | None = None,
@@ -313,6 +365,11 @@ def render(
 
     ``avatars`` are P3's lit/dim tracks, declared as plain ``-i`` inputs in the same order
     the filtergraph expects (background, artwork, box sources, avatars).
+
+    ``top``/``top_segments``/``top_sources`` are the 全屏 half (§19.27). Their inputs come
+    **after** the text overlay, i.e. last, because that is the order the graph overlays them
+    in. Keeping them a separate triple rather than one list of chains is the same choice the
+    box already made: the media layer sees segments and paths, not a service-layer plan.
     """
     if duration_ms <= 0:
         raise AppError("video_duration_invalid", "视频时长为 0", hint="先渲染音频。")
@@ -345,6 +402,7 @@ def render(
         layers=layers,
         subtitle_path=subtitles,
         box=box,
+        top=top,
         avatars=avatars,
         text=text,
     )
@@ -374,12 +432,7 @@ def render(
 
     if box_segments and box_sources:
         # One input per *distinct* source, in the order the chain's indices refer to.
-        seen: set[int] = set()
-        for segment in box_segments:
-            if segment.input_index in seen:
-                continue
-            seen.add(segment.input_index)
-            command += box_track.input_args(segment, box_sources[segment.input_index])
+        command += _chain_inputs(box_segments, box_sources)
 
     for avatar in avatars or []:
         if not avatar.path.is_file():
@@ -402,6 +455,12 @@ def render(
                 status=409,
             )
         command += ["-loop", "1", "-t", seconds, "-i", str(text.path)]
+
+    # The top chain's inputs are declared **after** the text, because the graph overlays it
+    # after the text. Order here is the input numbering the graph assumes; reversing the two
+    # would draw the text as a full-frame poster and the block as a title.
+    if top_segments and top_sources:
+        command += _chain_inputs(top_segments, top_sources)
 
     command += [
         "-filter_complex_script",
@@ -477,6 +536,9 @@ def render_still(
     box: box_track.BoxChain | None = None,
     box_segment: box_track.BoxSegment | None = None,
     box_source: Path | None = None,
+    top: box_track.BoxChain | None = None,
+    top_segment: box_track.BoxSegment | None = None,
+    top_source: Path | None = None,
     avatars: list[AvatarLayer] | None = None,
     text: Layer | None = None,
     subtitles: Path | None = None,
@@ -505,6 +567,7 @@ def render_still(
         subtitle_path=subtitles,
         offset_ms=max(0, at_ms),
         box=box,
+        top=top,
         avatars=avatars,
         text=text,
     )
@@ -528,6 +591,11 @@ def render_still(
             command += ["-loop", "1", "-i", str(avatar.path)]
     if text is not None:
         command += ["-loop", "1", "-i", str(text.path)]
+    # A still needs at most one segment per chain, and neither is ever a placeholder: the
+    # frame is drawn by exactly one of the two, and the covering segment is the one that has
+    # something to show (§19.27).
+    if top_segment is not None and top_source is not None:
+        command += box_track.input_args(top_segment, top_source)
 
     command += [
         "-filter_complex_script",

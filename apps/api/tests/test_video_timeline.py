@@ -289,9 +289,10 @@ def test_shift_items_moves_every_block_by_the_same_delta(
 # --- solo and placement (round 111) -------------------------------------
 
 
-def test_a_new_block_is_box_placed_and_not_soloed(
+def test_a_new_block_is_silent_and_box_placed(
     client: TestClient, session: Session
 ) -> None:
+    """「默认为 M」: a fresh block contributes no sound, and 「素材框」 is where it is drawn."""
     _project, version = seed(client, session)
     created = add_item(client, version, 0, 3000)
     assert created["placement"] == "box"

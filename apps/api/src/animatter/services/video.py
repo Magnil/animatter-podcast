@@ -408,6 +408,9 @@ def create_item(
     deck_id: str | None = None,
     slide_id: str | None = None,
     gallery_json: str = "[]",
+    #: 「默认为 M」: a new block is **silent**. The film's sound is the podcast (§19.20), and a
+    #: block's own audio is something the user asks for — pressing M mixes it under, pressing S
+    #: makes it replace the podcast (§19.25).
     muted: bool = True,
     solo: bool = False,
     placement: str = "box",

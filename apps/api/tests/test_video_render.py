@@ -19,10 +19,13 @@ from pathlib import Path
 import pytest
 
 from animatter.errors import AppError
+from animatter.media import box_track
+from animatter.media.box_track import KIND_IMAGE, BoxSegment
 from animatter.media.video import (
     CRF,
     FPS,
     PRESET,
+    AvatarLayer,
     Layer,
     build_filtergraph,
     escape_filter_path,
@@ -68,6 +71,103 @@ def test_each_layer_adds_one_overlay_and_one_input() -> None:
     graph = build_filtergraph(width=1920, height=1080, layers=layers, subtitle_path=None)
     assert graph.count("overlay=") == 2
     assert "[1:v]" in graph and "[2:v]" in graph
+
+
+def one_segment_chain(
+    label: str, *, inputs: int = 1, placement: str = "box"
+) -> box_track.BoxChain:
+    """A chain with one segment, so the graph can be read without the chain's own noise."""
+    # Two segments with distinct input indices when two inputs are asked for: a single segment
+    # can only ever read input 0, so asking uild_chain for two would be contradictory.
+    segments = [
+        BoxSegment(input_index=index, duration_ms=1000, kind=KIND_IMAGE, placement=placement)
+        for index in range(inputs)
+    ]
+    chain = box_track.build_chain(segments, width=1920, height=1080)
+    assert chain.inputs == inputs
+    return box_track.BoxChain(
+        text=chain.text.replace("[boxout]", f"[{label}]"),
+        x=chain.x,
+        y=chain.y,
+        width=chain.width,
+        height=chain.height,
+        sources=[],
+        input_base=chain.input_base,
+        inputs=inputs,
+    )
+
+
+def one_avatar() -> AvatarLayer:
+    return AvatarLayer(
+        path=Path("avatar.png"), x=0, y=0, width=100, height=100, is_video=False
+    )
+
+
+# --- 全屏块在最顶层 (§19.27) ---------------------------------------------
+
+
+def test_a_full_frame_chain_is_overlaid_after_the_text() -> None:
+    """The failure this pins is silent: overlay it before the text and the film still encodes,
+    still contains the block, and simply has a title drawn on top of it."""
+    graph = build_filtergraph(
+        width=1920,
+        height=1080,
+        layers=[],
+        subtitle_path=None,
+        box=one_segment_chain("boxout"),
+        avatars=[one_avatar()],
+        text=Layer(path=Path("text.png"), x=0, y=0),
+        top=one_segment_chain("topout", placement="full"),
+    )
+    assert graph.index("[withtext]") < graph.index("[topout]")
+    assert "[withtext][topout]overlay" in graph
+
+
+def test_the_full_frame_chain_goes_before_the_subtitle_burn() -> None:
+    """Subtitles still burn on top of everything: they are the one layer that must stay legible."""
+    graph = build_filtergraph(
+        width=1920,
+        height=1080,
+        layers=[],
+        subtitle_path=Path("/tmp/x.ass"),
+        box=one_segment_chain("boxout"),
+        top=one_segment_chain("topout", placement="full"),
+    )
+    assert graph.index("[topout]") < graph.index("ass=filename=")
+
+
+def test_the_top_chain_reads_the_inputs_after_the_text() -> None:
+    """Its `input_base` is derived from everything before it, so no count may drift silently.
+
+    Sample shape: background + 2 artwork layers + a 2-input box chain + 1 avatar + the text PNG
+    means the top chain's first input is 7.
+    """
+    graph = build_filtergraph(
+        width=1920,
+        height=1080,
+        layers=[Layer(path=Path("a.png")), Layer(path=Path("b.png"))],
+        subtitle_path=None,
+        box=one_segment_chain("boxout", inputs=2),
+        avatars=[one_avatar()],
+        text=Layer(path=Path("text.png"), x=0, y=0),
+        top=one_segment_chain("topout", placement="full"),
+    )
+    assert "[7:v]" in graph
+
+
+def test_without_a_full_frame_chain_the_graph_is_unchanged() -> None:
+    """Every existing project renders through exactly this shape."""
+    graph = build_filtergraph(
+        width=1920,
+        height=1080,
+        layers=[],
+        subtitle_path=None,
+        box=one_segment_chain("boxout"),
+        avatars=[one_avatar()],
+        text=Layer(path=Path("text.png"), x=0, y=0),
+    )
+    assert "topout" not in graph
+    assert graph.endswith("[withtext]copy[vout]")
 
 
 def test_subtitle_burn_is_the_last_step() -> None:
@@ -217,3 +317,44 @@ def test_encoder_settings_are_the_measured_ones() -> None:
     assert PRESET == "veryfast"
     assert CRF == "20"
     assert FPS == 25
+
+
+def test_a_still_puts_its_full_frame_segment_on_the_top_chain() -> None:
+    """§19.27: the still and the film must agree about which layer a block is on.
+
+    A still that drew a 全屏 block under an avatar while the export drew it over would be the
+    preview lying — exactly the failure `_still_digest` and the "same filtergraph as the export"
+    promise exist to prevent.
+    """
+    boxed = box_track.build_single(
+        BoxSegment(input_index=0, duration_ms=1000, kind=KIND_IMAGE),
+        source_offset_ms=0,
+        width=1440,
+        height=810,
+        x=240,
+        y=209,
+        out_label="boxout",
+    )
+    top = box_track.build_single(
+        BoxSegment(input_index=0, duration_ms=1000, kind=KIND_IMAGE, placement="full"),
+        source_offset_ms=0,
+        width=1920,
+        height=1080,
+        out_label="topout",
+    )
+    graph = build_filtergraph(
+        width=1920,
+        height=1080,
+        layers=[],
+        subtitle_path=None,
+        box=boxed,
+        avatars=[one_avatar()],
+        text=Layer(path=Path("text.png"), x=0, y=0),
+        top=top,
+    )
+    # Each label appears exactly twice: once where the chain defines it, once where the
+    # overlay consumes it. Two chains sharing one label would put four occurrences of that
+    # label and none of the other — the shape of the real ffmpeg failure.
+    assert graph.count("[boxout]") == 2
+    assert graph.count("[topout]") == 2
+    assert graph.index("[withtext]") < graph.index("[topout]")
