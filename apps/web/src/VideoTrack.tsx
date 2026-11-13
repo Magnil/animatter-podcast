@@ -65,11 +65,12 @@ export interface VideoTrackProps {
    */
   selectedId: string | null;
   onFit: (item: VideoItem, fit: string) => void;
-  /** Toggle the block's own sound on or off (§19.20). */
-  onMute: (item: VideoItem, muted: boolean) => void;
+  /** Put the block back on M: its own sound silent, the podcast alone (§19.25.1). */
+  onMute: (item: VideoItem) => void;
   /**
-   * 「S」: replace the podcast with this block's sound over its stretch, or stop doing so. One
-   * setter for both letters because they are one three-state control (§19.25).
+   * 「S」: switch the block to replacing the podcast over its stretch, or back to M. One setter
+   * for both letters because they are one control (§19.25.1). `false` means back to M, never
+   * "neither".
    */
   onSolo: (item: VideoItem, solo: boolean) => void;
   /** 素材框 / 全屏 (§19.26). */
@@ -485,28 +486,33 @@ export function VideoTrack({
             buttons are *absent* rather than disabled: a permanently greyed-out M asks "what is
             wrong with this block", and the answer is "nothing".
 
-            They are one three-state control (§19.25):
-              neither pressed → the block is silent, which is the default;
-              M pressed       → its sound is mixed **under** the podcast;
-              S pressed       → its sound **replaces** the podcast over this stretch.
-            `aria-pressed` therefore reads the flag directly on each, and the server keeps them
-            exclusive, so the two can never both claim to be pressed.
+            **Exactly one is lit**, because a block with sound is always in one of two states
+            (§19.25.1):
+              M lit → its sound is silent; the podcast plays alone. This is the default.
+              S lit → its sound **replaces** the podcast over this stretch.
+            There is no "neither" state to reach, so the control is two-state, not three.
+
+            The highlight and `aria-pressed` read the **same** flag. Until round 116 the M
+            highlight was inverted (`muted ? "" : "is-on"`, written when M was the only letter
+            and "lit" meant "this block is audible"), which made M light up together with S the
+            moment S existed — two contradictory claims on the same bubble. `aria-pressed` was
+            always right, so a screen reader and a glance disagreed.
           */}
           {bubbleItem.has_audio ? (
             <>
               <button
                 type="button"
-                className={`ghost small icon${bubbleItem.muted ? "" : " is-on"}`}
-                // Pressed **is** muted: this button silences the block, so a pressed M is a
-                // silent block. The inverse read as "pressed means audible" and told the user
-                // the opposite of the truth on every silent block.
+                className={`ghost small icon${bubbleItem.muted ? " is-on" : ""}`}
                 aria-pressed={bubbleItem.muted}
                 title={
                   bubbleItem.muted
-                    ? `让 ${blockName(bubbleItem)} 自己的声音也进成片（混在播客下面）`
-                    : `只留播客的声音，静音 ${blockName(bubbleItem)}`
+                    ? `已静音 ${blockName(bubbleItem)}：成片里只有播客的声音`
+                    : `静音 ${blockName(bubbleItem)}：只留播客的声音`
                 }
-                onClick={() => onMute(bubbleItem, !bubbleItem.muted)}
+                // M is a **destination**, not a toggle (§19.25.1). With both letters off
+                // forbidden, "unmute into the mix" has no state to land in, so pressing M
+                // always means "back to M" — and pressing it while already there does nothing.
+                onClick={() => onMute(bubbleItem)}
               >
                 M
               </button>
@@ -516,9 +522,11 @@ export function VideoTrack({
                 aria-pressed={bubbleItem.solo}
                 title={
                   bubbleItem.solo
-                    ? `恢复播客的声音：${blockName(bubbleItem)} 不再顶替这一段的音频`
+                    ? `恢复这一段的播客音频：${blockName(bubbleItem)} 不再顶替它`
                     : `用 ${blockName(bubbleItem)} 自己的声音顶替这一段的播客音频`
                 }
+                // Pressing S while S is lit returns to the default (M), not to "neither":
+                // that state is not allowed, so the click always lands on the other letter.
                 onClick={() => onSolo(bubbleItem, !bubbleItem.solo)}
               >
                 S

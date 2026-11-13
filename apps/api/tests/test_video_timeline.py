@@ -345,3 +345,40 @@ def test_setting_both_in_one_request_is_resolved_not_stored(
         f"/api/video/items/{created['id']}", json={"solo": True, "muted": True}
     ).json()
     assert not (patched["solo"] and patched["muted"]), patched
+
+
+def test_a_block_with_sound_is_never_unmuted_and_not_soloed(
+    client: TestClient, session: Session
+) -> None:
+    """「恰好一个亮」: both dark is not a state the API may store.
+
+    The bubble draws two letters and no third one, so a block with `muted=false, solo=false`
+    would show both as off while its sound is still mixed into the film.
+    """
+    _project, version = seed(client, session)
+    created = add_item(client, version, 0, 3000)
+    client.patch(f"/api/video/items/{created['id']}", json={"muted": False})
+    patched = client.patch(
+        f"/api/video/items/{created['id']}", json={"muted": False, "solo": False}
+    ).json()
+    assert patched["solo"] is False
+    assert patched["muted"] is True, patched
+
+
+def test_pressing_s_twice_lands_back_on_m(client: TestClient, session: Session) -> None:
+    """Un-soloing means "back to the default", not "neither"."""
+    _project, version = seed(client, session)
+    created = add_item(client, version, 0, 3000)
+    first = client.patch(f"/api/video/items/{created['id']}", json={"solo": True}).json()
+    assert (first["solo"], first["muted"]) == (True, False)
+    second = client.patch(f"/api/video/items/{created['id']}", json={"solo": False}).json()
+    assert (second["solo"], second["muted"]) == (False, True), second
+
+
+def test_creating_a_block_that_claims_neither_is_corrected(
+    client: TestClient, session: Session
+) -> None:
+    """`create_item` is called directly too, so the same rule has to hold there."""
+    _project, version = seed(client, session)
+    created = add_item(client, version, 0, 3000, muted=False, solo=False)
+    assert created["muted"] is True

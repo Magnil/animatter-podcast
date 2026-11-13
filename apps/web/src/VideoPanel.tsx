@@ -413,40 +413,44 @@ export function VideoPanel({
   };
 
   /**
-   * Silence or unmute the block's own sound (§19.20).
+   * 「M」: the block is silent and the podcast plays alone. This is the default state.
    *
-   * Only the flag is written; the mix happens at export. Saying so in the notice matters —
+   * M is a **destination**, not a toggle (§19.25.1). Both letters off is not a state the
+   * bubble can draw, so the "unmute into the mix" branch that M used to have no longer has
+   * anywhere to land: pressing M while M is lit is a no-op, not a request the server would
+   * have to ignore.
+   *
+   * Only flags are written; the mix happens at export. Saying so in the notice matters —
    * otherwise pressing M appears to do nothing, because the preview is a still and there is
    * no film to hear yet.
    */
-  const doMute = async (item: VideoItem, muted: boolean): Promise<void> => {
+  const doMute = async (item: VideoItem): Promise<void> => {
+    if (item.muted && !item.solo) return;
     try {
-      await api.patchVideoItem(item.id, { muted });
+      await api.patchVideoItem(item.id, { muted: true, solo: false });
       await load();
-      onNotice(
-        muted
-          ? `已静音 ${blockName(item)}，成片里只留播客的声音`
-          : `${blockName(item)} 的声音会混进成片（导出时生效）`,
-      );
+      onNotice(`已静音 ${blockName(item)}，成片里只留播客的声音`);
     } catch (caught) {
       onNotice(caught instanceof Error ? caught.message : String(caught));
     }
   };
 
   /**
-   * 「S」: replace the podcast with this block's sound, or stop doing so (§19.25).
+   * 「S」: replace the podcast with this block's sound, or go back to the default (§19.25).
    *
-   * Pressing it also clears the block's mute on the server — the two are one control, and a
-   * block that is both silent and replacing would be a state nothing can draw.
+   * Un-soloing does not mean "neither": it means back to M, which is the only other state a
+   * block with sound can be in. So the off-branch sends `muted: true` in the same request
+   * instead of sending `solo: false` alone and leaving both letters dark.
    */
   const doSolo = async (item: VideoItem, solo: boolean): Promise<void> => {
+    if (item.solo === solo) return;
     try {
-      await api.patchVideoItem(item.id, { solo });
+      await api.patchVideoItem(item.id, solo ? { solo: true } : { solo: false, muted: true });
       await load();
       onNotice(
         solo
           ? `这一段的播客音频会被 ${blockName(item)} 自己的声音顶替（导出时生效）`
-          : `恢复 ${blockName(item)} 这一段原本的播客音频（导出时生效）`,
+          : `已恢复这一段的播客音频，${blockName(item)} 回到静音`,
       );
     } catch (caught) {
       onNotice(caught instanceof Error ? caught.message : String(caught));
@@ -766,7 +770,7 @@ export function VideoPanel({
             onDropAsset={(assetId, atMs) => void doDropAsset(assetId, atMs)}
             selectedId={selected?.id ?? null}
             onFit={(item, fit) => void doFit(item, fit)}
-            onMute={(item, muted) => void doMute(item, muted)}
+            onMute={(item) => void doMute(item)}
             onSolo={(item, solo) => void doSolo(item, solo)}
             onPlacement={(item, placement) => void doPlacement(item, placement)}
             onDelete={(item) => void doDeleteItem(item)}

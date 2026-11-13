@@ -416,6 +416,9 @@ def create_item(
     placement: str = "box",
 ) -> VideoItem:
     _validate(kind, fit, motion, placement)
+    # 「恰好一个亮」 also holds for a fresh block: the default is M (§19.25.1).
+    if not solo and not muted:
+        muted = True
     if end_ms <= start_ms:
         raise AppError(
             "video_item_empty",
@@ -494,13 +497,18 @@ def update_item(
         row.muted = muted
     if solo is not None:
         row.solo = solo
-    # 「S」 and 「M」 are exclusive (§19.25). Storing both would leave the renderer guessing whether
-    # a block replaces the podcast with silence, so the later press wins: S un-mutes, M un-solos.
-    # Resolved on the **write**, not in the UI, because the API is a second writer.
+    # 「S」 and 「M」: exactly one is on (§19.25.1). Both off is a state nothing can explain —
+    # the bubble would show two dark letters while the block's sound is still mixed in.
+    #
+    # The later press wins, and the resolution happens on the **write**, not in the UI, because
+    # the API is a second writer: S un-mutes, M un-solos, and anything that would leave both dark
+    # falls back to M (the default).
     if solo is True:
         row.muted = False
     elif muted is True:
         row.solo = False
+    if not row.solo and not row.muted:
+        row.muted = True
     if placement is not None:
         row.placement = new_placement
 
