@@ -1139,6 +1139,11 @@ def _render_picture(
     # disk cost every export.
     for leftover in piece_dir.glob("chunk-*"):
         leftover.unlink(missing_ok=True)
+    # Same for the per-chunk avatar tracks: 14 chunks x 2 slots x ~3 MB is small, but they are
+    # regenerated on every export and are named by chunk, so nothing ever reuses them. Left
+    # behind they accumulate for the life of the project.
+    for stale_track in work_dir.glob("avatar-*-[0-9][0-9][0-9][0-9].mov"):
+        stale_track.unlink(missing_ok=True)
 
 
 def _encode(
