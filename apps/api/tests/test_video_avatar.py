@@ -153,7 +153,7 @@ def test_two_turns_produce_five_pieces() -> None:
 def test_a_slice_keeps_the_state_that_was_current_at_its_start() -> None:
     """A chunk that begins while someone is talking must start lit, not dip for one frame.
 
-    The per-chunk track is rebuilt from the intervals (§19.29), so ``start_ms`` mid-interval has
+    The per-chunk track is rebuilt from the intervals (§19.27.3), so ``start_ms`` mid-interval has
     to keep that interval's state rather than producing a leading dim piece.
     """
     pieces = pieces_in([Interval(0, 4000)], start_ms=1500, end_ms=3000)

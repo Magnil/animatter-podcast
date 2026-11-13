@@ -258,7 +258,7 @@ def test_a_fitting_plan_never_exceeds_the_box(width: int) -> None:
         assert plan.height_px <= 400
 
 
-# --- separate title and body faces (§19.17) -----------------------------
+# --- separate title and body faces (§19.16) -----------------------------
 
 
 def test_the_title_is_wrapped_with_its_own_measurement() -> None:

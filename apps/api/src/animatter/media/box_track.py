@@ -63,7 +63,7 @@ KIND_IMAGE = "image"
 KIND_VIDEO = "video"
 #: A stretch of timeline with no block: show the plate, so the overlay stays opaque.
 KIND_PLATE = "plate"
-#: A placeholder in the other of the two chains (§19.27). The lower chain draws box blocks and
+#: A placeholder in the other of the two chains (§19.26). The lower chain draws box blocks and
 #: the top chain draws 全屏 blocks; each still has to span the whole film, so wherever a chain
 #: must draw nothing it draws this. It is a `color` **source filter**, not a file: no `-i`, no
 #: entry in `sources`, no input number to get wrong.
@@ -93,7 +93,7 @@ class BoxSegment:
     crop: tuple[int, int, int, int] | None = None
     loop: bool = False
     #: ``box`` (default) keeps the picture inside the material box; ``full`` fills the whole
-    #: canvas instead (§19.26). Per segment because one film can mix the two.
+    #: canvas instead (§19.25). Per segment because one film can mix the two.
     placement: str = "box"
 
 
@@ -463,7 +463,7 @@ def _canvas_piece(
     input_base: int,
     tag: int,
 ) -> str:
-    """One segment normalised into a canvas-sized RGBA frame (§19.26).
+    """One segment normalised into a canvas-sized RGBA frame (§19.25).
 
     A ``full`` segment is normalised straight into the canvas; anything else is normalised
     into the material box and padded transparently out to the canvas at the box's position.

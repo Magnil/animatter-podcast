@@ -1296,7 +1296,7 @@ export interface VideoItem {
   gallery_json: string;
   orphaned: boolean;
   /**
-   * Whether the block's own sound is silenced (§19.20).
+   * Whether the block's own sound is silenced (§19.19).
    *
    * `true` by default — the film's audio is the podcast, and a block's sound is something the
    * user asks for. So an untouched project sounds exactly as it did before the feature.
@@ -1304,13 +1304,13 @@ export interface VideoItem {
   muted: boolean;
   /**
    * 「S」: the block's own sound **replaces** the podcast over its stretch instead of being mixed
-   * under it (§19.25). Mutually exclusive with `muted` — the server clears whichever was pressed
+   * under it (§19.24). Mutually exclusive with `muted` — the server clears whichever was pressed
    * last, so `muted && solo` is never stored.
    */
   solo: boolean;
   /**
    * `box` draws the block inside the template's material box (the default); `full` fills the
-   * whole canvas (§19.26).
+   * whole canvas (§19.25).
    */
   placement: string;
   /**

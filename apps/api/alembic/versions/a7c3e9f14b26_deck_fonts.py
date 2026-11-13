@@ -1,8 +1,8 @@
-"""``deck.title_font`` / ``deck.body_font`` — per-deck slide typefaces (§19.17).
+"""``deck.title_font`` / ``deck.body_font`` — per-deck slide typefaces (§19.16).
 
 Round 101: a slide's title and its body are different kinds of text, and the deck had exactly
 one hard-coded family for both. The template tab has been able to set them separately since
-§19.14, so the deck was the one place in the product where type was all-or-nothing.
+§19.13, so the deck was the one place in the product where type was all-or-nothing.
 
 Both columns default to the **empty string**, which means "whatever the renderer's default
 is". Two consequences worth stating:

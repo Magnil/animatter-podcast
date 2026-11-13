@@ -120,7 +120,7 @@ def _probe(ffprobe: str, path: Path) -> tuple[int, int, int, bool, bool]:
     ``has_video`` is what separates a real clip from an audio file with a .mp4 suffix;
     a plain "ffmpeg opened it" check would happily add a soundtrack to the library.
 
-    ``has_audio`` is kept because a clip's own sound is opt-in per block (§19.20): the
+    ``has_audio`` is kept because a clip's own sound is opt-in per block (§19.19): the
     bubble offers 「M」 only for a block that has something to unmute. Probing for it later
     would mean one ffprobe process per distinct clip on every export, and the UI cannot
     guess it at all.
@@ -246,7 +246,7 @@ def import_asset(
         if not existing.original_name:
             existing.original_name = (display_name or resolved.name)[:200]
             session.flush()
-        # `has_audio` postdates some rows too (§19.20). It is checked separately from the name,
+        # `has_audio` postdates some rows too (§19.19). It is checked separately from the name,
         # because the two columns were added in different rounds and a row can easily have one
         # and not the other — the demo project's six clips all had names and none had a sound
         # flag. Only clips are probed: an image's answer is always `false`.

@@ -232,7 +232,7 @@ def test_a_real_encode_switches_the_avatar_at_the_right_frame(tmp_path: Path) ->
 
 
 def test_a_chunk_track_is_declared_without_a_time_bound(tmp_path: Path) -> None:
-    """The whole-track declaration is bare `-i`: no `-ss`, no `-t` (§19.29).
+    """The whole-track declaration is bare `-i`: no `-ss`, no `-t` (§19.27.3).
 
     Both bounds are destructive on a track that already covers exactly the chunk:
 

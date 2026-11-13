@@ -265,7 +265,7 @@ def test_the_bindings_change_the_still_digest() -> None:
 
 
 def test_the_box_source_file_name_changes_the_still_digest() -> None:
-    """A slide's PNG is named after its size *and its typefaces* (§19.17).
+    """A slide's PNG is named after its size *and its typefaces* (§19.16).
 
     So "the deck's font changed" reaches the still only through the file name — the segment's
     kind, duration and crop are identical. Without this, changing a deck's font left the still

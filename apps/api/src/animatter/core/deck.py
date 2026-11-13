@@ -1,4 +1,4 @@
-"""Deck planning: turning a transcript into topic pages, with no IO (§19.6, §19.16).
+"""Deck planning: turning a transcript into topic pages, with no IO (§19.6, §19.15).
 
 What "one page" means
 ---------------------

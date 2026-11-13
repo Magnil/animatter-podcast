@@ -14,7 +14,7 @@ Order of work, and why:
    is reused when an identical EDL was already exported — it is keyed by EDL hash.
 2. **Cues → ASS.** Cues are built in *output* time (mapped through the TimeMap), so
    subtitles cannot drift away from the cut speech.
-3. **Silent video.** One ffmpeg, one filtergraph in a script file (§19.11.1).
+3. **Silent video.** One ffmpeg, one filtergraph in a script file (§19.11 陷阱 1).
 4. **Mux.** ``-c copy``; measured 0.24 s per 60 s.
 
 Still preview is a separate, request-time path: ~200 ms per frame, so the UI can call
@@ -294,7 +294,7 @@ def _cues_for(
     """The burned-in subtitles in **output** time, before any chunking.
 
     Kept separate from ``_ass_for`` because a chunked export needs the cues themselves: each
-    chunk gets its own ASS re-based to chunk-local time (§19.28). Building one whole-film ASS
+    chunk gets its own ASS re-based to chunk-local time (§19.27). Building one whole-film ASS
     and slicing the text would put every cue in every chunk — the burn is relative to the
     frame's PTS, and every chunk starts at 0.
     """
@@ -405,7 +405,7 @@ def _box(
         edl=edl,
         settings=settings,
         project_id=template.project_id,
-        # The canvas, not the box: a 全屏 block is normalised into the frame (§19.26).
+        # The canvas, not the box: a 全屏 block is normalised into the frame (§19.25).
         canvas_w=template.canvas_w or 1920,
         canvas_h=template.canvas_h or 1080,
     )
@@ -413,7 +413,7 @@ def _box(
 
 
 def _box_chain(plan: video_box.BoxPlan) -> box_track.BoxChain:
-    """The lower chain: what is drawn **under** the avatars and the text (§19.27).
+    """The lower chain: what is drawn **under** the avatars and the text (§19.26).
 
     With no 全屏 block this is the whole timeline, built exactly as it always was — the opaque,
     box-sized chain. That is the branch every existing project takes, and it is why the feature
@@ -529,7 +529,7 @@ def _avatar_layers(
     export fast: the user is watching a progress bar either way.
 
     ``start_ms``/``end_ms`` render a **short track for one chunk** instead of the whole film
-    (§19.28). Seeking the whole-film track into a chunk does not work: it is a sparse VFR clip
+    (§19.27). Seeking the whole-film track into a chunk does not work: it is a sparse VFR clip
     (298 frames over 61 minutes), and `-ss <start> -t <seconds>` makes ffmpeg both drop frames
     and end the stream early. Measured on 费那奇MV: a 133 s window declared with `-t` yielded 7
     of 298 frames, last at 67 s, and because the overlay uses `eof_action=pass` the avatar then
@@ -680,7 +680,7 @@ def preview_still(
     canvas_w = template.canvas_w or 1920
     canvas_h = template.canvas_h or 1080
     # The still draws exactly one stretch, and it goes to the same layer the export would put
-    # it on (§19.27): a 全屏 block above the avatars and the text, everything else below them.
+    # it on (§19.26): a 全屏 block above the avatars and the text, everything else below them.
     # ``None`` for both chains means "this frame has nothing to draw", which is a plate gap.
     box_chain: box_track.BoxChain | None = None
     box_segment: box_track.BoxSegment | None = None
@@ -767,7 +767,7 @@ def _still_digest(
         found = covered[0]
         # ``covered[1]`` is the *file* the segment draws. Its **name** carries facts the rest of
         # this digest cannot see: a slide's PNG is named after the size and the typefaces it was
-        # drawn with (§19.17), so changing a deck's font produces a new name for the same
+        # drawn with (§19.16), so changing a deck's font produces a new name for the same
         # instant. Without it the still kept its old name and the browser kept the old picture —
         # the exact "I changed it and the preview did not move" failure trap 24 is about.
         # Name only, not the full path: the file lives under a data dir that differs per test
@@ -920,7 +920,7 @@ def _chain_for(
     out_label: str,
     start_ms: int = 0,
 ) -> tuple[box_track.BoxChain, list[box_track.BoxSegment], list[Path]]:
-    """One chunk's material chain, with its inputs renumbered and its files narrowed (§19.28).
+    """One chunk's material chain, with its inputs renumbered and its files narrowed (§19.27).
 
     A chunk declares only the files it actually shows, so its ``-i`` list is as short as its
     segment list. That is the whole point: the memory cost tracked the number of *inputs*, and
@@ -977,7 +977,7 @@ def _render_picture(
     target: Path,
     report: Callable[[float], None],
 ) -> None:
-    """Encode the whole picture track, **one chunk of the timeline per ffmpeg process** (§19.28).
+    """Encode the whole picture track, **one chunk of the timeline per ffmpeg process** (§19.27).
 
     The reason is memory, not speed. The material chain puts one branch per segment into the
     filtergraph, ffmpeg is push-based, and every branch that is not yet current still receives
@@ -1165,7 +1165,7 @@ def _encode(
             raise AppError("render_not_found", "导出任务不存在", status=404)
 
         # Resolved **here**, not in `prepare`: an empty edit has no prior export, so this is
-        # where the audio gets made (§19.23), and making it inside the request that queues the
+        # where the audio gets made (§19.22), and making it inside the request that queues the
         # job would block the UI for the length of the episode.
         audio = _audio_for(
             session,
@@ -1201,7 +1201,7 @@ def _encode(
             edl=prepared.edl,
         )
         # The cues themselves, not one whole-film ASS: each chunk burns its own re-based copy
-        # (§19.28). A single ASS would put every cue in every chunk, because the burn is
+        # (§19.27). A single ASS would put every cue in every chunk, because the burn is
         # relative to the frame's PTS and every chunk starts at 0.
         cues = _cues_for(session, version_id, prepared.edl) if options.burn_subtitles else []
     if options.burn_subtitles and not cues:
@@ -1235,7 +1235,7 @@ def _encode(
         video=silent,
         audio=audio,
         target=final,
-        # Empty unless the user unmuted something (§19.20), which is what keeps the silent
+        # Empty unless the user unmuted something (§19.19), which is what keeps the silent
         # case on the `-c copy` path it was designed around.
         mix=[
             video_media.AudioMix(

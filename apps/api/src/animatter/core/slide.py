@@ -5,7 +5,7 @@ forced by the product:
 
 * **The text must never be clipped.** A generated deck's body is transcript prose — long,
   unbroken CJK with no spaces to break at. libass taught us the cost of assuming something
-  else will wrap (§19.11.9): it silently runs off the canvas. So wrapping happens here,
+  else will wrap (§19.11 陷阱 9): it silently runs off the canvas. So wrapping happens here,
   before anything is drawn, and the result is a list of lines that are known to fit.
 * **A page that does not fit must shrink, not overflow.** Auto-shrink is the only behaviour
   that keeps a generated 3-line title and a 9-line body readable without the user having to

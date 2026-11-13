@@ -1,4 +1,4 @@
-"""One place that builds a model client (§19.16).
+"""One place that builds a model client (§19.15).
 
 The model is a *setting*, not a process constant: the menu lets the user pick ``qwen-max`` for
 a flagship episode without a restart. That read, plus the "no key" case, was written out

@@ -1,5 +1,5 @@
 /**
- * The template's editable properties (§19.12, §19.15).
+ * The template's editable properties (§19.12, §19.14).
  *
  * What this panel is for: the PSD supplies the **layout** — where each piece of text sits, how
  * big it is, what colour it is — and this lets the user change the **content** without

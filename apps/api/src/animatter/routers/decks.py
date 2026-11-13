@@ -5,7 +5,7 @@ Shapes, and why:
 * the deck is **one per project**, so there is no id in the collection URL — the UI asks
   "this project's deck" and the server answers, or ``null``;
 * ``image_url`` is returned by the server rather than built by the client, for the same
-  reason the template asset URL is (§19.11.11): a URL the client assembles can look valid
+  reason the template asset URL is (§19.11 陷阱 11): a URL the client assembles can look valid
   and 404, and a test that fetches the URL the response hands back catches that.
 """
 

@@ -1,4 +1,4 @@
-"""``video_item.solo`` + ``video_item.placement`` (§19.25, §19.26).
+"""``video_item.solo`` + ``video_item.placement`` (§19.24, §19.25).
 
 Revision ID: e3a7c1d5b920
 Revises: c9e2a71d4f83

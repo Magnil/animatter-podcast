@@ -65,15 +65,15 @@ export interface VideoTrackProps {
    */
   selectedId: string | null;
   onFit: (item: VideoItem, fit: string) => void;
-  /** Put the block back on M: its own sound silent, the podcast alone (§19.25.1). */
+  /** Put the block back on M: its own sound silent, the podcast alone (§19.24.1). */
   onMute: (item: VideoItem) => void;
   /**
    * 「S」: switch the block to replacing the podcast over its stretch, or back to M. One setter
-   * for both letters because they are one control (§19.25.1). `false` means back to M, never
+   * for both letters because they are one control (§19.24.1). `false` means back to M, never
    * "neither".
    */
   onSolo: (item: VideoItem, solo: boolean) => void;
-  /** 素材框 / 全屏 (§19.26). */
+  /** 素材框 / 全屏 (§19.25). */
   onPlacement: (item: VideoItem, placement: string) => void;
   onDelete: (item: VideoItem) => void;
   /** Zoom/pan the **shared** window — the same one the audio waveform uses. */
@@ -487,7 +487,7 @@ export function VideoTrack({
             wrong with this block", and the answer is "nothing".
 
             **Exactly one is lit**, because a block with sound is always in one of two states
-            (§19.25.1):
+            (§19.24.1):
               M lit → its sound is silent; the podcast plays alone. This is the default.
               S lit → its sound **replaces** the podcast over this stretch.
             There is no "neither" state to reach, so the control is two-state, not three.
@@ -509,7 +509,7 @@ export function VideoTrack({
                     ? `已静音 ${blockName(bubbleItem)}：成片里只有播客的声音`
                     : `静音 ${blockName(bubbleItem)}：只留播客的声音`
                 }
-                // M is a **destination**, not a toggle (§19.25.1). With both letters off
+                // M is a **destination**, not a toggle (§19.24.1). With both letters off
                 // forbidden, "unmute into the mix" has no state to land in, so pressing M
                 // always means "back to M" — and pressing it while already there does nothing.
                 onClick={() => onMute(bubbleItem)}

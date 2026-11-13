@@ -1,4 +1,4 @@
-"""Topic planning: the model's outline, and the repair that makes it renderable (§19.16).
+"""Topic planning: the model's outline, and the repair that makes it renderable (§19.15).
 
 Three groups, and each one exists because round 100 replaced a deterministic page cutter with
 a model-written outline, so the ways the new path can silently produce a bad deck are new:

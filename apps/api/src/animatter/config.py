@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     ffprobe_path: str = "ffprobe"
 
     # --- video export ---------------------------------------------------
-    #: How many material segments one ffmpeg process may hold (§19.28).
+    #: How many material segments one ffmpeg process may hold (§19.27).
     #:
     #: This is a *memory* limit, not a speed one. The filtergraph spends one branch per
     #: segment, ffmpeg is push-based, so every branch that is not yet current still receives

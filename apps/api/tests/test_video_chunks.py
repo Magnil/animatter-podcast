@@ -1,4 +1,4 @@
-"""Chunking the export timeline (§19.28): arithmetic that must not drift.
+"""Chunking the export timeline (§19.27): arithmetic that must not drift.
 
 The 费那奇MV export died with `Cannot allocate memory` because one filtergraph held 68 material
 branches. The fix renders a few segments per ffmpeg process and `-c copy` concatenates them. That

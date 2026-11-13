@@ -164,7 +164,7 @@ export const FITS: { id: string; label: string; hint: string }[] = [
 /**
  * Where a block is drawn: inside the template's material box, or over the whole canvas.
  *
- * Shown **before** the fit list in the bubble (§19.26) because it answers a bigger question:
+ * Shown **before** the fit list in the bubble (§19.25) because it answers a bigger question:
  * the fit decides how the picture fills its rectangle, and this decides which rectangle. Picking
  * 全屏 with 完整显示 is meaningful; so is 素材框 with 填满裁切.
  *

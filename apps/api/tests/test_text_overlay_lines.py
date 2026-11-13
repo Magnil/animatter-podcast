@@ -1,4 +1,4 @@
-"""A multi-line slot keeps the colours of its later lines (§19.12, §19.14).
+"""A multi-line slot keeps the colours of its later lines (§19.12, §19.13).
 
 The sample title is two paragraphs, and the PSD paints one phrase on the **second** line red:
 

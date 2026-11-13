@@ -1,5 +1,5 @@
 /**
- * Deck panel: generate topic pages, proofread them, drop them into the box (P4, §19.16).
+ * Deck panel: generate topic pages, proofread them, drop them into the box (P4, §19.15).
  *
  * **A page is a topic, not a stretch of transcript.** The panel asks the server to plan pages
  * by where the conversation turns, and each page carries 2–4 sub-topics rather than the

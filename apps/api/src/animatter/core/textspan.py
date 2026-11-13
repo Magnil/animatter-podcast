@@ -1,4 +1,4 @@
-"""Multi-colour text: ``**...**`` marks the accent run (§19.14).
+"""Multi-colour text: ``**...**`` marks the accent run (§19.13).
 
 The PSD's own runs are the spec. Measured on the sample (run lengths + colours, per character):
 

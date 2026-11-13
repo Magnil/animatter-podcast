@@ -1,4 +1,4 @@
-"""Deck typefaces: title and body set separately (§19.17).
+"""Deck typefaces: title and body set separately (§19.16).
 
 Three things are being pinned, and each of them fails *silently* rather than loudly if it
 regresses:

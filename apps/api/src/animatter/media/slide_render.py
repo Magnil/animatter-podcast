@@ -9,7 +9,7 @@ there; this module only knows about files, fonts and pixels.
 
 Title and body take **separate families** (round 101). A deck's page is a title and a list of
 points, and those two are different kinds of text; the template tab has set them separately
-since §19.14, so a deck that could not would be the one place in the product where type is
+since §19.13, so a deck that could not would be the one place in the product where type is
 all-or-nothing.
 """
 

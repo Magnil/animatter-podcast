@@ -1,4 +1,4 @@
-"""Cut a film into chunks that one ffmpeg process can render (§19.28).
+"""Cut a film into chunks that one ffmpeg process can render (§19.27).
 
 Why chunks exist
 ----------------

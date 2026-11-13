@@ -478,7 +478,7 @@ class Deck(Base):
     #: JSON list of user-facing strings produced by the generation run (a dropped page, a
     #: merged page, a failed block). Empty for a clean run.
     warnings_json: Mapped[str] = mapped_column(Text, default="[]")
-    #: Typeface for the page title and for the body points, set separately (§19.17).
+    #: Typeface for the page title and for the body points, set separately (§19.16).
     #: **Empty means "the renderer's default"**, deliberately not a font name: an untouched deck
     #: then keeps following ``slide_render.FONT_FAMILY`` if that default ever changes, and a
     #: migration does not have to write a machine-specific family into every existing row.
@@ -544,16 +544,16 @@ class VideoItem(Base):
     #: The block's audio was deleted in full, so it has zero length in the output.
     #: Flagged rather than deleted: the user may restore that sentence tomorrow.
     orphaned: Mapped[bool] = mapped_column(Boolean, default=False)
-    #: Silence the **asset's own** sound (§19.20). ``True`` by default: the film's audio is the
+    #: Silence the **asset's own** sound (§19.19). ``True`` by default: the film's audio is the
     #: podcast, and until this round that was the only thing in it. A block's sound is an extra
     #: the user asks for, so an untouched project sounds exactly as it did before.
     muted: Mapped[bool] = mapped_column(Boolean, default=True)
     #: ``Solo``: this block's own sound **replaces** the podcast for its stretch, instead of
-    #: being mixed under it (§19.25). Off by default — mixing is the gentler of the two, and a
+    #: being mixed under it (§19.24). Off by default — mixing is the gentler of the two, and a
     #: project that never presses S must keep the podcast audible everywhere.
     solo: Mapped[bool] = mapped_column(Boolean, default=False)
     #: ``box`` (draw inside the material box) or ``full`` (draw over the whole canvas,
-    #: §19.26). ``box`` is the default so a project stored before this column existed renders
+    #: §19.25). ``box`` is the default so a project stored before this column existed renders
     #: byte-identically.
     placement: Mapped[str] = mapped_column(String(8), default="box")
     created_at: Mapped[str] = mapped_column(String(32))

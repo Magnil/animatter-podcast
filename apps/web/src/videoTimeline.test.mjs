@@ -537,7 +537,7 @@ test("viewAround clamps at the start and the end", () => {
   const atEnd = viewAround(120000, { from: 0, to: 20000 }, 120000);
   assert.equal(atEnd.to, 120000);
 });
-// --- 展现方式 (§19.26) ----------------------------------------------------
+// --- 展现方式 (§19.25) ----------------------------------------------------
 
 test("PLACEMENTS is 素材框 then 全屏, and nothing else", () => {
   // Order matters: this select sits **before** the fit select in the bubble, so its first entry

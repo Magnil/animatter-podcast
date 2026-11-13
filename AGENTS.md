@@ -38,21 +38,32 @@
 
 ## 改什么，读哪份
 
-| 你要动的 | 读这份 | 章节 |
-|---|---|---|
-| 产品边界、某功能该不该做、一次典型会话 | [`docs/product.md`](docs/product.md) | §0 §1 §17 |
-| 百炼 API 的参数名/限制/配额/模型能力、文档链接 | [`docs/constraints.md`](docs/constraints.md) | §2 §18 |
-| 表结构、字段、迁移、目录布局、技术选型 | [`docs/architecture.md`](docs/architecture.md) | §3 §4 §5 |
-| 转写链路：转码、切分、热词、状态机、归一化 | [`docs/pipeline.md`](docs/pipeline.md) | §6.0–6.3 |
-| 句/词模型、边界编辑、EDL、删除、字幕、文稿 | [`docs/editing-model.md`](docs/editing-model.md) | §6.4–6.7 |
-| 前端布局、波形、虚拟列表、交互 | [`docs/frontend.md`](docs/frontend.md) | §7 |
-| 接口形状、错误码、测试分层、崩溃恢复、密钥、成本 | [`docs/api-and-quality.md`](docs/api-and-quality.md) | §8–§12 |
-| 已经拍板的决策、容易被漏掉的坑 | [`docs/decisions.md`](docs/decisions.md) | §14 §15 |
-| 视频剪辑：模板编译、素材框、头像亮暗、渲染管线 | [`docs/video.md`](docs/video.md) | §19 |
-| 做到哪了、还差什么 | [`docs/milestones.md`](docs/milestones.md) | §13 |
-| **某个东西当初为什么这么做** | [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | 按日期 |
-| 手头排队的活 | [`todolist.md`](todolist.md) | — |
-| 协作偏好、提交纪律、todo 规范 | [`docs/conventions.md`](docs/conventions.md) | §16 |
+**每份文档只有一个职责，不要把内容写在别的分类里。** 判据：读这份是在回答哪个问题。
+
+| 你要动的 | 读这份 | 章节 | 这份回答的问题 |
+|---|---|---|---|
+| 产品边界、某功能该不该做、一次典型会话 | [`docs/product.md`](docs/product.md) | §0 §1 §17 | 做什么、不做什么 |
+| 百炼 API 的参数名/限制/配额/模型能力、文档链接 | [`docs/constraints.md`](docs/constraints.md) | §2 §18 | 外部世界强加了什么 |
+| 表结构、字段、迁移、目录布局、技术选型 | [`docs/architecture.md`](docs/architecture.md) | §3 §4 §5 | 系统长什么样 |
+| 转写链路：转码、切分、热词、状态机、归一化 | [`docs/pipeline.md`](docs/pipeline.md) | §6.0–6.3 | 一次转写怎么走完 |
+| 句/词模型、边界编辑、EDL、删除、字幕、文稿 | [`docs/editing-model.md`](docs/editing-model.md) | §6.4–6.7 | 编辑的语义与不变量 |
+| 前端布局、波形、虚拟列表、交互 | [`docs/frontend.md`](docs/frontend.md) | §7 | 界面为什么这样 |
+| 接口形状、错误码、测试分层、崩溃恢复、密钥、成本 | [`docs/api-and-quality.md`](docs/api-and-quality.md) | §8–§12 | 契约与质量下限 |
+| 已经拍板的决策、容易被漏掉的坑 | [`docs/decisions.md`](docs/decisions.md) | §14 §15 | **不要再争论什么** |
+| 视频剪辑：模板编译、素材框、头像亮暗、渲染管线 | [`docs/video.md`](docs/video.md) | §19 | 视频怎么合成、踩过哪些坑 |
+| **做到哪了、验收标准是什么** | [`docs/milestones.md`](docs/milestones.md) | §13 | 已交付什么（只记结论） |
+| **某个东西当初为什么这么做** | [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | 按日期 | 当时的取舍与试错 |
+| **还没做的事，以及为什么现在不做** | [`todolist.md`](todolist.md) | A–E | 下一步做什么 |
+| 协作偏好、提交纪律、todo 规范 | [`docs/conventions.md`](docs/conventions.md) | §16 | 怎么在这个仓库干活 |
+
+**四条最容易写错的边界**（第 122 轮整理出来的）：
+
+- `todolist.md` **只写没做的事**。做完一条就删掉——验收写进 `milestones.md`，原因写进
+  `CHANGELOG.md`。留着的已完成项会让人以为还要做。
+- `milestones.md` **只记结论和判据**，不记设计推理（那在主题文档里）和逐轮细节（那在 CHANGELOG）。
+- 主题文档（`video.md`、`frontend.md` 等）**只写现在的设计与实测**；「这一轮为什么这么改」属于
+  CHANGELOG，只有当作设计约束留下时才写进主题文档。
+- 决策一旦拍板就进 `decisions.md` 并给编号（D1–D17），主题文档里只引用编号，不复制理由。
 
 `§N` 编号跨文件保持全局唯一，源码注释里的 `AGENTS.md §6.4` 指的就是上表对应的那份。
 

@@ -1,4 +1,4 @@
-"""Deck outline: ask the model where the topics turn, then repair the answer (§19.16).
+"""Deck outline: ask the model where the topics turn, then repair the answer (§19.15).
 
 The model is asked one thing — **which line a page starts on, and what that page says** — and
 :mod:`animatter.core.deck` does everything else. That split is the same one the ShowNotes

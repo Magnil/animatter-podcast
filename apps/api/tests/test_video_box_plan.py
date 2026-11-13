@@ -149,7 +149,7 @@ def test_a_single_block_covers_the_whole_film(
     assert not plan.empty
 
 
-# --- the block's own sound, in output time (§19.20) --------------------
+# --- the block's own sound, in output time (§19.19) --------------------
 
 
 def test_a_muted_block_contributes_no_sound(
@@ -708,7 +708,7 @@ def test_a_template_without_a_box_is_refused(
     assert "素材框" in str(caught.value)
 
 
-# --- placement (round 111, §19.26) ---------------------------------------
+# --- placement (round 111, §19.25) ---------------------------------------
 
 
 def test_every_segment_a_block_emits_inherits_its_placement(
@@ -851,7 +851,7 @@ def test_a_muted_block_is_never_audible_even_when_soloed(
     assert plan.audible == ()
 
 
-# --- 两条链：框内在下，全屏在上 (§19.27) --------------------------------
+# --- 两条链：框内在下，全屏在上 (§19.26) --------------------------------
 
 
 def test_a_plan_without_a_full_block_has_no_split(

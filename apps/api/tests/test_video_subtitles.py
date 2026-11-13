@@ -1,4 +1,4 @@
-"""Burned-in subtitles: ASS serialisation and the font guard (§19.5, §19.11.2).
+"""Burned-in subtitles: ASS serialisation and the font guard (§19.5, §19.11 陷阱 2).
 
 Two libass behaviours are silent and both ruin an export:
 

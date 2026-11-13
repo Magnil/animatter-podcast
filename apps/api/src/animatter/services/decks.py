@@ -83,7 +83,7 @@ def image_path(
     1440×810 box. The overlay then upscaled it, which is precisely the soft text this
     design exists to avoid, and the text visibly ran past the box's right edge.
 
-    The fonts are in the name for the same reason (§19.17), and ``typefaces`` is therefore
+    The fonts are in the name for the same reason (§19.16), and ``typefaces`` is therefore
     **already resolved** — an unset deck is spelled as the family it will actually draw in,
     so "unset" and "explicitly the default" are the same file rather than two copies of the
     same pixels. A slug collision between two families is caught by ``set_fonts``, which
@@ -174,7 +174,7 @@ def set_fonts(
 ) -> Deck:
     """Change the deck's typefaces and throw away every stale PNG.
 
-    The pictures *must* go, at every size. The file name carries the pair (§19.17), so a font
+    The pictures *must* go, at every size. The file name carries the pair (§19.16), so a font
     change already lands on a new path — but the *old* files would then be unreachable garbage
     that ``purge_images`` is the only thing to collect, and a page whose font was changed back
     would be served from a stale picture. Trap 24 in §19.11 is the same failure one level up:

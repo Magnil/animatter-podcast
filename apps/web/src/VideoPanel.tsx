@@ -415,7 +415,7 @@ export function VideoPanel({
   /**
    * 「M」: the block is silent and the podcast plays alone. This is the default state.
    *
-   * M is a **destination**, not a toggle (§19.25.1). Both letters off is not a state the
+   * M is a **destination**, not a toggle (§19.24.1). Both letters off is not a state the
    * bubble can draw, so the "unmute into the mix" branch that M used to have no longer has
    * anywhere to land: pressing M while M is lit is a no-op, not a request the server would
    * have to ignore.
@@ -436,7 +436,7 @@ export function VideoPanel({
   };
 
   /**
-   * 「S」: replace the podcast with this block's sound, or go back to the default (§19.25).
+   * 「S」: replace the podcast with this block's sound, or go back to the default (§19.24).
    *
    * Un-soloing does not mean "neither": it means back to M, which is the only other state a
    * block with sound can be in. So the off-branch sends `muted: true` in the same request
@@ -457,7 +457,7 @@ export function VideoPanel({
     }
   };
 
-  /** 素材框 / 全屏 (§19.26). Both are visible immediately — the still proves it. */
+  /** 素材框 / 全屏 (§19.25). Both are visible immediately — the still proves it. */
   const doPlacement = async (item: VideoItem, placement: string): Promise<void> => {
     try {
       await api.patchVideoItem(item.id, { placement });

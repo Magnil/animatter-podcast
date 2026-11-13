@@ -88,10 +88,10 @@ POST   /api/projects/{id}/export                       导出（kind 参数）
 
 `tests/fixtures/` 放 3 个固定音频（30s 单speaker / 3min 双speaker / 10min 中英混排）+ 期望的 token 快照（JSON）。算法改动必须过快照 diff。
 
-> **实际状态（2026-11-09）**：`tests/fixtures/` 里只有一个 `audacity_full_labels.txt`（人工标注参照），
-> 三份音频与 token 快照都没做。回归目前靠 651 条单元测试加真实项目手动走查。
+> **实际状态（2026-11-13）**：`tests/fixtures/` 里只有一个 `audacity_full_labels.txt`（人工标注参照），
+> 三份音频与 token 快照都没做。回归目前靠 1382 条单元测试加真实项目手动走查。
 > 这在算法改动上是真风险：没有快照 diff，一次「看起来更合理」的改动不会有人挡住。
-> 要补就优先补一条——**10 分钟的 token 快照**，比三份音频都值。
+> 要补就优先补一条——**10 分钟的 token 快照**，比三份音频都值。见 `todolist.md` E3。
 
 ---
 ## 10. 错误处理与可恢复性

@@ -56,7 +56,7 @@ class PlannedBlock:
 
 @dataclass(frozen=True)
 class BoxSplit:
-    """The same timeline cut into two chains: under the text, and over it (§19.27).
+    """The same timeline cut into two chains: under the text, and over it (§19.26).
 
     Both halves are **complete**: each spans the whole film and their segment boundaries line
     up one for one, with :data:`box_track.KIND_TRANSPARENT` standing in wherever a half has
@@ -75,7 +75,7 @@ class BoxSplit:
 
 @dataclass(frozen=True)
 class AudibleStretch:
-    """One block's own sound, placed on the **output** timeline (§19.20).
+    """One block's own sound, placed on the **output** timeline (§19.19).
 
     ``path`` is the asset file; ``start_ms``/``end_ms`` are output milliseconds. The clip is
     read from its own beginning — the picture is too, because a block plays continuously and
@@ -85,7 +85,7 @@ class AudibleStretch:
     start_ms: int
     end_ms: int
     path: Path
-    #: 「S」: replace the podcast over this stretch instead of mixing under it (§19.25).
+    #: 「S」: replace the podcast over this stretch instead of mixing under it (§19.24).
     solo: bool = False
 
 
@@ -109,12 +109,12 @@ class BoxPlan:
     audible: tuple[AudibleStretch, ...] = ()
     #: True when every segment is a plate excerpt: the film genuinely has no box content.
     empty: bool = True
-    #: True when at least one block is ``placement='full'`` (§19.26). The renderer then builds
+    #: True when at least one block is ``placement='full'`` (§19.25). The renderer then builds
     #: canvas-sized RGBA chains, because a full-frame block cannot be drawn inside a box-sized
     #: overlay.
     full_frame: bool = False
     #: ``None`` when no block is 全屏: the film renders through the single box chain it always
-    #: did. Otherwise the two halves of §19.27 — the lower one goes under the avatars and the
+    #: did. Otherwise the two halves of §19.26 — the lower one goes under the avatars and the
     #: text, the upper one over them.
     split: BoxSplit | None = None
 
@@ -285,7 +285,7 @@ def _slide_stretches(
     嘉宾介绍. A page owns ``[start, next_start)``, so the page on screen at an instant is the
     last one starting at or before it.
     """
-    # A deck block's pages are drawn wherever the block is drawn (§19.26).
+    # A deck block's pages are drawn wherever the block is drawn (§19.25).
     placement = item.placement or "box"
     pages = sorted(
         (start, slide_id)

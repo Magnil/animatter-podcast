@@ -1,4 +1,4 @@
-"""``deck.source`` / ``deck.warnings_json`` — how the pages were planned (§19.16).
+"""``deck.source`` / ``deck.warnings_json`` — how the pages were planned (§19.15).
 
 Round 100 replaced the deterministic page cutter with a topic outline produced by the model.
 Two consequences need somewhere to live:

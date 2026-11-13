@@ -123,7 +123,7 @@ def track_pieces(lit: list[Interval], *, total_ms: int) -> list[TrackPiece]:
 def pieces_in(lit: list[Interval], *, start_ms: int, end_ms: int) -> list[TrackPiece]:
     """The lit/dim sequence for one **slice** of the film, rebased to start at 0.
 
-    Used by the chunked export (§19.28). A chunk cannot simply seek the whole-film track: the
+    Used by the chunked export (§19.27). A chunk cannot simply seek the whole-film track: the
     track is a sparse VFR clip (298 frames over 61 minutes), and cutting it with
     ``-ss <start> -t <seconds>`` makes ffmpeg drop frames and then end the stream early — with
     ``eof_action=pass`` on the overlay, "ends early" means the avatar silently stops being drawn

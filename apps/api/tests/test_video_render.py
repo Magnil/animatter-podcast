@@ -103,7 +103,7 @@ def one_avatar() -> AvatarLayer:
     )
 
 
-# --- 全屏块在最顶层 (§19.27) ---------------------------------------------
+# --- 全屏块在最顶层 (§19.26) ---------------------------------------------
 
 
 def test_a_full_frame_chain_is_overlaid_after_the_text() -> None:
@@ -328,7 +328,7 @@ def test_encoder_settings_are_the_measured_ones() -> None:
 
 
 def test_a_still_puts_its_full_frame_segment_on_the_top_chain() -> None:
-    """§19.27: the still and the film must agree about which layer a block is on.
+    """§19.26: the still and the film must agree about which layer a block is on.
 
     A still that drew a 全屏 block under an avatar while the export drew it over would be the
     preview lying — exactly the failure `_still_digest` and the "same filtergraph as the export"

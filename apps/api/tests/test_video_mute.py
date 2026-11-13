@@ -1,4 +1,4 @@
-"""Round 108: the mute flag, the mix graph, and which blocks can speak (§19.20).
+"""Round 108: the mute flag, the mix graph, and which blocks can speak (§19.19).
 
 Three separable claims, so three groups:
 

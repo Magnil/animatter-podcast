@@ -1,4 +1,4 @@
-"""The chain that turns segments into ONE overlay (§19.5, §19.11.1).
+"""The chain that turns segments into ONE overlay (§19.5, §19.11 陷阱 1).
 
 The thing this file protects is not aesthetics: a wrong chain produces an mp4 that
 encodes fine and looks wrong. Specifically —
@@ -325,7 +325,7 @@ def test_single_segment_never_emits_more_than_one_frame() -> None:
     assert "trim=duration" not in chain.text
 
 
-# --- 全屏 (round 111, §19.26) --------------------------------------------
+# --- 全屏 (round 111, §19.25) --------------------------------------------
 
 
 def test_a_full_frame_segment_is_normalised_into_the_canvas() -> None:

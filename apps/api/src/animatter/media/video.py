@@ -144,7 +144,7 @@ def build_filtergraph(
     picture covers the plate. Its inputs come last, which is why it needs to know how many
     inputs came before it — see ``input_base``.
 
-    ``top`` is the 全屏 half of the material chain (§19.27). It goes **after** ``text`` and
+    ``top`` is the 全屏 half of the material chain (§19.26). It goes **after** ``text`` and
     before the subtitles: a full-frame block covers the whole canvas, so an avatar or a title
     left on top of it would look like the block failed to render. The lower ``box`` chain is
     the other half — the same timeline with the full-frame stretches replaced by transparent
@@ -316,7 +316,7 @@ def _chain_inputs(
 ) -> list[str]:
     """The `-i` declarations for one material chain, one per distinct source.
 
-    **Placeholders are skipped.** A transparent segment (§19.27) is a `color` filter with no
+    **Placeholders are skipped.** A transparent segment (§19.26) is a `color` filter with no
     file behind it, and its `input_index` is 0 — the same number a real segment's first source
     uses. Declaring it would either ask `input_args` for a path that does not exist or emit the
     same file twice, and either way every later input (avatars, text, the other chain) shifts by
@@ -382,12 +382,12 @@ def render(
     ``avatars`` are P3's lit/dim tracks, declared as plain ``-i`` inputs in the same order
     the filtergraph expects (background, artwork, box sources, avatars).
 
-    ``top``/``top_segments``/``top_sources`` are the 全屏 half (§19.27). Their inputs come
+    ``top``/``top_segments``/``top_sources`` are the 全屏 half (§19.26). Their inputs come
     **after** the text overlay, i.e. last, because that is the order the graph overlays them
     in. Keeping them a separate triple rather than one list of chains is the same choice the
     box already made: the media layer sees segments and paths, not a service-layer plan.
 
-    ``start_ms``/``frames`` render **one chunk** of a longer film (§19.28). The graph is built
+    ``start_ms``/``frames`` render **one chunk** of a longer film (§19.27). The graph is built
     only from the chunk's own segments (the caller narrows the plan), the avatar tracks are
     seeked to ``start_ms`` because each covers the whole film, and the output is cut to exactly
     ``frames`` frames so concatenating the chunks cannot drift. A frame count rather than a
@@ -582,7 +582,7 @@ def concat(
     parts: list[Path],
     target: Path,
 ) -> VideoResult:
-    """Join chunks with the concat demuxer and ``-c copy`` (§19.28).
+    """Join chunks with the concat demuxer and ``-c copy`` (§19.27).
 
     Stream copy, not a re-encode: every chunk was produced by the same encoder with the same
     settings, so joining them costs one read and one write per byte — measured 3.1 s for 1078 MB
@@ -591,7 +591,7 @@ def concat(
 
     The list is written **absolute** with forward slashes: the demuxer resolves relative paths
     against the *script's* directory, so a relative entry silently points at a file that is not
-    there and fails as "视频渲染失败" naming the wrong thing (§19.24 trap).
+    there and fails as "视频渲染失败" naming the wrong thing (§19.23 trap).
     """
     if not parts:
         raise AppError("video_concat_empty", "没有可拼接的分段")
@@ -712,7 +712,7 @@ def render_still(
         command += ["-loop", "1", "-i", str(text.path)]
     # A still needs at most one segment per chain, and neither is ever a placeholder: the
     # frame is drawn by exactly one of the two, and the covering segment is the one that has
-    # something to show (§19.27).
+    # something to show (§19.26).
     if top_segment is not None and top_source is not None:
         command += box_track.input_args(top_segment, top_source)
 
@@ -745,7 +745,7 @@ class AudioMix:
     the original timeline than what the film plays of it. The clip is always read from its own
     beginning, because that is what its picture does.
 
-    ``solo`` is 「S」 (§19.25): the podcast is cut out over this stretch and the clip plays
+    ``solo`` is 「S」 (§19.24): the podcast is cut out over this stretch and the clip plays
     alone, instead of the two being summed. One flag rather than a second list, because a
     stretch cannot sensibly be both mixed and replacing.
     """
@@ -769,7 +769,7 @@ def mux(
     ``-c copy`` measured 0.24 s per 60 s — three orders of magnitude cheaper than
     encoding audio here, and it guarantees the film's sound is bit-identical to the
     audio the user already exported and approved. That path is kept for the **silent**
-    case, which is the default and every project until someone unmutes a block (§19.20).
+    case, which is the default and every project until someone unmutes a block (§19.19).
 
     ``mix`` is the audible stretches, each labelled ``solo`` or not. Either way it cannot be a
     stream copy — two audio tracks have to be resampled, delayed and summed — so that case
@@ -879,7 +879,7 @@ def _mix_graph(stretches: list[AudioMix]) -> tuple[str, list[str]]:
     With 「S」 in play the podcast is silent wherever the clip speaks, so the two never sum to
     more than either one — which is why the limiter below is left alone rather than retuned. A
     solo stretch that happens to overlap a mixed one is the caller's business, not this
-    function's: the plan refuses to produce both for the same block (§19.25.1).
+    function's: the plan refuses to produce both for the same block (§19.24.1).
 
     ``alimiter`` is the other half of that decision, and it was measured rather than assumed:
     with ``normalize=0`` and both inputs at full scale, **36 000 of 96 000 samples** landed on

@@ -408,9 +408,9 @@ class ItemIn(BaseModel):
     gallery_json: str = "[]"
     snap: bool = True
     #: ``True`` (silent) is the default, matching the column: the film's sound is the podcast,
-    #: and a block's own audio is additional (§19.20). This is 「默认为 M」.
+    #: and a block's own audio is additional (§19.19). This is 「默认为 M」.
     muted: bool = True
-    #: ``S``: this block's sound **replaces** the podcast over its stretch (§19.25). Implies
+    #: ``S``: this block's sound **replaces** the podcast over its stretch (§19.24). Implies
     #: ``muted=False``; the service clears the mute rather than storing a state where silence
     #: and replacement are both claimed.
     solo: bool = False

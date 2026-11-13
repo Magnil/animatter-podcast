@@ -162,7 +162,7 @@ def test_the_image_url_the_response_returns_actually_works(
 ) -> None:
     """The URL must be fetched as returned, not assembled by the test.
 
-    §19.11.11: a client-built URL can look valid and 404, which is exactly what happened to
+    §19.11 陷阱 11: a client-built URL can look valid and 404, which is exactly what happened to
     the template asset route.
     """
     version_id = version.id  # type: ignore[attr-defined]

@@ -60,7 +60,7 @@ FITS = frozenset({"contain", "cover", "blur_fill", "blur_crop", "stretch"})
 MOTIONS = frozenset({"none", "kenburns"})
 
 #: Where a block is drawn: inside the template's material box, or over the whole
-#: canvas (§19.26). Two values, and ``box`` is the default so nothing changes.
+#: canvas (§19.25). Two values, and ``box`` is the default so nothing changes.
 PLACEMENTS = frozenset({"box", "full"})
 
 
@@ -109,13 +109,13 @@ class ItemView:
             "gallery_json": self.item.gallery_json,
             "orphaned": self.orphaned,
             #: Whether this block is silent. The UI draws 「M」 pressed when it is, and the
-            #: renderer mixes the asset's sound back in when it is not (§19.20).
+            #: renderer mixes the asset's sound back in when it is not (§19.19).
             "muted": self.item.muted,
-            #: Whether this block's own sound *replaces* the podcast over its stretch (§19.25).
+            #: Whether this block's own sound *replaces* the podcast over its stretch (§19.24).
             #: Only meaningful when the block is not muted; the UI treats the two as one
             #: three-state control so "muted and solo" cannot be stored by accident.
             "solo": self.item.solo,
-            #: ``box`` or ``full`` (§19.26).
+            #: ``box`` or ``full`` (§19.25).
             "placement": self.item.placement or "box",
             #: Whether unmuting would do anything — a still has no sound to bring back. Read
             #: from the asset (or from the gallery's first member) rather than left to the
@@ -408,15 +408,15 @@ def create_item(
     deck_id: str | None = None,
     slide_id: str | None = None,
     gallery_json: str = "[]",
-    #: 「默认为 M」: a new block is **silent**. The film's sound is the podcast (§19.20), and a
+    #: 「默认为 M」: a new block is **silent**. The film's sound is the podcast (§19.19), and a
     #: block's own audio is something the user asks for — pressing M mixes it under, pressing S
-    #: makes it replace the podcast (§19.25).
+    #: makes it replace the podcast (§19.24).
     muted: bool = True,
     solo: bool = False,
     placement: str = "box",
 ) -> VideoItem:
     _validate(kind, fit, motion, placement)
-    # 「恰好一个亮」 also holds for a fresh block: the default is M (§19.25.1).
+    # 「恰好一个亮」 also holds for a fresh block: the default is M (§19.24.1).
     if not solo and not muted:
         muted = True
     if end_ms <= start_ms:
@@ -497,7 +497,7 @@ def update_item(
         row.muted = muted
     if solo is not None:
         row.solo = solo
-    # 「S」 and 「M」: exactly one is on (§19.25.1). Both off is a state nothing can explain —
+    # 「S」 and 「M」: exactly one is on (§19.24.1). Both off is a state nothing can explain —
     # the bubble would show two dark letters while the block's sound is still mixed in.
     #
     # The later press wins, and the resolution happens on the **write**, not in the UI, because

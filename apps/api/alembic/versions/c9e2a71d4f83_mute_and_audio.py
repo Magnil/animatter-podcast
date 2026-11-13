@@ -1,4 +1,4 @@
-"""``video_item.muted`` + ``video_asset.has_audio`` (§19.20).
+"""``video_item.muted`` + ``video_asset.has_audio`` (§19.19).
 
 Revision ID: c9e2a71d4f83
 Revises: b8d4f1c6a2e7
