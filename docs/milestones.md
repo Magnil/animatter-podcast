@@ -199,10 +199,168 @@ M6 ⬜ 稳定性
 视频 P5 ✅（2026-11-12 → 11-13）：模板可编辑、双时间轴、S/全屏、分块渲染、1080p24
 视频 P6 ✅（2026-11-14）：过滤线程数封顶、静帧预合成（chunk 2 33 s / 3.03 GB）、top 链跳过
 真机成片 ✅  3,695.9 秒 / 88,702 帧 / 24 fps（第 121 轮，两个 bug 修完后重导）
+视频 P7 ✅ **全部实施完成**（11-17 方案 / 11-18 P0 / 11-19 P1、P2 / 11-20 E1、E2、E3）
+        已做：静帧预览 1.02–1.33 s → **0.63–0.93 s**；**DOM 分层实时预览已验收**——
+        45.8 fps / 0 丢帧 / 跨块切换 75 ms / 图层粒度 p50 32 ms / 一致性 20 时刻 20/20。
+        P2 已做：**双 `<video>` 槽位预热**（切点后 600 ms 内 0 帧无画面，关掉预热则每次切点都有）
+        + **四条降级路径**；**720p 代理按实测决定不做**（D23，§19.32）。
+        E1 已做：**烘焙 plate** ——整片导出 27.84 → **19.46 min（−30.1 %）**，逐帧 PSNR `inf`，
+        两个 mp4 MD5 相同。
+        E2/E3 已做：`filter_complex_threads` 4→12（整片 **19.46 → 17.67 min，−9.21 %**，输出**逐位相同**）+ 按内存算的
+        并行度（可选，1.09–1.23×）+ `-refs 1 -bf 0` 开关（可选，−4 %，+8 % 体积）；
+        **E4 的 4K 代理判定不做**——前提（chunk 峰值 5.52 GB）复现不出来，真实值 2.84 GB。
+        **导出侧到这里做完了**：整片 27.84 → **17.67 min（累计 −36.6 %）**。
+        设计与实测并入 `docs/video.md` §19.31–§19.34（预览架构、播放与降级、静帧、导出并行与编码），
+        决策 D19–D23
 ```
 
-**验证规模（2026-11-14，第 126 轮收尾）**：后端 1393 用例通过 / 1 skipped，`mypy --strict` 103 个
-源文件零错误，`ruff` 干净。
+**P7 的预览侧三档（P0 / P1 / P2）与导出侧的全部档位（E1 / E2 / E3，E4 判定不做）已落地**，
+判据分别在下文五份「交付清单」里。**现在已经能做实时预览了**——播放头一动，画面就跟着走，跨块不再露出
+空白帧；导出从 **27.84 min 降到 17.67 min**（同一台机器、同一份片子、都是整片实跑），
+2 个 worker 打开后还能再快 1.09–1.23×。
+
+### 视频 P7 · P0 交付清单（2026-11-18，第 128 轮）
+
+设计、实测与「为什么不是原方案说的缓存」在 [`docs/video.md`](video.md) §19.33。
+
+| 交付物 | 落在哪 | 验收 |
+|---|---|---|
+| 原始时间 → 输出时间的映射 | `apps/web/src/timeMap.ts`（`toOutput` / `toOutputClamped` / `toOriginal`）+ `VideoPanel` 先映射再请求，`App` 传 `edl.keeps` | 10 条单测（`timeMap.test.mjs`）；M3 校正台实测：原 12 000 ms → 输出 10 798 ms，两个 `at_ms` 产生**不同**的静帧文件 ⇒ 映射是承重的 |
+| transcript 一次请求只读一次 | `services/transcript_facts.py`（按列投影）+ `build_cues` / `speaking_intervals` / `resolve` / `describe` 接受 `facts=` | `avatar_tracks` 245.8 → **3.7 ms**、`_cues_for` 128.8 → **7.1 ms**、`_ass_for` 152.1 → **13.5 ms**；`test_preview_transcript_reads.py` 用 SQL 计数钉住「resolve 只读一次 token 表」 |
+| 静帧编码降级 | `media/video.py::render_still` 的 `-compression_level 1` | 330 → **217 ms**，PSNR **`inf`**（逐像素相同），文件 +17 %；`test_video_render.py` 钉住等级与参数位置 |
+| 自动预览 + 过期响应丢弃 + 保留上一帧 | `VideoPanel`（300 ms 去抖、`generation` 计数、`is-stale` 55 % 不透明）、`styles.css` | 真机 CDP（`scripts/check-p0-preview.mjs`）：不点按钮自动出图；换句后 `src` 变化；过渡态 `is-stale` + `aria-busy=true` + 「正在合成这一帧…」 |
+| 端到端 | — | **1020–1330 → 634–929 ms（p50 ~730 ms，−28 %）**，ffmpeg 占 88 % |
+
+**没有做 LRU 缓存**（原方案写的是缓存）：拆解发现 414 ms 里 400 ms 是同一份 transcript 在
+一次请求里被读 5 遍，改成「读一次」就没有失效面可言。原定验收「第二次 ≤ 550 ms」因此作废——
+现在每次都是 ~730 ms，因为没有任何东西被缓存。
+
+### 视频 P7 · P1 交付清单（2026-11-19，第 129 轮）
+
+设计与全部实测在 [`docs/video.md`](video.md) §19.31.5（判据与三个「差一帧」的根因）。
+
+| 交付物 | 落在哪 | 验收 |
+|---|---|---|
+| 整片 plan（一次请求描述全片） | `services/video_plan.py`、`routers/video_plan.py`：`GET /versions/{id}/video/plan`、`/video/plan/file/{name}`、`/video/cue/{digest}/{i}.png`、`/video/backdrop/{digest}/{pos}.png` | 64 段、772 条字幕、161 KB；摘要进文件名 ⇒ `immutable` 缓存安全；`test_video_plan.py` 19 条 + `test_video_plan_api.py` 17 条 |
+| 按需烘焙（不预烘全片） | `media/cue_png.py`（libass 烘字幕带，76.6 ms/条）、`media/backdrop.py`（`boxblur`+`eq` 底图，**无损 PNG**） | JPEG 的 yuvj420p 往返把模糊环挪 4.5 % ⇒ 改无损后烘图与链自渲 **逐像素相同**（max delta 0） |
+| DOM 分层合成 | `apps/web/src/DomStage.tsx`、`videoPlan.ts`（`layersAt` 是**唯一**写图层顺序的地方）、`VideoPanel` 有 plan 就用舞台、无 plan 退回静帧按钮 | 图层顺序**量出来的**：`background → overlay(描边) → box → avatars → text → 全屏 → 字幕`；`plate`/`transparent` 段不画元素 |
+| 时钟 | `frameStartMs` / `filmFrame` / `localOffsetMs`；`SyncedVideo` 暂停时精确 seek、播放时 200 ms 容忍 | 前后端用**同一个表达式**（`frame_start_ms(at − segment.start)`），整数运算 |
+| 循环周期下发 | `loop_period_ms()` 探测 `stream=duration`（**不是** `format=duration`），随 `period_ms` 进 plan | 190.680 vs 190.763 s 差 83 ms ⇒ 三圈 4 帧；`test_a_looped_clip_publishes_the_stream_period...` 用 2.0 s 视频 + 2.4 s 音频的片段钉住 |
+| 静帧帧网格 | `box_track.build_single` 的 trim 界 = `frame_start_ms(offset) − 1/FPS + 1 ms` | 循环段 980 950 ms：**13.82 % → 0.00 %**；`test_video_still_seek.py` 26 帧 25 fps 红绿片段 |
+| 常驻验收脚本 | `scripts/check-p1-playback.mjs`、`check-p1-consistency.mjs`、`verify-p1-consistency.py`、`p1-park.mjs` | 见下 |
+
+**验收实测**（2026-11-19）：
+
+| 判据 | 门槛 | 实测 |
+|---|---|---|
+| 不掉帧 | 0 | **0**（12 s 真播放，286 帧解码） |
+| 帧率 | ≥ 24 | **45.8 fps** rAF |
+| 推进比 | ≥ 1.0 | **1.000** |
+| 跨块切换首帧 | ≤ 300 ms | **75 ms**（1080p）/ **189 ms**（进 4K 段） |
+| 画面冻结 | — | **51 ms** |
+| 图层更新粒度 | ≤ 50 ms | **p50 32 ms**（改前 **217 ms**，字幕可晚五帧） |
+| 一致性 | 20 个时刻全过 | **20/20**，平坦区 ≤ 1.95 %、位移 ≤ 0.48 px |
+
+**验证规模**：后端 **1422 用例通过 / 2 skipped**，`mypy --strict` **108** 文件零错误，`ruff` 干净；
+前端 `tsc --noEmit` 干净、`npm test` **291 通过**、`vite build` 成功。
+新增测试：`test_video_still_seek.py` +2（循环网格）、`test_video_plan.py` +1（循环周期）。
+
+**已知但按口径通过的残差**：1 473 980 ms 的 ÷16 模糊后仍有 4.75 %（平坦区 0.01 %）。它不是纯
+相位差，但同一段素材在相邻时刻的 ÷16 都是 0.00 %，所以不是整段素材的问题。**P2 不要重查它。**
+
+### 视频 P7 · P2 交付清单（2026-11-19，第 130 轮）
+
+设计与全部实测在 [`docs/video.md`](video.md) §19.32（双元素预热、四条降级、代理为什么不做，
+以及两条测量教训）。
+
+| 交付物 | 落在哪 | 验收 |
+|---|---|---|
+| 双 `<video>` 槽位 | `apps/web/src/mediaDeck.ts`：`deckLayout` 是**唯一**决定「哪个槽放哪一段」的地方，第 *k* 个视频段固定住 `k % 2` 号槽；`DomStage` 在 `layersAt` 给 media 的**那个位置**渲染 | 切点后 600 ms 内「无已呈现帧」的帧数：**预热开 0/0/0，关 1–4 帧/次**；改前冷挂载到出帧 **116 ms**（≈2.8 个影片帧） |
+| 提前 2.5 s 预热 | `PREWARM_LEAD_MS`；槽位元素用 `visibility: hidden` 保活（**不能 unmount，也不能 `display: none`**——那会丢掉已解码帧） | 4K 块切换首帧 **189 ms**（P1 已有），预热后切换延迟实测 **0 ms**（元素早已就绪） |
+| 降级：素材解不了 | `DomStage` 的 `failed` 分支 + `onLoadedData` 里 `drawImage`→`toDataURL` 存一张首帧；从未解出过帧则显示斜纹 + 「无法实时预览」 | 编码不支持是**确定性失败**，所以**不重试**（重试只会每次切进那一段都黑一下）；`videoDegrade.test.mjs` 钉住「失败后 `<SyncedVideo>` 必须消失」 |
+| 降级：导出中 / 内存紧张 | `readDegrade()` 每秒轮询（`DEGRADE_POLL_MS`）→ `dropStandby` + 舞台 **444 px** + 角标；`App` 的 `exportFilm` 在 `finally` 里清标志 | `scripts/check-p2-degrade.mjs` 三态全对：常态 584 px 无角标 → 内存紧张 444 px +「内存紧张：预览降级」→ 导出中 +「导出中：预览降级」→ 撤掉后回 584 px；**在播的元素始终保留** |
+| 720p 代理 | **不做**（D23）。触发条件与规格留在 §19.32 | 三段 4K 复测 seek 中位 **194.6 / 244.3 / 153.7 ms**，全在 250 ms 线内；冷启动 95–132 ms |
+
+**验收实测**：一致性 **20/20 PASS**（重跑，与 P1 同口径）；真播放 43.2 fps / 0 丢帧 / 推进比 0.996 /
+冻结 62 ms（1080p），42.4–43.1 fps / 0 丢帧（4K，一次 2 帧发生在空闲内存 3.45 GB 时）。
+
+**验证规模**：后端 **1446 用例通过 / 2 skipped**，`mypy --strict` **108** 文件零错误，`ruff` 干净；
+前端 `tsc --noEmit` 干净、`npm test` **319 通过**、`vite build` 成功。新增测试：
+`mediaDeck.test.mjs` 14 条、`videoDegrade.test.mjs` 8 条、`usePlaybackClock.test.mjs` 6 条。
+
+**两条留给下一次的测量教训**（§19.32 末尾）：毫秒级延迟在同一台机器上重复之间会漂
+**2 倍**（4K seek 中位 406 → 154 ms），所以结论不要建立在单次数字上；与机器状态强相关的连续量
+（丢帧、帧率）只记录、**不当门槛**——否则下次在别的机器上会以「回归」的名义被误报。
+
+### 视频 P7 · E1 交付清单（2026-11-20，第 131 轮）
+
+设计与实测在 [`docs/video.md`](video.md) §19.30（烘焙 plate，含两个实现细节与两个验收坑）。
+
+| 交付物 | 落在哪 | 验收 |
+|---|---|---|
+| 底板烘焙 | `apps/api/src/animatter/media/plate_bake.py`：`bake()` 把底板 + 描边 + 文字合成一张 `plate-<digest>.png`，返回「还要不要叠文字」+ 补丁后的头像 PNG | 单帧 PSNR **`inf`**（r/g/b/a 全 `inf`）；真实样片补丁 **598** 像素 / 2 个槽位（`alpha ≥ 1`；bench 的 582 是 `≥ 9` 口径） |
+| 头像补丁 | 同上：先 `ffmpeg scale=177:188` 再在槽位分辨率上合文字，图里那次 `scale` 因此是恒等变换 | 已缩好的 PNG 再 `scale` 一次：`bicubic`/`default`/`neighbor`/`lanczos` **四种 flags 全部 0 像素差**；PIL 缩放则差 8 178 px（54.38 dB） |
+| 前提校验 | 每次烘焙现算（不落 `slots.notes`）：`text ∩ box_rect = 0` 且文字像素下的头像 alpha 全 255；不满足退回「只烘底板 + 描边」 | 三条退出路径各有单测（文字进 box / 半透明头像 / 无文字） |
+| 图与开关 | `_render_picture` 成功后 `layers=[]`、`text=None`、`background=plate.path`；`_avatar_layers(sources=…)` 换成补丁 PNG；`video_plate_bake=False` 逐字节回退 | 开关关闭时 `_plate_for` 返回 `None`（单测） |
+| 缓存与清理 | `plate-<digest>.png` / `avpatch-*.png` **跨导出复用**，清理规则是「写完新的删掉 digest 不匹配的」 | 同一输入两次烘焙得到同一路径；改文字后旧图被删 |
+
+**验收实测**：
+
+| 判据 | 门槛 | 实测 |
+|---|---|---|
+| 单 chunk 纯静帧（94.1 s / 2 259 帧） | PSNR `inf` | **`inf`（2 259/2 259）**，三次 38.23→21.92 / 40.73→24.64 / 39.5→23.4 s，**−39.5 ~ −42.7 %** |
+| 单 chunk 含视频（235.4 s / 5 650 帧） | PSNR `inf` | **`inf`（5 650/5 650）**，110.25 → **66.31 s（−39.9 %）** |
+| 全片（3 695.9 s / 88 702 帧） | ≥ 45 dB | **`inf`**（汇总行 `y:inf u:inf v:inf`；帧数双证 **88 702 / 88 702**），两个 mp4 **MD5 相同**（924 297 354 B） |
+| 全片耗时 | −30 % 以上 | **1670.7 → 1167.4 s（27.84 → 19.46 min，−30.1 %）** |
+
+**验证规模**：后端 **1458 用例通过 / 2 skipped**（`-n 2`），`mypy --strict` **109** 文件零错误，
+`ruff` 干净；前端 `tsc --noEmit` 干净、`npm test` **319 通过**、`vite build` 成功。
+新增测试：`test_video_plate_bake.py` **12 条**（其中 2 条是真的 x264 编码对比）。
+
+**一条口径提醒**：等价时间线上的 −36.7 % 是「静帧占 72 %」的
+时间线的上界，真实片子（静帧 58.4 %）折扣后约 −30 %——本轮整片实测 **−30.1 %**，量级对上
+（这台机器重复之间漂 3 个百分点，所以只能当「≈30 %」）。**拿 −36.7 % 做预算会高估 4 个百分点。**
+
+### 视频 P7 · E2 + E3 交付清单（2026-11-20，第 132 轮）
+
+设计与全部实测在 [`docs/video.md`](video.md) §19.34（峰值口径、`ft`、并行门限、编码参数、4K 代理
+判定）；一行摘要式的设计约束在 §19.28.6。
+
+| 交付物 | 落在哪 | 验收 |
+|---|---|---|
+| 峰值口径重测 | 14 块逐块 `-f null`（x264 照常编码），chunk 8 另用**真写文件**复核；门限表常驻在 `scripts/verify-e3-workers.py formula` | 6 段块 **2.54–2.87 GB**（纯静帧 2.83 / 含 1080p 2.64 / **含 4K 2.84——无差别**），1–3 段块 1.18–1.80 GB；真写文件 2.83 vs `-f null` 2.84 |
+| `ft` 4→12 | `config.video_filter_threads = 12`；`media/video.py::render(filter_threads=…)` 原有的传递链 | **整片实跑 19.46 → 17.67 min（−9.21 %）**，帧数与 MD5 完全不变；逐块交错 A/B：纯静帧块 **−15.0 %**、4K 块 **−11.0 %**、591 s 视频块 **−8.6 %**（14 块求和 −6.6 %，比整片保守 2.6 点）；峰值 2.62–2.87 GB 不变 |
+| 按内存算 worker | `apps/api/src/animatter/core/video_workers.py`（纯函数）+ `media/memory.py`（`ullAvailPhys`） | 门限 = 2.5 GB 余量 + 2×单块峰值（满块 **8.3 GB**）；硬上限 2；`inf`（探针失败）走硬上限而不是 0 |
+| 并行开关 + 原因 | `ExportOptions.faster` → `plan_workers` → `render.note`（迁移 `c6a2f8d1b4e7`）→ 进度行 | 2 worker：两个静帧短块 **1.227×**，「4K 块 + 静帧块」**1.090×**；面板文字与 `video.workers workers=N` 同值 |
+| 编码选项 | `ExportOptions.fast_encode` → `media/video.py` 的 `-refs 1 -bf 0` + API 字段 + 设置项 | 默认关；视频块 −6.4 % 时间 / +8.2 % 体积 / min PSNR 39.7 dB（**不再逐位相同**，故不当默认） |
+| **E4 判定不做** | `docs/video.md` §19.34.6；`todolist.md` D7 删除 | 旧说法「含 4K 峰值 5.52 GB」「峰值来自 4K 解码」都被逐块实测否定（2.84 GB；退回旧图 3.58–4.14 GB ⇒ 来自全画布混合） |
+
+**验收实测**：
+
+| 判据 | 门槛 | 实测 |
+|---|---|---|
+| 整片耗时（E1 → E1+E2a） | 有收益即做 | **1167.4 → 1059.9 s（19.46 → 17.67 min，−9.21 %）**，整片实跑；帧数 88 702 不变、文件 **MD5 逐位相同**（`D96A92BF…`，924 297 354 B） |
+| 2 worker 收益 | 原定 ≥1.25× | **1.09–1.23×**（原验收线作废：抬 ft 已经吃掉一部分并行收益） |
+| 峰值 | < 6.5 GB | 单块最大 **2.87 GB**，并行最坏 **3.40 GB** |
+| OOM | 0 次 | **0 次**（14 块逐块 + 4 次并行组合 + 2 次接线） |
+| 接线（不是单测） | 真的开两个进程 | `workers=2`、`note`=「2 块，2 个并行…」、成片 **4 232 帧 = 2 259 + 1 973** |
+
+**验证规模**：后端 **1478 用例通过 / 2 skipped**（`-n 2`），`mypy --strict` **111** 文件零错误，
+`ruff` 干净；前端 `tsc --noEmit` 干净、`npm test` **321 通过**、`vite build` 成功。
+新增测试：`test_video_workers.py` **20 条**（门限 / 硬上限 / `inf` 哨兵 / 理由文案 / 编码开关的
+正反两半 / 接线形态）、`videoExport.test.mjs` **2 条**（`render.note` 替换进度行的兜底文案）。
+新增迁移：`c6a2f8d1b4e7_render_note.py`。
+
+**两条口径提醒**：① `ft` 的 −9.21 % 是**整片实跑**（完整 `_render_picture`，14 块 + concat），
+2 worker 的 1.09–1.23× 是**成对交错**测的，整片会因为尾部效应略低，而且「2 worker 的整片导出」
+仍然没有真机跑过。② 第 127 轮那个 **1.438× 作废**——它是 ft=4 时代的形状，抬 ft 已经吃掉了
+一部分；`5.52 GB` 同样作废（真实值 2.84 GB）。
+
+
+**验证规模（2026-11-18，第 128 轮收尾）**：后端 **1401 用例通过 / 2 skipped**，`mypy --strict`
+**104** 个源文件零错误，`ruff` 干净；前端 `tsc --noEmit` 干净、`npm test` **267 通过**、
+`vite build` 成功。新增：`test_preview_transcript_reads.py` 7 条、`test_video_render.py` +1、
+`timeMap.test.mjs` 10 条。
 
 > 这张表 2026-11-05 之后四天没更新，期间一直把 M5b 记成「待做」，而它已经落地
 > （`c3226fb` feat: ShowNotes and 文稿 generation）。**里程碑是自报状态，不是从代码推断的，
@@ -214,6 +372,35 @@ M6 ⬜ 稳定性
 
 **验证规模（2026-11-09）**：后端 651 用例通过 / 1 skipped / 3 deselected，`mypy --strict` 74 个源文件零错误，`ruff` 干净；
 前端 133 条 `node --test` 用例，`tsc --noEmit` 与 `vite build` 干净；真实音频端到端跑通（17.6s 样本 + 两个 1 小时级真实播客项目）。
+
+### 视频 P7 · 导出面板（2026-11-20，第 135 轮）
+
+设计与实测在 [`docs/video.md`](video.md) §19.34.7（停止的实现与集成实测）、
+[`docs/frontend.md`](frontend.md) §7.7（两个面板的形状与四条终态）；决策 D24。
+
+| 交付物 | 落在哪 | 验收 |
+|---|---|---|
+| 视频导出面板 | `apps/web/src/VideoExportDialog.tsx` + `exportPanels.ts`（纯逻辑） | 文件名（默认「期号+本地日期」）、导出到（可手填可「选择…」）、2 个勾选框、进度条；页脚一个按钮「导出 ⇄ 停止」 |
+| 音频导出面板 | `apps/web/src/AudioExportDialog.tsx` | 文件名 + 格式下拉**同一行** + 导出到；**没有进度条、没有取消** |
+| 停止是真的停 | `media/video.py::_run`（`Popen` + 200 ms 轮询 + `tempfile` 收 stderr）；`services/video_render.py` 的取消登记表与四处检查点 | 真 API：取消 → 终态 **0.4 s**，`cancelled`（**不是** `failed`），取消前 2 个 ffmpeg → 取消后 **0** 个；库里残留 `queued/running` **0** 条 |
+| 交付到用户选的路径 | `POST /api/renders/{id}/save-to` + `resolve_export_target` | 真落盘：`成片.m4a`，89 653 243 B 与回报一致；用户打「成片.wav」得到 `成片.m4a`（**不是** `成片.wav.m4a`） |
+| 选文件夹 | `POST /api/system/pick-folder`（`tkinter.askdirectory`，`-topmost`） | 无 GUI / 取消返回 409 + 可执行的 hint，输入框仍可手打 |
+| 菜单瘦身 | `apps/web/src/App.tsx` | 9 项 → **7 项**；`格式：M4A/WAV` 与「视频导出：加速 / 编码快一点」四项移除，全部进面板 |
+
+**验收实测**（走查脚本，不是目视）：
+
+| 脚本 | 判据 | 结果 |
+|---|---|---|
+| `scripts/check-r135-export-dialogs.mjs` | 29 条：菜单少 4 项、视频面板 2 文本框 + 2 勾选 + 无进度条、音频面板格式下拉 2 项 + 文件名同排 + 无取消 | **29/29** |
+| `scripts/check-r135-export-running.mjs` | 13 条：点导出 → 按钮变「停止」+ 进度条出现 + 输入框锁；点停止 → 「正在停止…」；终态「已停止」**黄色**、按钮回「导出」、输入框解锁 | **13/13** |
+
+**验证规模**：后端 **1490 passed / 2 skipped**（`-n 1`），`mypy --strict` **111** 文件零错误，`ruff`
+干净；前端 `tsc --noEmit` 干净、`npm test` **335 通过**、`vite build` 成功。
+新增测试：`test_video_cancel.py` **12 条**（真 `Popen` 量取消 / 区分超时 / stderr 仍可读 / 后缀三条
+规则 / 终态互斥）、`exportPanels.test.mjs` **20 条**（按钮文字、四种终态、本地日期、交付文案）。
+
+**两条口径**：① 整片的 2 worker 导出仍然没有真机跑过（内存 1.4 GB 那台起不来）；
+② 「取消后 0 个 ffmpeg」量的是 `tasklist`，不是 `Popen` 的返回值——返回值只能证明调用过 `kill()`。
 
 ### M0 交付清单（2026-11-05）
 

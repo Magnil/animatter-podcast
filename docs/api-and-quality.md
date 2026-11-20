@@ -51,6 +51,18 @@ GET    /api/versions/{vid}/edl                         预算 EDL + 新时长
 POST   /api/versions/{vid}/render                      排队渲染，立刻返回 {id,status,progress}
 GET    /api/renders/{id}                               轮询进度 0..1 / status / error
 GET    /api/renders/{id}/file                          下载
+POST   /api/renders/{id}/save-to                       把成品拷到用户选的文件夹/文件名
+       body: {out_dir, filename}；返回 {path, bytes, filename}
+       后缀由成品实际格式决定：打「成片.wav」的 M4A 导出得到「成片.m4a」，不是「成片.wav.m4a」。
+       拷而不是移动：缓存那份留着，同样的剪辑再导一次才不用重编。
+POST   /api/versions/{vid}/video/export                排队导出成片视频（round 135 起带 faster/fast_encode）
+GET    /api/video/exports/{id}                         轮询（note 是并行度的理由）
+POST   /api/video/exports/{id}/cancel                  请求停止；**返回的 status 通常仍是 running**
+GET    /api/video/exports/{id}/file                    下载
+
+POST   /api/system/pick-folder?initial=                调系统文件夹对话框，返回 {path}
+       服务端在本机，所以能用真的对话框；拿不到（无 GUI / 被取消）返回 409 + hint，
+       输入框仍然可手打——选择是方便，不是唯一路径。
 
 POST   /api/projects/{id}/script/generate              生成文稿
 GET    /api/projects/{id}/script

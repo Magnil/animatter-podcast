@@ -9,9 +9,9 @@
 原来所有内容在一份 ~12 万字节、2000 行的 `AGENT.md` 里，两个问题：
 
 1. **它从来没被自动加载过。** harness 自动注入的工作区指令只有 `AGENTS.md` / `CLAUDE.md`，`AGENT.md`（少一个 S）不在名单里，所以过去的"先读文档"靠的是我记得去读，而且常常只读了几段。
-2. **全读约 7 万 token，其中 43% 是历史。** 变更记录占 51 KB，写得细，但和"现在要动的地方"无关。
+2. **全读约 7 万 token，其中 43% 是历史。** 变更记录占 200 KB，写得细，但和"现在要动的地方"无关。
 
-现在：本文件约 6 KB，随会话自动注入（预算 64 KB，`truncateUtf8` 保留的是**前** 64 KB，所以入口文件必须自己就够小，否则丢的是尾部）；`docs/` 按主题分 11 份，改哪块读哪份；`docs/CHANGELOG.md` 只在两种时候打开——查"当初为什么这么做"，或者追加新记录。
+现在：本文件约 6 KB，随会话自动注入（预算 64 KB，`truncateUtf8` 保留的是**前** 64 KB，所以入口文件必须自己就够小，否则丢的是尾部）；`docs/` 按主题分 12 份，改哪块读哪份；`docs/CHANGELOG.md` 只在两种时候打开——查"当初为什么这么做"，或者追加新记录。
 
 ## 项目是什么
 
@@ -50,7 +50,7 @@
 | 前端布局、波形、虚拟列表、交互 | [`docs/frontend.md`](docs/frontend.md) | §7 | 界面为什么这样 |
 | 接口形状、错误码、测试分层、崩溃恢复、密钥、成本 | [`docs/api-and-quality.md`](docs/api-and-quality.md) | §8–§12 | 契约与质量下限 |
 | 已经拍板的决策、容易被漏掉的坑 | [`docs/decisions.md`](docs/decisions.md) | §14 §15 | **不要再争论什么** |
-| 视频剪辑：模板编译、素材框、头像亮暗、渲染管线 | [`docs/video.md`](docs/video.md) | §19 | 视频怎么合成、踩过哪些坑 |
+| 视频剪辑：模板编译、素材框、头像亮暗、渲染管线、**实时预览与导出提速** | [`docs/video.md`](docs/video.md) | §19 | 视频怎么合成、预览怎么实时、导出为什么这么快、踩过哪些坑 |
 | **做到哪了、验收标准是什么** | [`docs/milestones.md`](docs/milestones.md) | §13 | 已交付什么（只记结论） |
 | **某个东西当初为什么这么做** | [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | 按日期 | 当时的取舍与试错 |
 | **还没做的事，以及为什么现在不做** | [`todolist.md`](todolist.md) | A–E | 下一步做什么 |
@@ -63,9 +63,11 @@
 - `milestones.md` **只记结论和判据**，不记设计推理（那在主题文档里）和逐轮细节（那在 CHANGELOG）。
 - 主题文档（`video.md`、`frontend.md` 等）**只写现在的设计与实测**；「这一轮为什么这么改」属于
   CHANGELOG，只有当作设计约束留下时才写进主题文档。
-- 决策一旦拍板就进 `decisions.md` 并给编号（D1–D18），主题文档里只引用编号，不复制理由。
+- 决策一旦拍板就进 `decisions.md` 并给编号（D1–D24，D25 起可用），主题文档里只引用编号，不复制理由。
 
 `§N` 编号跨文件保持全局唯一，源码注释里的 `AGENTS.md §6.4` 指的就是上表对应的那份。
+**§20 已经不存在**：它原是「实时预览与导出提速」的方案文档，七个阶段落地后按约定并进了
+`docs/video.md` §19.31–§19.34，全文删除。源码里不会再出现 `§20.x`。
 
 ## 目录
 
@@ -90,13 +92,13 @@ docs/                    本文件拆出来的设计文档
 
 ```powershell
 # 后端：在 apps/api 下跑
-..\..\.venv\Scripts\python.exe -m pytest -q -n 3      # 1393 passed, 1 skipped，约 66 s
+..\..\.venv\Scripts\python.exe -m pytest -q -n 2      # 1490 passed, 2 skipped，约 90 s
 ..\..\.venv\Scripts\python.exe -m ruff check src tests
-..\..\.venv\Scripts\python.exe -m mypy --strict src    # 103 files
+..\..\.venv\Scripts\python.exe -m mypy --strict src    # 111 files
 
 # 前端：在 apps/web 下跑
 npx tsc --noEmit
-npm test                                               # node --test，257 passed
+npm test                                               # node --test，335 passed
 npx vite build
 
 # 启动（仓库根）
@@ -107,12 +109,26 @@ npx vite build
 比启动 worker 快：`pytest tests/test_decks.py -n0`。
 
 **这台机器上 `-n auto` 已经不可靠**：8 个 worker 同时跑 PSD 编译（`test_video_template_*`
-每次要 1440×2560 的 float32 画布）会偶发 `MemoryError: Unable to allocate 42.2 MiB`，空闲
-内存只有 3.6 GB。**用 `-n 3`**，连跑两次都是 1393 passed。单文件 `-n0` 全过——不是代码回归。
+每次要 1440×2560 的 float32 画布）会偶发 `MemoryError: Unable to allocate 42.2 MiB`。
+**用 `-n 2`**；单文件 `-n0` 全过。
+
+**但 `-n 2` 也不是永远全绿**：空闲内存低于约 5 GB 时（浏览器开着、后台还在跑别的），
+`test_video_template_edits.py` 会成批 ERROR（就是上面那条 `MemoryError`），
+`test_video_avatar_render.py` 里那条真 x264 编码会以 `ffmpeg` 退出码 `0xDFABA7BB` 失败。
+**判据是「换个跑法还过不过」，不是失败本身**：
+
+```powershell
+..\..\.venv\Scripts\python.exe -m pytest -q -n 1        # 内存不够时用这个，慢约 60 %
+```
+
+`-n 1` 连跑 **1490 passed / 2 skipped**（约 160 s）。看到那两类失败时先跑一遍 `-n 1`
+再判断是不是回归——**不要直接去查代码**，这条已经浪费过一次时间。
 
 **改完四个都要绿**：pytest、ruff + mypy、tsc、npm test。设计文档与实现不一致时，先改文档再改代码。
 
 ## 界面走查
+
+`.tmp/` 是 gitignore 的一次性工作目录（截图、测量脚本、中转视频），**随时会被清空**，不要往里放任何需要留下的东西；判据要入库就必须进 `scripts/`。
 
 `node scripts/cdp.mjs <url> <out.png> [script.js]`（仓库根）。脚本默认导出接收 `{ evaluate, click, shot, wait, mouse, send, out }`，**必须显式 `await shot(out)`**，否则不会产生 PNG。现有脚本见 `scripts/check-*.mjs`。截图会自建父目录，所以 `.tmp/` 被清空之后走查脚本仍然能直接跑。
 
