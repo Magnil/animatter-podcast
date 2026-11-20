@@ -32,12 +32,27 @@ Node 22+ 自带全局 `WebSocket`，所以没有额外依赖。
 | `check-cleanup-dialog.mjs` | 清理对话框：三类计数与「本次会删 N 处」一致、逐条列出、全部取消后执行按钮禁用 |
 | `check-cleanup-settings.mjs` | 设置 → 一键清理：61 行词表已载入、改阈值保存后从服务端读回、再复原 |
 
+| `check-r135-export-dialogs.mjs` | 两个导出面板：菜单少 4 项、视频面板 2 文本框 + 2 勾选 + 无进度条、音频面板格式下拉 2 项且与文件名同排、两个面板都没有「取消」 |
+| `check-r135-export-running.mjs` | 「导出 ⇄ 停止」真的换成：点导出后按钮变「停止」+ 进度条出现 + 输入框锁；点停止后「正在停止…」；终态「已停止」是**黄色**、按钮回「导出」、输入框解锁 |
+
 ## 非浏览器验证
 
 `scripts/verify_hotwords.py` 走真后端 + 真百炼：建项目 → 登记音频 → 加本期热词
 → 转写 → 直接读 SQLite 里的 `transcribe_job.params_json`，确认
 `parameters.vocabulary` 非空。单元测试只能证明 map 交给了 service，
 只有这条能证明它活过了整条链路。
+
+`scripts/verify-p1-consistency.py` 比对 CDP 截下的 20 个舞台时刻与 `preview_still`，
+按「平坦区 ≤ 2 % + 全局亚像素位移 ≤ 0.5 px」判（口径见 `docs/video.md` §19.31.5）。
+
+`scripts/verify-e1-plate.py` 验收「烘焙 plate 与旧图逐位相同」：单帧约 2 s；`--chunk N`
+真编一个 chunk 两遍（旧图 / 烘焙图）并逐帧比 PSNR，约 1 min。判据是 **`inf`**——头像补丁
+如果画错缩放器会掉到 54 dB，肉眼几乎看不出，所以这条不能靠目视。
+
+`scripts/verify-e3-workers.py` 验收导出并行度：`formula` 打印「空闲内存 × 块形状」的档位表
+（纯函数，不跑 ffmpeg）；`wire` 把内存探针桩成 12 GB 跑真的 `_render_picture`，判据是日志
+`workers=2` + `note` 文案 + **成片帧数 = 两块之和**。单测只能证明 `plan_workers` 对，这条证明
+它被调用。
 
 ## 为什么值得留着
 
