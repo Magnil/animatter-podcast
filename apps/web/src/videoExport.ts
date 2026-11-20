@@ -24,8 +24,12 @@ export interface VideoExportInputs {
    * needs is rendered on demand. Leaving a `deletionCount` in the inputs would invite the
    * condition back; not having it makes that impossible to write by accident.
    */
-  /** Live percentage while an encode runs; `null` when idle. */
-  exportingPercent: number | null;
+  /**
+   * Is an encode running right now? A boolean, not a percentage (round 135): the percentage
+   * lives in the export dialog's progress bar, and repeating it in a menu item that closes on
+   * click was a place progress could be seen only by accident.
+   */
+  exporting: boolean;
 }
 
 export interface VideoExportEntry {
@@ -41,12 +45,12 @@ export interface VideoExportEntry {
  * is a *wait* — everything else is ready to go.
  */
 export function videoExportEntry(input: VideoExportInputs): VideoExportEntry {
-  if (input.exportingPercent !== null) {
+  if (input.exporting) {
     return {
-      label: `正在导出成片视频… ${input.exportingPercent}%`,
-      // A one-hour film is ~14 minutes of x264. Saying "you can go do something else" is
-      // the only useful thing a disabled entry has to offer for that long.
-      hint: "编码在后台跑，可以先做别的",
+      label: "正在导出成片视频…",
+      // The dialog might have been closed while the encode runs (it is 18 minutes; nobody
+      // watches a bar for 18 minutes). Saying where to look sends them back to it.
+      hint: "在「视频导出」面板里看进度，可以停止",
       disabled: true,
     };
   }
@@ -54,29 +58,12 @@ export function videoExportEntry(input: VideoExportInputs): VideoExportEntry {
     return { label: "导出成片视频…", hint: "正在计算剪辑方案…", disabled: true };
   }
   // Ready — whether or not anything was cut. The film's audio is rendered on demand at
-  // export time, so there is nothing to wait for and nothing to do first.
+  // export time, so there is nothing to wait for and nothing to do first. The fixed facts
+  // (1080p, burned-in subtitles) moved into the dialog, where they can be read before the
+  // click instead of as a hint clipped at the menu's edge.
   return {
     label: "导出成片视频…",
-    // The two facts the render is fixed at, in the entry itself: there is no dialog to hold
-    // them, and a film that turns out to have burned-in subtitles you did not want is not a
-    // surprise worth discovering after fourteen minutes of encoding.
-    hint: "MP4 1080p，字幕烧进画面",
+    hint: "文件名、文件夹、编码选项",
     disabled: false,
   };
-}
-
-/**
- * The name the saved film gets.
- *
- * Derived from the episode, not from the render id: a folder of `vren_1m76jprn….mp4` is
- * unusable a week later, and the render id is never shown anywhere else in the UI.
- *
- * Local date, not `toISOString()`: that would name a film made at 01:00 in Shanghai with
- * yesterday's date, and the user's calendar is the one the film belongs to.
- */
-export function filmFilename(episode: string, now: Date): string {
-  const cleaned = episode.replace(/[\\/:*?"<>|]/g, "_").trim() || "成片视频";
-  const pad = (value: number): string => String(value).padStart(2, "0");
-  const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
-  return `${cleaned}-${stamp}.mp4`;
 }

@@ -29,6 +29,9 @@ per 60 s.
 from __future__ import annotations
 
 import subprocess
+import tempfile
+import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -269,22 +272,68 @@ def label_of(index: int) -> str:
     return f"l{index}"
 
 
-def _run(command: list[str], *, timeout: int = 7200) -> None:
-    """Run ffmpeg, surfacing its stderr when it fails.
+#: How often a running ffmpeg checks whether it was told to stop. Short enough that
+#: 停止 feels immediate, long enough that the wait costs nothing.
+_CANCEL_POLL_S = 0.2
+
+
+def _run(
+    command: list[str],
+    *,
+    timeout: int = 7200,
+    cancel: threading.Event | None = None,
+) -> None:
+    """Run ffmpeg, surfacing its stderr when it fails, and stop when asked to.
 
     Same UTF-8 posture as ``media/ffmpeg._run``: never ``text=True``, because a CJK
-    path raises ``UnicodeDecodeError`` in the reader thread and ``subprocess.run``
-    swallows it, leaving ``None`` output and a reported success.
+    path raises ``UnicodeDecodeError`` in the reader thread and the process output is
+    swallowed, leaving ``None`` and a reported success.
+
+    ``cancel`` is why this is not ``subprocess.run`` any more (round 135): a chunk can
+    take 200 s, and the only way to abort one is to hold the ``Popen`` and kill it. The
+    event is polled rather than waited on so the kill lands on the process that is
+    actually running, and so a cancelled export reports 「导出已停止」 instead of
+    looking like a crash.
+
+    stderr goes to a temporary **file**, not a pipe: nobody reads a pipe while polling,
+    and a chatty failing encode would fill it and block ffmpeg forever. Reading the file
+    afterwards keeps the rich failure hint the pipe used to give.
     """
     try:
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            check=False,
-        )
+        with tempfile.TemporaryFile() as stderr_file:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_file,
+            )
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    returncode = process.wait(timeout=_CANCEL_POLL_S)
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
+                if cancel is not None and cancel.is_set():
+                    process.kill()
+                    process.wait()
+                    raise AppError(
+                        "video_cancelled",
+                        "导出已停止",
+                        hint="再点一次「导出」会从头开始；已编码的块不会复用。",
+                        status=409,
+                    )
+                if time.monotonic() > deadline:
+                    process.kill()
+                    process.wait()
+                    raise AppError(
+                        "video_render_timeout",
+                        f"视频编码超时（>{timeout}s）",
+                        hint="导出这么大的片子本来就慢；先导出较短的片段确认参数没问题。",
+                        status=504,
+                    )
+            stderr_file.seek(0)
+            stderr = stderr_file.read().decode("utf-8", "replace")
     except FileNotFoundError as exc:
         raise AppError(
             "ffmpeg_missing",
@@ -292,19 +341,12 @@ def _run(command: list[str], *, timeout: int = 7200) -> None:
             hint="安装 ffmpeg 并确保在 PATH 上，或设置 AM_FFMPEG_PATH。",
             status=503,
         ) from exc
-    except subprocess.TimeoutExpired as exc:
-        raise AppError(
-            "video_render_timeout",
-            f"视频编码超时（>{timeout}s）",
-            hint="导出这么大的片子本来就慢；先导出较短的片段确认参数没问题。",
-            status=504,
-        ) from exc
 
-    if completed.returncode != 0:
+    if returncode != 0:
         raise AppError(
             "video_render_failed",
             "视频渲染失败",
-            hint=(completed.stderr or "")[-600:],
+            hint=stderr[-600:],
             status=500,
         )
 
@@ -368,6 +410,8 @@ def render(
     preset: str = PRESET,
     crf: str = CRF,
     filter_threads: int | None = None,
+    fast_encode: bool = False,
+    cancel: threading.Event | None = None,
 ) -> VideoResult:
     """Encode the silent video track.
 
@@ -560,7 +604,7 @@ def render(
         start_ms=start_ms,
         frames=frames,
     )
-    _run(command)
+    _run(command, cancel=cancel)
     script.unlink(missing_ok=True)
 
     if not target.exists() or target.stat().st_size == 0:

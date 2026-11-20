@@ -116,7 +116,12 @@ def _captured_command(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **kwargs:
     target = tmp_path / "out.mp4"
     captured: list[str] = []
 
-    def fake_run(command: list[str], *, timeout: int = 7200) -> None:
+    def fake_run(
+        command: list[str],
+        *,
+        timeout: int = 7200,
+        cancel: object = None,
+    ) -> None:
         captured.extend(command)
         target.write_bytes(b"x")
 

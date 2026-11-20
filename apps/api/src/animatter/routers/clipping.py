@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -150,6 +151,120 @@ def get_edl(
     return EdlOut(**view.__dict__)
 
 
+class PickFolderOut(BaseModel):
+    path: str
+
+
+@router.post("/system/pick-folder", response_model=PickFolderOut)
+def pick_folder(initial: str = Query(default="")) -> PickFolderOut:
+    """Open the OS's own folder chooser and return what the user picked.
+
+    A browser cannot read arbitrary local folders, but this application's server *is* on the
+    user's machine, so the chooser can be the real one. `tkinter` is used rather than a Win32
+    call because it ships with CPython on Windows and needs no extra dependency.
+
+    Failure is a normal outcome, not a crash: no display (a test run, a headless box) or a
+    dismissed dialog both mean "no folder chosen", and the dialog's text field stays usable.
+    So this returns 409 with a hint that says exactly that.
+    """
+    import tkinter
+    from tkinter import filedialog
+
+    try:
+        root = tkinter.Tk()
+        root.withdraw()
+        # `topmost` because the app is a browser window in front of everything: without it the
+        # chooser opens *behind* the browser and looks like a button that did nothing.
+        root.attributes("-topmost", True)
+        chosen = filedialog.askdirectory(
+            title="选择导出文件夹",
+            initialdir=initial.strip() or str(default_export_dir()),
+        )
+        root.destroy()
+    except Exception as exc:  # any Tk failure means there is no chooser here
+        log.warning("pick_folder.unavailable", error=str(exc))
+        raise AppError(
+            "folder_picker_unavailable",
+            "这台机器上没有可用的文件夹对话框",
+            hint="直接在输入框里填完整路径即可，例如 D:/导出。",
+            status=409,
+        ) from exc
+    if not chosen:
+        raise AppError(
+            "folder_picker_cancelled",
+            "没有选择文件夹",
+            hint="取消不会改变原来的路径。",
+            status=409,
+        )
+    return PickFolderOut(path=str(Path(chosen)))
+
+
+class SaveToIn(BaseModel):
+    """Where the finished file should be put. Both fields are the user's choice."""
+
+    #: 目标文件夹的绝对路径。空字符串表示「应用默认导出目录」（系统的「下载」）。
+    out_dir: str = ""
+    #: 文件名，可以带也可以不带后缀；后缀按成品实际格式补，**不允许**改成别的格式。
+    filename: str = ""
+
+
+class SavedFileOut(BaseModel):
+    path: str
+    bytes: int
+    filename: str
+
+
+#: Suffixes a user might type that say "a media file", not "this container". The container is
+#: decided by the export path (mp4 for a film, m4a/wav for audio), so any of these is replaced
+#: rather than kept.
+_MEDIA_SUFFIXES = (".mp4", ".m4a", ".wav", ".mov", ".mkv", ".mp3", ".aac", ".flac", ".webm")
+
+
+def resolve_export_target(
+    settings: Settings,
+    *,
+    out_dir: str,
+    filename: str,
+    source: Path,
+) -> Path:
+    """Work out where a delivered file goes, creating the folder.
+
+    Three rules, each of which exists because the naive version was wrong:
+
+    1. **The suffix comes from the finished file, not from what the user typed.** Typing
+       ``成片.wav`` for an M4A export would otherwise write an m4a with a .wav name, which
+       some players refuse and every user reads as a bug.
+    2. **A relative or empty folder means the default one**, so an untouched form still
+       delivers somewhere findable instead of raising.
+    3. **Characters Windows forbids are replaced**, not rejected: the film's name comes from
+       the episode title, and 「第 7 期：罗小黑 / 专访」 is a perfectly good title.
+    """
+    folder = Path(out_dir).expanduser() if out_dir.strip() else default_export_dir()
+    if not folder.is_absolute():
+        folder = default_export_dir() / folder
+    folder.mkdir(parents=True, exist_ok=True)
+
+    stem = filename.strip()
+    # Strip **any** known media suffix, not only the one this file happens to have: typing
+    # 「成片.wav」 for an M4A export must give 「成片.m4a」, not 「成片.wav.m4a」. Only known
+    # media suffixes are stripped — 「第 7 期 · v1.2」 keeps its 「.2」.
+    lowered = stem.lower()
+    for suffix in _MEDIA_SUFFIXES:
+        if lowered.endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+    for forbidden in '\\/:*?"<>|':
+        stem = stem.replace(forbidden, "_")
+    stem = stem.strip(" .") or "成片"
+    return folder / f"{stem}{source.suffix.lower()}"
+
+
+def default_export_dir() -> Path:
+    """Where an export goes when the user does not say. Windows' 下载, else the home dir."""
+    downloads = Path.home() / "Downloads"
+    return downloads if downloads.is_dir() else Path.home()
+
+
 @router.post("/versions/{version_id}/render", response_model=RenderOut)
 def render_version(
     version_id: str,
@@ -192,6 +307,55 @@ def _to_out(record: Render) -> RenderOut:
         progress=record.progress,
         error=record.error,
     )
+
+
+@router.post("/renders/{render_id}/save-to", response_model=SavedFileOut)
+def save_render_to(
+    render_id: str,
+    payload: SaveToIn,
+    request: Request,
+    session: Session = Depends(_session_dependency),
+) -> SavedFileOut:
+    """Copy a finished render to the folder and file name the user chose (round 135).
+
+    The render itself lives in the app's data directory under a name derived from the EDL
+    hash, which is right for caching and useless for delivery. This is the delivery step:
+    one copy, to a path the user picked, with a name they typed.
+
+    A copy rather than a move: the cached render is what makes a second export of an
+    unchanged edit free, and moving it away would turn that into a full re-encode.
+    """
+    record = session.get(Render, render_id)
+    if record is None:
+        raise AppError("render_not_found", "导出任务不存在", status=404)
+    if record.status != "done":
+        raise AppError(
+            "render_not_done",
+            "这个导出还没完成",
+            hint="等进度走完再保存；停止的导出没有成品。",
+            status=409,
+        )
+    source = Path(record.out_path)
+    if not source.is_file():
+        raise AppError(
+            "render_file_missing",
+            "导出文件已被清理",
+            hint="重新导出即可。",
+            status=404,
+        )
+
+    settings: Settings = request.app.state.settings
+    target = resolve_export_target(
+        settings,
+        out_dir=payload.out_dir,
+        filename=payload.filename,
+        source=source,
+    )
+    if target != source:
+        shutil.copyfile(source, target)
+    size = target.stat().st_size
+    log.info("render.saved", render_id=render_id, path=str(target), bytes=size)
+    return SavedFileOut(path=str(target), bytes=size, filename=target.name)
 
 
 @router.get("/renders/{render_id}/file")

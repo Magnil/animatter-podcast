@@ -1455,6 +1455,94 @@ button.small,
   gap: 12px;
 }
 
+/* --- export panels (round 135) --- */
+
+/* A horizontal pair inside the vertical `.field` stack: 「输入框 + 选择…」 and
+   「文件名 + 格式」 both belong on one line, because they are two parts of the same
+   answer rather than two steps. */
+.field-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.field-row > .field:first-child,
+.field.grow {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.field-row > button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.field select {
+  padding: 5px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  font-size: 0.8rem;
+}
+
+.export-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.export-progress-track {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.export-progress-fill {
+  height: 100%;
+  /* Width is set inline from the polled percentage; the transition keeps an 18-minute bar
+     from stepping visibly once per poll. */
+  transition: width 220ms linear;
+  border-radius: 4px;
+  background: var(--accent);
+}
+
+.export-progress-text {
+  margin: 0;
+  font-size: 0.76rem;
+  color: var(--muted);
+  /* The server's worker note is long; wrapping is better than a clipped hint. */
+  white-space: pre-wrap;
+}
+
+.export-progress[data-tone="ok"] .export-progress-fill {
+  background: var(--okay);
+}
+
+.export-progress[data-tone="ok"] .export-progress-text {
+  color: var(--okay);
+}
+
+/* Warning, not error: 「已停止」 is something the user asked for. */
+.export-progress[data-tone="warn"] .export-progress-fill {
+  background: var(--warn);
+}
+
+.export-progress[data-tone="warn"] .export-progress-text {
+  color: var(--warn);
+}
+
+.export-progress[data-tone="bad"] .export-progress-fill {
+  background: var(--danger);
+}
+
+.export-progress[data-tone="bad"] .export-progress-text {
+  color: var(--danger);
+}
+
 .subtitle-panel {
   border: none;
   padding: 0;

@@ -11,7 +11,6 @@ import {
   api,
   type AppSettings,
   type HotwordItem,
-  type RenderState,
   type ScriptFormat,
   type Sentence,
   type SpeakerInfo,
@@ -20,8 +19,9 @@ import {
 } from "./api";
 import { loadAllSentences } from "./transcriptLoad";
 import { hiddenSpans as hiddenWordSpans, tokenAt } from "./transcript";
-import { isTerminal, percentOf, pollDelayMs, renderEta } from "./renderProgress";
-import { filmFilename, videoExportEntry } from "./videoExport";
+import { videoExportEntry } from "./videoExport";
+import { AudioExportDialog } from "./AudioExportDialog";
+import { VideoExportDialog } from "./VideoExportDialog";
 import { HistoryPanel } from "./HistoryPanel";
 import { NewProjectDialog } from "./NewProjectDialog";
 import { SubtitlePanel } from "./SubtitlePanel";
@@ -252,8 +252,18 @@ function Desk({
   const [edl, setEdl] = useState<EdlState | null>(null);
   const [rendered, setRendered] = useState<{ url: string; durationMs: number } | null>(null);
   const [showOutput, setShowOutput] = useState(false);
-  /** Set while an export is encoding in the background; the button shows it. */
-  const [exporting, setExporting] = useState<{ id: string; percent: number } | null>(null);
+  /** Which export panel is open. One at a time: both deliver a file, and two dialogs on top
+   * of each other is a way to start an export you then cannot see. */
+  const [videoExportOpen, setVideoExportOpen] = useState(false);
+  const [audioExportOpen, setAudioExportOpen] = useState(false);
+  /**
+   * Whether a film export is running, reported up by `VideoExportDialog`.
+   *
+   * The progress itself stays in the panel — this is only what the menu item needs to say
+   * 「正在导出成片视频…」 and stay disabled. Lifting the whole progress state up here would make
+   * the shell re-render on every poll of an 18-minute encode.
+   */
+  const [videoExportRunning, setVideoExportRunning] = useState(false);
   /**
    * The audio export's subtitle style, which the 字幕 tab edits and the *film* export uses.
    *
@@ -278,14 +288,6 @@ function Desk({
       })
       .catch(() => undefined);
   }, []);
-  /**
-   * The film export in flight, mirroring `exporting`.
-   *
-   * A separate flag rather than one shared one: a 14-minute x264 encode must not disable
-   * 「导出成片音频」, and the two have different labels. Both are polled with the same
-   * `percentOf` / `pollDelayMs` / `renderEta` helpers, which is the part worth sharing.
-   */
-  const [film, setFilm] = useState<{ id: string; percent: number } | null>(null);
 
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [loadOpen, setLoadOpen] = useState(false);
@@ -749,127 +751,6 @@ function Desk({
     });
   }, [loadPath, onReload, run, say]);
 
-  /**
-   * Poll a render to completion.
-   *
-   * The first response is "queued": the endpoint now hands the encode to a
-   * worker thread and returns, because a 105-minute export takes about twelve
-   * minutes and no HTTP request should sit there for it. Polling is what turns
-   * that silence into a percentage — the old synchronous endpoint just froze the
-   * button, which is why it was reported as 「点击后无反应」.
-   */
-  const pollRender = useCallback(
-    async (first: RenderState): Promise<RenderState> => {
-      let state = first;
-      const started = Date.now();
-      let lastShown = -1;
-      while (!isTerminal(state.status)) {
-        const percent = percentOf(state.progress);
-        if (percent !== lastShown) {
-          lastShown = percent;
-          setExporting({ id: state.id, percent });
-          // Wording is deliberate: 「正在」 with a live percentage is the signal
-          // that the click landed. Before this, twelve minutes of encoding
-          // produced no feedback whatsoever.
-          say(
-            `正在导出成片… ${percent}%（${renderEta(Date.now() - started, state.progress)}）`,
-          );
-        }
-        await new Promise((resolve) => setTimeout(resolve, pollDelayMs(Date.now() - started)));
-        state = await api.renderStatus(state.id);
-      }
-      if (state.status === "failed") throw new Error(state.error ?? "渲染失败");
-      return state;
-    },
-    [say],
-  );
-
-  const renderExport = useCallback(async () => {
-    const lossless = settings?.export_format === "wav";
-    let queued: RenderState | null = null;
-    // Only enqueueing counts as "busy". The encode runs for minutes on a long
-    // episode; holding the busy flag through it would freeze the whole editor,
-    // which is the same complaint wearing a different coat.
-    await run("导出成片", async () => {
-      queued = await api.render(boot.version.id, { lossless });
-    });
-    if (queued === null) return; // queueing failed; `run` already reported it
-
-    const start: RenderState = queued;
-    if (isTerminal(start.status)) {
-      if (start.status === "done") {
-        setRendered({ url: start.url, durationMs: start.duration_ms });
-        setShowOutput(true);
-      }
-      return;
-    }
-    try {
-      const result = await pollRender(start);
-      setRendered({ url: result.url, durationMs: result.duration_ms });
-      setShowOutput(true);
-      say(`成片已导出 ${formatClock(result.duration_ms)}，可在下方试听`);
-    } catch (caught) {
-      setNotice(describe(caught));
-    } finally {
-      setExporting(null);
-    }
-  }, [boot.version.id, pollRender, run, say, settings?.export_format]);
-
-  /**
-   * Queue the film, wait for it, then **save it** and keep no URL.
-   *
-   * The save is what makes moving this to the menu worth doing: from the 导出 menu the
-   * natural end of the action is a file on disk, not a download link inside a panel that may
-   * be collapsed by the time the encode finishes (a one-hour film is ~14 minutes of x264).
-   *
-   * Keeping the URL instead would mean deciding when it goes stale, and it can go stale
-   * without the EDL changing — moving a material block changes the film but not the audio —
-   * so the menu would happily offer a film that no longer matches the timeline on screen.
-   * One-shot removes the question instead of answering it badly.
-   */
-  const exportFilm = useCallback(async () => {
-    let queued: { id: string } | null = null;
-    await run("导出成片视频", async () => {
-      queued = await api.exportVideo(boot.version.id, {
-        burn_subtitles: true,
-        font_size: fontSize,
-        margin_v: marginV,
-      });
-    });
-    if (queued === null) return; // queueing failed; `run` already reported it
-
-    const start: { id: string } = queued;
-    setFilm({ id: start.id, percent: 0 });
-    const startedAt = Date.now();
-    let lastShown = -1;
-    try {
-      for (;;) {
-        const state = await api.videoExport(start.id);
-        if (state.status === "failed") throw new Error(state.error ?? "导出成片视频失败");
-        if (state.status === "done") {
-          setFilm({ id: state.id, percent: 100 });
-          const blob = await api.videoExportBlob(state.url);
-          saveBlob(blob, filmFilename(boot.projectName, new Date()));
-          say(`成片视频已保存（${formatClock(state.duration_ms)}）`);
-          return;
-        }
-        const percent = percentOf(state.progress);
-        if (percent !== lastShown) {
-          lastShown = percent;
-          setFilm({ id: state.id, percent });
-          // Same wording rule as the audio export: 「正在」 plus a moving percentage is the
-          // only thing that distinguishes a 14-minute encode from a dead menu item.
-          say(`正在导出成片视频… ${percent}%（${renderEta(Date.now() - startedAt, state.progress)}）`);
-        }
-        await new Promise((resolve) => setTimeout(resolve, pollDelayMs(Date.now() - startedAt)));
-      }
-    } catch (caught) {
-      setNotice(describe(caught));
-    } finally {
-      setFilm(null);
-    }
-  }, [boot.projectName, boot.version.id, fontSize, marginV, run, say, setNotice]);
-
   // The filler pair is mutually exclusive: once one of them has been applied the
   // other has nothing left to act on. Both states are derived from the counts the
   // menu already loads, so this costs no extra request. `?? 0` because the record
@@ -1134,50 +1015,32 @@ function Desk({
           "separator",
           {
             id: "render",
-            label: exporting ? `导出成片音频… ${exporting.percent}%（进行中）` : "导出成片音频…",
+            label: "导出成片音频…",
             // Empty edit exports the whole episode. That is the normal end of a
             // proofreading-only session (第 110 轮): subtitle work is a deliverable on its
             // own, and requiring a cut first made the menu item dead for anyone who never
             // wanted one.
-            hint: !edl
-              ? "正在计算剪辑方案…"
-              : settings?.export_format === "wav"
-                ? "WAV 无损"
-                : "M4A",
-            disabled: exporting !== null || !edl,
-            onSelect: () => void renderExport(),
+            hint: !edl ? "正在计算剪辑方案…" : "文件名、文件夹、格式",
+            disabled: !edl,
+            // A panel rather than an immediate export (round 135): the user asked to name the
+            // file and choose the folder, which a menu item cannot ask for. The format moved
+            // in as well — it is the third thing about the same file, not a global preference.
+            onSelect: () => setAudioExportOpen(true),
           },
           {
             // The film export used to be a button inside `视频剪辑` (round 102). It is a
             // delivery, and every other delivery is in this menu — so it comes here, right
             // under the audio export, which is the order the work happens in.
+            //
+            // Since round 135 the item opens a panel: a 900 MB film needs a name, a folder and
+            // the two encoding options, and all three used to be decided *for* the user (or
+            // hidden one level up as menu toggles sitting next to the action itself).
             id: "render-video",
             ...videoExportEntry({
               hasEdl: edl !== null,
-              exportingPercent: film?.percent ?? null,
+              exporting: videoExportRunning,
             }),
-            onSelect: () => void exportFilm(),
-          },
-          "separator",
-          {
-            id: "fmt-m4a",
-            label: "格式：M4A（有损）",
-            checked: settings?.export_format === "m4a",
-            onSelect: () => {
-              if (!settings) return;
-              setSettings({ ...settings, export_format: "m4a" });
-              void api.saveSettings({ export_format: "m4a" }).catch(() => undefined);
-            },
-          },
-          {
-            id: "fmt-wav",
-            label: "格式：WAV（无损）",
-            checked: settings?.export_format === "wav",
-            onSelect: () => {
-              if (!settings) return;
-              setSettings({ ...settings, export_format: "wav" });
-              void api.saveSettings({ export_format: "wav" }).catch(() => undefined);
-            },
+            onSelect: () => setVideoExportOpen(true),
           },
           "separator",
           {
@@ -1196,12 +1059,9 @@ function Desk({
       boot.version.id,
       cleanupCounts,
       edl,
-      exportFilm,
-      film,
       lastArchive,
       onReload,
       reloadCleanupCounts,
-      renderExport,
       run,
       setSettingsOpen,
       setSettingsSection,
@@ -1541,6 +1401,38 @@ function Desk({
         versionId={boot.version.id}
         onTranscriptChanged={onReload}
         onNotice={setNotice}
+      />
+
+      <VideoExportDialog
+        open={videoExportOpen}
+        episode={boot.projectName}
+        versionId={boot.version.id}
+        fontSize={fontSize}
+        marginV={marginV}
+        faster={settings?.video_faster ?? false}
+        fastEncode={settings?.video_fast_encode ?? false}
+        onClose={() => setVideoExportOpen(false)}
+        onNotice={setNotice}
+        onSettingsChanged={(values) => {
+          if (settings) setSettings({ ...settings, ...values });
+        }}
+        onRunningChanged={setVideoExportRunning}
+      />
+
+      <AudioExportDialog
+        open={audioExportOpen}
+        episode={boot.projectName}
+        versionId={boot.version.id}
+        format={settings?.export_format ?? "m4a"}
+        onFormatChanged={(format) => {
+          if (settings) setSettings({ ...settings, export_format: format });
+        }}
+        onClose={() => setAudioExportOpen(false)}
+        onNotice={setNotice}
+        onExported={(url, durationMs) => {
+          setRendered({ url, durationMs });
+          setShowOutput(true);
+        }}
       />
 
       <NewProjectDialog

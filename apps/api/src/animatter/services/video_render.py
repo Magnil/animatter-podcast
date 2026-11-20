@@ -66,7 +66,14 @@ _locks: dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
 _futures: dict[str, Future[None]] = {}
 
+#: 正在跑的导出 → 它的取消开关（round 135）。请求线程只 `set()` 这个事件；真正杀进程是
+#: 编码线程在 `media/video._run` 的轮询里做的，因为只有它握着那个 `Popen`。
+_cancels: dict[str, threading.Event] = {}
+_cancels_guard = threading.Lock()
+
 _ACTIVE = ("queued", "running")
+#: 终态。`cancelled` 是用户主动停下，**不是**故障：前端据此显示「已停止」而不是报错。
+_TERMINAL = ("done", "failed", "cancelled")
 
 
 def _lock_for(project_id: str) -> threading.Lock:
@@ -986,14 +993,56 @@ def start_export(
         session.commit()
         render_id = record.id
 
+    event = _cancel_event(render_id)
+    event.clear()
     _futures[render_id] = _executor.submit(
-        _run, db, settings, render_id, project_id, version_id, resolved
+        _run, db, settings, render_id, project_id, version_id, resolved, event
     )
     with db.session() as session:
         started = session.get(Render, render_id)
         assert started is not None
         log.info("video.queued", render_id=render_id, duration_ms=started.duration_ms)
         return started
+
+
+def request_cancel(db: object, render_id: str) -> Render:
+    """Ask a running export to stop, and return the row as it is right now.
+
+    The row is **not** flipped here. It stays `running` until the encode thread actually
+    notices (≤ 200 ms for a live chunk, longer if the thread is still preparing audio) and
+    writes `cancelled` — flipping it in the request would make the UI claim the ffmpeg is gone
+    while it is still writing a 1 GB chunk.
+
+    Cancelling a finished export is not an error: the user may have clicked 停止 in the same
+    second the film completed, and the honest answer is 「已经完成了」, not a 409.
+    """
+    from animatter.db import Database
+
+    assert isinstance(db, Database)
+    with db.session() as session:
+        row = session.get(Render, render_id)
+        if row is None:
+            raise AppError("render_not_found", "导出任务不存在", status=404)
+        status = row.status
+        result = row
+        if status in _TERMINAL:
+            return result
+    with _cancels_guard:
+        event = _cancels.get(render_id)
+    if event is not None:
+        event.set()
+    log.info("video.cancel_requested", render_id=render_id)
+    return result
+
+
+def _cancel_event(render_id: str) -> threading.Event:
+    with _cancels_guard:
+        return _cancels.setdefault(render_id, threading.Event())
+
+
+def _forget_cancel(render_id: str) -> None:
+    with _cancels_guard:
+        _cancels.pop(render_id, None)
 
 
 def _video_signature(prepared: PreparedVideo, options: ExportOptions) -> str:
@@ -1040,21 +1089,28 @@ def _run(
     project_id: str,
     version_id: str,
     options: ExportOptions,
+    cancel: threading.Event | None = None,
 ) -> None:
     from animatter.db import Database
 
     assert isinstance(db, Database)
     try:
         with _lock_for(project_id):
-            _encode(db, settings, render_id, project_id, version_id, options)
+            _encode(db, settings, render_id, project_id, version_id, options, cancel=cancel)
     except AppError as exc:
-        _finish(db, render_id, status="failed", error=f"{exc.message}：{exc.hint}")
+        if exc.code == "video_cancelled":
+            # 用户主动停下：终态是 `cancelled`，不是 `failed`。两者的下一步动作不同——
+            # 一个再点一次导出就行，另一个要看错误信息。
+            _finish(db, render_id, status="cancelled", error=None)
+        else:
+            _finish(db, render_id, status="failed", error=f"{exc.message}：{exc.hint}")
     except Exception as exc:
         log.exception("video.crashed", render_id=render_id)
         _finish(db, render_id, status="failed", error=str(exc))
     finally:
         with _locks_guard:
             _futures.pop(render_id, None)
+        _forget_cancel(render_id)
 
 
 def _chain_for(
@@ -1204,6 +1260,10 @@ def _render_picture(
     stem: str,
     target: Path,
     report: Callable[[float], None],
+    announce: Callable[[str], None] | None = None,
+    faster: bool = False,
+    fast_encode: bool = False,
+    cancel: threading.Event | None = None,
 ) -> None:
     """Encode the whole picture track, **one chunk of the timeline per ffmpeg process** (§19.27).
 
@@ -1316,7 +1376,24 @@ def _render_picture(
     for stale in chunk_dir.glob("still-*.png"):
         stale.unlink()
 
+    def check_cancel() -> None:
+        """Stop between chunks, not only inside one.
+
+        Serial: at most one chunk of wasted work. Two workers: at most two. Waiting for the
+        whole film to finish would make 停止 mean "stop in 14 minutes".
+        """
+        if cancel is not None and cancel.is_set():
+            raise AppError(
+                "video_cancelled",
+                "导出已停止",
+                hint="再点一次「导出」会从头开始；已编码的块不会复用。",
+                status=409,
+            )
+
     def render_one(index: int, chunk: video_chunks.Chunk) -> Path:
+        # Checked here as well as inside `media.video.render`: a worker that was already
+        # queued when the user pressed 停止 must not start a 200 s encode at all.
+        check_cancel()
         piece = chunk_dir / f"chunk-{index:04d}.mp4"
         box_chain = top_chain = None
         box_parts: list[box_track.BoxSegment] = []
@@ -1405,6 +1482,8 @@ def _render_picture(
             start_ms=chunk.start_ms,
             frames=chunk.frames(video_media.FPS),
             filter_threads=settings.video_filter_threads,
+            fast_encode=fast_encode,
+            cancel=cancel,
         )
         return piece
 
@@ -1431,7 +1510,17 @@ def _render_picture(
                 for index, chunk in enumerate(chunks)
             }
             for future in as_completed(futures):
-                pieces[futures[future]] = future.result()
+                try:
+                    pieces[futures[future]] = future.result()
+                except AppError as exc:
+                    if exc.code != "video_cancelled":
+                        raise
+                    # Cancelled mid-flight: drop what is still queued and surface the stop
+                    # once. Without this the pool would keep starting chunks after the user
+                    # pressed 停止 — they are cheap to refuse, but they still hold memory.
+                    for pending in futures:
+                        pending.cancel()
+                    raise
                 with progress_lock:
                     done += 1
                     report(0.9 * done / len(chunks))
@@ -1469,10 +1558,22 @@ def _encode(
     project_id: str,
     version_id: str,
     options: ExportOptions,
+    *,
+    cancel: threading.Event | None = None,
 ) -> None:
     from animatter.db import Database
 
     assert isinstance(db, Database)
+
+    # Cancelled while queued or before the audio was prepared: an hour-long episode spends
+    # minutes making its audio, and none of that should be paid for a film nobody wants.
+    if cancel is not None and cancel.is_set():
+        raise AppError(
+            "video_cancelled",
+            "导出已停止",
+            hint="再点一次「导出」会从头开始；已编码的块不会复用。",
+            status=409,
+        )
 
     with db.session() as session:
         prepared = prepare(session, settings, project_id, version_id)
@@ -1550,8 +1651,16 @@ def _encode(
         stem=stem,
         target=silent,
         report=report,
+        announce=announce,
+        faster=options.faster,
+        fast_encode=options.fast_encode,
+        cancel=cancel,
     )
     report(0.95)
+    if cancel is not None and cancel.is_set():
+        # Everything was encoded and only the 0.2 % mux is left. Stopping here is still the
+        # right answer: the user asked for a film, not for a 900 MB intermediate.
+        raise AppError("video_cancelled", "导出已停止", hint="再点一次「导出」会从头开始。", status=409)
 
     result = video_media.mux(
         settings.ffmpeg_path,

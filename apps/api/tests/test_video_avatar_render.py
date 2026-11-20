@@ -248,7 +248,7 @@ def test_a_chunk_track_is_declared_without_a_time_bound(tmp_path: Path) -> None:
     track.write_bytes(b"x")
     seen: list[list[str]] = []
 
-    def capture(command: list[str], *, timeout: int = 0) -> None:
+    def capture(command: list[str], *, timeout: int = 0, cancel: object = None) -> None:
         seen.append(command)
 
     video = importlib.import_module("animatter.media.video")

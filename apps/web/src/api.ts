@@ -1131,6 +1131,41 @@ export const api = {
   videoExport: (exportId: string) => request<VideoExport>(`/api/video/exports/${exportId}`),
 
   /**
+   * Ask a running video export to stop.
+   *
+   * Returns the row **as it is now**, which is usually still `running`: the server only raises
+   * a flag and the encode thread kills its ffmpeg at the next check. So the caller keeps
+   * polling; it must not treat this response as "stopped".
+   */
+  cancelVideoExport: (exportId: string) =>
+    request<VideoExport>(`/api/video/exports/${exportId}/cancel`, { method: "POST" }),
+
+  /**
+   * Put a finished render into the folder and file name the user chose.
+   *
+   * A server-side copy, not a browser download: this app's server is on the user's machine,
+   * and a 900 MB film should not have to pass through browser memory to reach a folder the
+   * user already named. Returns the path that was actually written.
+   */
+  saveRenderTo: (renderId: string, outDir: string, filename: string) =>
+    request<{ path: string; bytes: number; filename: string }>(
+      `/api/renders/${renderId}/save-to`,
+      { method: "POST", body: JSON.stringify({ out_dir: outDir, filename }) },
+    ),
+
+  /**
+   * Open the OS folder chooser on the server and return the picked path.
+   *
+   * Fails with 409 when there is no display or the dialog was dismissed; the dialog's text
+   * field stays usable, so the picker is a convenience rather than the only way in.
+   */
+  pickFolder: (initial: string) =>
+    request<{ path: string }>(
+      `/api/system/pick-folder?initial=${encodeURIComponent(initial)}`,
+      { method: "POST" },
+    ),
+
+  /**
    * The finished film, as bytes.
    *
    * A plain `fetch` rather than `request()`: the body is an MP4, not JSON. The URL the
@@ -1451,7 +1486,8 @@ export interface VideoTimeline {
 
 export interface VideoExport {
   id: string;
-  status: "queued" | "running" | "done" | "failed";
+  /** `cancelled` is a user action, not an error: the dialog shows 「已停止」, not a failure. */
+  status: "queued" | "running" | "done" | "failed" | "cancelled";
   progress: number;
   duration_ms: number;
   url: string;

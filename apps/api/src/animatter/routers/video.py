@@ -832,6 +832,29 @@ def export_status(
     return _to_out(row)
 
 
+@router.post("/video/exports/{render_id}/cancel", response_model=VideoExportOut)
+def cancel_export(
+    render_id: str, request: Request, session: Session = Depends(_session_dependency)
+) -> VideoExportOut:
+    """Ask a running video export to stop (round 135).
+
+    Returns the row **as it is now**, which is normally still `running`: the request only
+    raises a flag, and the encode thread kills its ffmpeg at the next 200 ms check and writes
+    `cancelled` itself. Reporting `cancelled` here would stop the client polling while a
+    process was still writing a chunk.
+
+    Cancelling an export that already finished is not an error — 停止 pressed in the same
+    second the film completed should say 「已经完成」, not 409.
+    """
+    db: Database = request.app.state.db
+    row = session.get(Render, render_id)
+    if row is None:
+        raise AppError("render_not_found", "导出任务不存在", status=404)
+    record = video_render_service.request_cancel(db, render_id)
+    log.info("video.cancel", render_id=render_id)
+    return _to_out(record)
+
+
 @router.get("/video/exports/{render_id}/file")
 def export_file(
     render_id: str, session: Session = Depends(_session_dependency)
