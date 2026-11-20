@@ -3305,3 +3305,51 @@ node scripts/cdp.mjs http://localhost:5173/ .tmp/shots/r135-running.png scripts/
 
 闸门：pytest **1490 passed / 2 skipped**、`ruff` 干净、`mypy --strict` **111** 干净、
 `tsc --noEmit` 干净、`npm test` **335 passed**、`vite build` 成功。
+
+## 第 136 轮：导出面板的「正在保存…」不再挂着（2026-11-21）
+
+**用户看到的问题**：进度条走满 →「编码完成，正在保存…」→ 文件其实已经落到他的文件夹里 →
+**这行字永远不变**。一次导出十八分钟，最后那句「正在保存」一直挂着，他没法判断到底存成了没有。
+
+**根因**：服务端的 `done` 只表示**编码**结束。把成品拷到用户选的文件夹是之后的一步，会失败、
+也要几百毫秒。而 `progressView` 只看 `job.status`，不知道交付有没有跑完，于是 `done` 那一支
+永远写「正在保存…」。`deliver()` 当时也只 `onNotice(...)` 就返回——面板自己不知道存没存成，
+自然只能假设它还在存。
+
+**改法**：`ExportState` 加 `delivery`（`idle` / `saving` / `saved` / `failed`）与 `savedTo`，
+`done` 分支按它分三句：正在保存… / **已保存到 `<路径>`** / 编码完成但保存失败（红色）。
+`deliver()` 返回 `{ok, path?}`，由调用方写回 state。
+
+**保存失败不写成「导出失败」**：编码确实成功了，文件仍在数据目录里；说成失败会让人以为要重跑
+十八分钟。这一支是红色 + 「见提示」，提示里写着真实路径。
+
+**为什么先显示路径而不是只说「已保存」**：用户接下来要做的事是去那个文件夹里找它。
+
+### 怎么验证
+
+单测 4 条钉 `progressView` 的三句话（`exportPanels.test.mjs`），另加一支走查
+`scripts/check-r136-saved-text.mjs`（**6/6**）——它把 `save-to` 打桩成 400 ms 的假成功，
+其余全真跑，于是「正在保存」那一帧真的能被看见：
+
+```
+PASS  编码完成时写「正在保存…」
+PASS  「正在保存」时进度条是 100 % 的 ok 色调
+PASS  保存完成后不再写「正在保存」
+PASS  改成「已保存到 D:/导出/走查-20261120.mp4」
+PASS  保存完成后按钮回到「导出」
+```
+
+不打桩就得等十八分钟，而这条要验的是面板的**接线**（done → saving → 调 save-to → saved），
+不是编码本身——编码路径由 `test_video_cancel.py` 与 `check-r135-export-running.mjs` 覆盖。
+
+闸门：`tsc --noEmit` 干净、`npm test` **339 passed**、`vite build` 成功。
+
+### 顺带：同一类 EOL 事故第二次发生
+
+`Path.write_text()` 在 Windows 上会把 `\n` 翻成 `\r\n`，而本仓库 `core.autocrlf=false`，
+于是「改 30 行」变成「改 300 行」——这个 commit 第一次提交时 `exportPanels.ts` 的 diff 是
+298 行变更，其中大半是换行符。用 `read_bytes`/`write_bytes` 改回来再 `--amend` 之后，
+真实 diff 是 28 行。
+
+**结论**：被跟踪文件一律走字节 API。这条已经写进 `AGENTS.md` 的铁律之外——它是「怎么改」，
+不是「改什么」。
