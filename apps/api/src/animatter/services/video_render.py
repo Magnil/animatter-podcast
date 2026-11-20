@@ -42,7 +42,7 @@ from animatter.core.video_avatar import pieces_in as track_pieces_in
 from animatter.errors import AppError
 from animatter.ids import new_id, utcnow_iso
 from animatter.log import get_logger
-from animatter.media import avatar_track, box_track, video_chunks
+from animatter.media import avatar_track, box_track, plate_bake, video_chunks
 from animatter.media import text_overlay as overlay_media
 from animatter.media import video as video_media
 from animatter.media.subtitle_ass import AssCue, SubtitleStyle, write_ass
@@ -628,6 +628,64 @@ def _base_background(template: VideoTemplate, tracks: list[AvatarTrack]) -> Path
     return Path(template.background_path)
 
 
+def _plate_for(
+    settings: Settings,
+    template: VideoTemplate,
+    *,
+    text_png: Path | None,
+    tracks: list[AvatarTrack],
+    work_dir: Path,
+    canvas_w: int,
+    canvas_h: int,
+    box_rect: dict[str, int],
+) -> plate_bake.Plate | None:
+    """Bake poster + stroke (+ text) into one PNG for this export (§19.30, E1).
+
+    ``None`` when the switch is off, when the compiled poster is missing, or when there is
+    nothing to gain — the caller then keeps the graph it had, byte for byte.
+
+    The patched avatar slots are the ones the graph will actually draw, which is exactly
+    ``tracks``: a slot without a track is not overlaid at all, so text baked under it stays
+    visible through the plate and needs no patch.
+    """
+    if not settings.video_plate_bake:
+        return None
+    base = _base_background(template, tracks)
+    if not base.is_file():
+        return None
+    overlay = Path(template.overlay_path) if template.overlay_path else None
+    box = (
+        int(box_rect.get("x") or 0),
+        int(box_rect.get("y") or 0),
+        int(box_rect.get("w") or 0),
+        int(box_rect.get("h") or 0),
+    )
+    slots = [
+        plate_bake.PatchSlot(
+            name=track.name,
+            x=track.x,
+            y=track.y,
+            w=track.width,
+            h=track.height,
+            lit=track.lit_path,
+            dim=track.dim_path,
+        )
+        for track in tracks
+    ]
+    return plate_bake.bake(
+        settings.ffmpeg_path,
+        base=base,
+        overlay=overlay,
+        text=text_png,
+        canvas_w=canvas_w,
+        canvas_h=canvas_h,
+        box_rect=box if box[2] > 0 and box[3] > 0 else None,
+        slots=slots,
+        work_dir=work_dir,
+    )
+
+
+
 # --- still preview ------------------------------------------------------
 
 
@@ -1163,6 +1221,32 @@ def _render_picture(
         visible_avatars={track.name for track in prepared.avatars} or None,
         avatar_names=prepared.avatar_names,
     )
+    # Bake the static plate once per export instead of compositing it on every frame (§19.30).
+    # `plate.text` is what is left to overlay: `None` when it went into the plate, the same PNG
+    # when a precondition failed (then `layers`/`text` stay exactly as they were), and the patch
+    # map carries the text pixels that sit under an avatar into that avatar's own PNG.
+    plate = _plate_for(
+        settings,
+        prepared.template,
+        text_png=text_png,
+        tracks=prepared.avatars,
+        work_dir=work_dir,
+        canvas_w=canvas_w,
+        canvas_h=canvas_h,
+        box_rect=prepared.box_rect,
+    )
+    background = plate.path if plate is not None else prepared.background_path
+    if plate is not None:
+        layers = []
+        text_png = plate.text
+        log.info(
+            "video.plate",
+            render_id=render_id,
+            text_baked=plate.text_baked,
+            patched_pixels=plate.patched_pixels,
+            skipped=plate.skipped or "-",
+            avatar_patches=len(plate.avatar_sources),
+        )
 
     if plan.empty:
         # A film with a background and subtitles but no material at all. `whole` is the one
@@ -1257,6 +1341,9 @@ def _render_picture(
             start_ms=chunk.start_ms,
             end_ms=chunk.end_ms,
             tag=f"-{index:04d}",
+            # The baked plate is drawn *under* the avatars, so a slot whose rect covers editable
+            # text carries that text in its own PNG (§19.30). Empty when the plate kept the text.
+            sources=plate.avatar_sources if plate is not None else None,
         )
 
         video_media.render(
@@ -1265,7 +1352,7 @@ def _render_picture(
             duration_ms=chunk.duration_ms,
             width=canvas_w,
             height=canvas_h,
-            background=prepared.background_path,
+            background=background,
             layers=layers,
             box=box_chain,
             box_segments=box_parts or None,
@@ -1330,6 +1417,9 @@ def _render_picture(
     # behind they accumulate for the life of the project.
     for stale_track in work_dir.glob("avatar-*-[0-9][0-9][0-9][0-9].mov"):
         stale_track.unlink(missing_ok=True)
+    # The baked plate and the patched avatar PNGs are named by digest, so they *are* reusable
+    # across exports of an unchanged template — that is the point of the digest. Only the ones
+    # this export did not use are removed (plate_bake does that itself), so nothing to do here.
 
 
 def _encode(

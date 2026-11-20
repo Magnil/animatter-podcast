@@ -105,6 +105,23 @@ class Settings(BaseSettings):
     #: Kept as a switch, not hard-wired: an export whose stills come out wrong has one setting to
     #: flip to get the old per-frame path back byte for byte.
     video_still_composite: bool = True
+    #: Bake the static plate — poster + frame stroke + editable text — into one PNG before
+    #: encoding, and carry the text pixels that sit under an avatar into that avatar's own PNG
+    #: (§19.30, E1).
+    #:
+    #: The graph used to composite those layers on every frame. Bench, on a 100 s equivalent
+    #: timeline: 53.48 → 33.86 s (−36.7 %), peak RSS 3.04 → 2.31 GB. On the real 3695.9 s film:
+    #: 1670.7 → 1167.4 s (27.84 → 19.46 min, −30.1 %). Both at a frame-by-frame PSNR of
+    #: **``inf``** against the old path — the two mp4s are byte-identical. (−36.7 % is the upper
+    #: bound: that timeline is 72 % stills, the real film is 58.4 %; budget ~30 %.)
+    #: Text goes in only when two template-level preconditions hold — no text inside the material
+    #: box, and every avatar pixel under a text pixel fully opaque — which is checked **per bake**
+    #: (the text is user-editable, so a compile-time answer goes stale), falling back to poster +
+    #: stroke only (−16.8 %, still ``inf``).
+    #:
+    #: Kept as a switch for the same reason as ``video_still_composite``: an export whose plate
+    #: comes out wrong has one setting to flip to get the old per-frame path back byte for byte.
+    video_plate_bake: bool = True
 
     # --- Aliyun Bailian ------------------------------------------------
     dashscope_api_key: str | None = Field(default=None, validation_alias="DASHSCOPE_API_KEY")
