@@ -15,15 +15,15 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from animatter.config import Settings
 from animatter.core.edl import TimeMap
 from animatter.errors import AppError
 from animatter.log import get_logger
-from animatter.models import Export, Sentence, Token, TranscriptVersion
+from animatter.models import Export, TranscriptVersion
 from animatter.services import projects as project_service
+from animatter.services import transcript_facts
 
 log = get_logger(__name__)
 
@@ -57,27 +57,30 @@ def build_cues(
     max_chars: int = 20,
     max_lines: int = 2,
     max_cps: float = 9.0,
+    facts: transcript_facts.TranscriptFacts | None = None,
 ) -> tuple[list[Cue], list[SubtitleIssue]]:
     """Turn sentences into cues, split for readability and mapped to new time.
 
     Splitting long sentences is not cosmetic: a cue that stays on screen for 30
     seconds while the speaker talks is unusable for viewers, and a single line of
     60 characters is unreadable on a phone.
-    """
-    rows = list(
-        session.scalars(select(Sentence).where(Sentence.version_id == version_id).order_by(Sentence.ord))
-    )
-    if not rows:
-        raise AppError("no_sentences", "这个版本没有句子", hint="先完成转写。")
 
-    tokens = list(session.scalars(select(Token).where(Token.version_id == version_id).order_by(Token.idx)))
+    ``facts`` lets a caller that already read the transcript hand it over instead of
+    paying for a second read. The still preview does exactly that (§19.33 P0-2): the avatar
+    path needs the same tokens, and the ORM form of this query was measured at 92 ms of a
+    1020 ms preview.
+    """
+    if facts is None:
+        facts = transcript_facts.load(session, version_id)
+    if not facts.sentences:
+        raise AppError("no_sentences", "这个版本没有句子", hint="先完成转写。")
 
     cues: list[Cue] = []
     issues: list[SubtitleIssue] = []
     budget = max_chars * max_lines
 
-    for sentence in rows:
-        slice_tokens = tokens[sentence.token_start : sentence.token_end]
+    for sentence in facts.sentences:
+        slice_tokens = facts.tokens_between(sentence.token_start, sentence.token_end)
         # Hidden words («嗯», «那个») are left out of the cue text but keep their
         # time: the audio still contains them, so cutting the cue short would put
         # the subtitle out of sync with what a listener hears.

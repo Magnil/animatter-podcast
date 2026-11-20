@@ -728,6 +728,13 @@ def covering(
 
     Used by the still preview, which must not build the whole film's chain to draw one
     frame.
+
+    The offset is counted **on the film's frame grid**, from the frame the segment starts on —
+    see :func:`box_track.local_offset_ms`. Counting it as ``at_ms - cursor`` looks identical and
+    is not: a block boundary is an arbitrary millisecond while the film can only start a picture
+    on a frame, so the two differ by up to half a frame, which is one whole clip frame at a
+    boundary that falls mid-frame. Measured on the sample at 489 030 ms: the wall-clock offset
+    put the still on clip frame 1 014 while the film and the DOM stage were on 1 015.
     """
     path_of = {index: source for index, source in enumerate(plan_.sources)}
     cursor = 0

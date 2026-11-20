@@ -664,9 +664,13 @@ def render_still(
     box: box_track.BoxChain | None = None,
     box_segment: box_track.BoxSegment | None = None,
     box_source: Path | None = None,
+    box_seek_ms: int = 0,
+    box_keep_timestamps: bool = False,
     top: box_track.BoxChain | None = None,
     top_segment: box_track.BoxSegment | None = None,
     top_source: Path | None = None,
+    top_seek_ms: int = 0,
+    top_keep_timestamps: bool = False,
     avatars: list[AvatarLayer] | None = None,
     text: Layer | None = None,
     subtitles: Path | None = None,
@@ -686,6 +690,22 @@ def render_still(
     ``box_segment`` is the one box content stretch covering ``at_ms`` — a block's image or
     clip, or a plate excerpt over a gap. Only that one is declared as an input, so a still
     costs the same whether the film has two blocks or two hundred.
+
+    ``box_seek_ms``/``top_seek_ms`` place the frame inside a **clip**, and they are input-side
+    ``-ss`` rather than the PTS shift the graph uses for images. The shift is exact for a looped
+    still and wrong for a clip: ``setpts=PTS-42.32/TB`` followed by ``fps=24`` emits the clip's
+    first frame, because the frames the shift pushed to a negative timestamp are simply the ones
+    ``fps`` starts from. Measured: the still inside a 292 s clip at a 42.32 s offset was
+    byte-identical to the source at **0.0 s**, and the ``-ss`` render differed from the true frame
+    in 0.00 % of pixels. That bug predates P1 and made every still inside a video block a lie.
+
+    ``box_keep_timestamps``/``top_keep_timestamps`` then fix the frame *within* that clip. Plain
+    ``-ss t`` is **ceil** — the first frame at or after t — while the film's ``fps=24`` grid is
+    **floor**, the frame whose interval contains t. When t falls inside a frame the two rules
+    disagree, and the preview shows the next frame while the film shows this one; measured at
+    500 670 ms the two rules were 17.62 % of the box apart. With ``keep_timestamps`` the input is
+    seeked a second early under ``-copyts`` and the graph's ``trim`` picks the frame, which is
+    byte-identical to the film's.
     """
     target.parent.mkdir(parents=True, exist_ok=True)
     graph = build_filtergraph(
@@ -711,7 +731,12 @@ def render_still(
         else:
             command += ["-loop", "1", "-i", str(path)]
     if box_segment is not None and box_source is not None:
-        command += box_track.input_args(box_segment, box_source)
+        command += box_track.input_args(
+            box_segment,
+            box_source,
+            seek_ms=box_seek_ms,
+            keep_timestamps=box_keep_timestamps,
+        )
     for avatar in avatars or []:
         if avatar.is_video:
             command += ["-i", str(avatar.path)]
@@ -723,7 +748,12 @@ def render_still(
     # frame is drawn by exactly one of the two, and the covering segment is the one that has
     # something to show (§19.26).
     if top_segment is not None and top_source is not None:
-        command += box_track.input_args(top_segment, top_source)
+        command += box_track.input_args(
+            top_segment,
+            top_source,
+            seek_ms=top_seek_ms,
+            keep_timestamps=top_keep_timestamps,
+        )
 
     command += [
         "-filter_complex_script",
@@ -736,6 +766,14 @@ def render_still(
         "1",
         "-c:v",
         "png",
+        # Level 1 rather than zlib's default 6: measured on a real 1920×1080 preview frame,
+        # the encode drops 330 ms → 217 ms (**−113 ms, −34 %**) at PSNR `inf` — the pixels are
+        # unchanged, only the deflate effort is. The file grows 1364 → 1596 KB (+17 %), which
+        # is free: a preview PNG is a local temp artefact and is never delivered as a
+        # master. Level 0 is faster still (181 ms) but writes 8.1 MB, and that would be paid
+        # back over the HTTP fetch the browser makes for it.
+        "-compression_level",
+        "1",
         str(target),
     ]
 

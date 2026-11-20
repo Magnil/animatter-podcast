@@ -366,3 +366,46 @@ def test_a_still_puts_its_full_frame_segment_on_the_top_chain() -> None:
     assert graph.count("[boxout]") == 2
     assert graph.count("[topout]") == 2
     assert graph.index("[withtext]") < graph.index("[topout]")
+
+
+def test_a_still_encodes_png_with_the_measured_compression_level(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Level 1, not zlib's default 6, and **after** the output path is not yet written.
+
+    Measured on a real 1920×1080 preview frame: the encode drops 330 → **217 ms** at PSNR `inf`
+    (the pixels are identical; only the deflate effort changes), for +17 % bytes on a local temp
+    artefact that is never delivered as a master.
+
+    Pinned as a test because it is the single cheapest win in the preview path and it is invisible
+    from the outside: every level produces a valid PNG, so nothing but this assertion notices when
+    a refactor quietly drops the flag.
+    """
+    from animatter.media import video as video_media
+
+    command: list[str] = []
+
+    def capture(args: list[str], *, timeout: int = 7200) -> None:
+        command.extend(args)
+        # `render_still` insists on a non-empty target, so the fake ffmpeg has to create one.
+        Path(args[-1]).write_bytes(b"x")
+
+    monkeypatch.setattr(video_media, "_run", capture)
+    background = tmp_path / "bg.png"
+    background.write_bytes(b"x")
+    video_media.render_still(
+        "ffmpeg",
+        target=tmp_path / "still.png",
+        at_ms=0,
+        width=1920,
+        height=1080,
+        background=background,
+        layers=[],
+        box_seek_ms=0,
+    )
+    assert "-compression_level" in command, command
+    assert command[command.index("-compression_level") + 1] == "1"
+    # The level has to be attached to the *output* PNG: ffmpeg treats it as a codec option, and
+    # placing it before `-i` silently does nothing.
+    assert command.index("-compression_level") > command.index("-map")
+    assert command.index("-c:v") < command.index("-compression_level")

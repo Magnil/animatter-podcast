@@ -23,7 +23,7 @@ from animatter.config import Settings
 from animatter.db import Database
 from animatter.errors import AppError
 from animatter.log import get_logger
-from animatter.media import fonts
+from animatter.media import box_track, fonts
 from animatter.media.subtitle_ass import SubtitleStyle
 from animatter.models import Render, VideoItem
 from animatter.services import clipping as clipping_service
@@ -743,7 +743,14 @@ def preview(
         at_ms=at_ms,
         style=_style_of(font_name, font_size, margin_v, primary_colour, None, None),
     )
-    return PreviewOut(url=f"/api/video/preview/file/{path.name}", at_ms=at_ms)
+    # The **frame's** start, not the requested instant: the still renders the film frame covering
+    # `at_ms`, and echoing back the raw request would tell the client it is looking at a time the
+    # picture does not show. The DOM stage snaps the same way (`frameStartMs`), so this is also
+    # what makes the two numbers comparable in a walkthrough.
+    return PreviewOut(
+        url=f"/api/video/preview/file/{path.name}",
+        at_ms=box_track.frame_start_ms(int(at_ms)),
+    )
 
 
 @router.get("/video/preview/file/{name}")

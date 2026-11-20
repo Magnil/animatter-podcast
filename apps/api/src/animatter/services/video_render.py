@@ -50,8 +50,8 @@ from animatter.models import Media, Render, TranscriptVersion, VideoItem, VideoT
 from animatter.services import clipping as clipping_service
 from animatter.services import projects as project_service
 from animatter.services import subtitles as subtitle_service
+from animatter.services import transcript_facts, video_avatars, video_box, video_edits
 from animatter.services import video as video_service
-from animatter.services import video_avatars, video_box, video_edits
 from animatter.services import video_templates as template_service
 
 log = get_logger(__name__)
@@ -289,7 +289,7 @@ def prepare(
 
 
 def _cues_for(
-    session: Session, version_id: str, edl: Edl
+    session: Session, version_id: str, edl: Edl, *, facts: transcript_facts.TranscriptFacts | None = None
 ) -> list[AssCue]:
     """The burned-in subtitles in **output** time, before any chunking.
 
@@ -299,7 +299,9 @@ def _cues_for(
     frame's PTS, and every chunk starts at 0.
     """
     time_map = edl.time_map() if edl.removed_ms else None
-    cues, _issues = subtitle_service.build_cues(session, version_id, time_map=time_map)
+    cues, _issues = subtitle_service.build_cues(
+        session, version_id, time_map=time_map, facts=facts
+    )
     return [AssCue(start_ms=cue.start_ms, end_ms=cue.end_ms, text=cue.text) for cue in cues]
 
 
@@ -309,9 +311,11 @@ def _ass_for(
     edl: Edl,
     style: SubtitleStyle,
     target: Path,
+    *,
+    facts: transcript_facts.TranscriptFacts | None = None,
 ) -> Path:
     """Build the burned-in subtitle file in output time."""
-    ass_cues = _cues_for(session, version_id, edl)
+    ass_cues = _cues_for(session, version_id, edl, facts=facts)
     if not ass_cues:
         raise AppError(
             "no_subtitle_cues",
@@ -473,6 +477,8 @@ def avatar_tracks(
     template: VideoTemplate,
     version: TranscriptVersion,
     edl: Edl,
+    *,
+    facts: transcript_facts.TranscriptFacts | None = None,
 ) -> list[AvatarTrack]:
     """Which avatar slots change state, and when (§19.5, P3).
 
@@ -480,8 +486,11 @@ def avatar_tracks(
     **absent**: the compiled background already shows their photo, and building a constant
     track for them would cost a full-length clip for no visible change. On the sample
     template (4 slots / 2 speakers) that is half of them.
+
+    ``facts`` is the caller's already-read transcript (§19.33 P0-2); without it this reads the
+    tokens itself, once, via ``video_avatars.resolve``.
     """
-    lit_by_slot = video_avatars.resolve(session, template, version, edl)
+    lit_by_slot = video_avatars.resolve(session, template, version, edl, facts=facts)
     if not lit_by_slot:
         return []
 
@@ -521,6 +530,7 @@ def _avatar_layers(
     start_ms: int = 0,
     end_ms: int | None = None,
     tag: str = "",
+    sources: dict[str, tuple[Path, Path]] | None = None,
 ) -> list[video_media.AvatarLayer]:
     """Render one lit/dim track per bound slot, ready to overlay.
 
@@ -536,6 +546,11 @@ def _avatar_layers(
     stopped being drawn for the rest of the chunk — the "avatar frame vanishes" bug. A fresh
     handful of stills per chunk has no seek to get wrong, and `concat` is exact.
 
+    ``sources`` substitutes a slot's lit/dim PNGs with the patched pair a baked plate produced
+    (§19.30, E1): a slot whose rect covers a piece of editable text carries that text in its own
+    PNG, because the plate is drawn *under* the avatars. Only slots that actually carry text are
+    in the mapping; the rest keep their own files.
+
     ``tag`` disambiguates the file names; the same slot appears in every chunk.
     """
     layers: list[video_media.AvatarLayer] = []
@@ -549,9 +564,8 @@ def _avatar_layers(
             # slice), but an empty list would make `build_track` raise; skipping is the honest
             # answer for a zero-length chunk.
             continue
-        pieces = avatar_track.pieces_of(
-            lit=[track.lit_path], dim=track.dim_path, sequence=sequence
-        )
+        lit_path, dim_path = (sources or {}).get(track.name, (track.lit_path, track.dim_path))
+        pieces = avatar_track.pieces_of(lit=[lit_path], dim=dim_path, sequence=sequence)
         target = work_dir / f"avatar-{_slug(track.name)}{tag}.mov"
         avatar_track.build_track(
             settings.ffmpeg_path, target=target, pieces=pieces, work_dir=work_dir
@@ -629,10 +643,18 @@ def preview_still(
 ) -> Path:
     """Composite one frame at ``at_ms`` on the output timeline.
 
-    Request-time, not a job: a still costs ~200 ms, which is the entire reason v1
-    promises a still rather than real-time playback. The user drags the playhead, lets
-    go, and sees the real layout — from the same filtergraph the export uses, so what
-    they approve is what they get.
+    Request-time, not a job. The original reason was "a still costs ~200 ms"; the measured
+    number on a 3-hour episode is **~1.0 s**, and ~40 % of that was Python re-reading the same
+    immutable rows — see §19.33 P0-2. The transcript is therefore read **once** here
+    (:mod:`animatter.services.transcript_facts`) and handed to both the avatar and the
+    subtitle paths; ffmpeg's share (~610 ms) is the rest.
+
+    The user drags the playhead, lets go, and sees the real layout — from the same
+    filtergraph the export uses, so what they approve is what they get.
+
+    ``at_ms`` is **output** time. Callers holding an original-timeline playhead must map it
+    first (``apps/web/src/timeMap.ts``); passing it through unchanged shows a frame from
+    ``removed_ms`` later and is invisible on a project with no deletions.
 
     **The file name carries a digest of the inputs.** It used to be ``still-{at_ms}.png``,
     which meant tuning 字幕字号 rewrote the bytes under an unchanged URL: the browser saw
@@ -645,15 +667,25 @@ def preview_still(
     if template.status != "ready":
         raise AppError("template_not_ready", "模板还没编译好", status=409)
 
+    # **The film's frame, not the raw instant.** A 24 fps film shows frame *k*, whose PTS is
+    # `floor(t*24)/24`, for the whole interval `[k/24, (k+1)/24)`. Everything drawn on it — the
+    # box content, a lit avatar, and above all the subtitle, which `ass` selects by that PTS — is
+    # decided at the frame's own start. Rendering at the raw instant put the still up to 42 ms
+    # ahead: at 120 060 ms a cue begins 18 ms into the frame, so the still drew a subtitle the
+    # film does not have on that frame, and the DOM stage (which snaps) disagreed by exactly one
+    # cue band.
+    at_ms = box_track.frame_start_ms(int(at_ms))
+
     resolved_style = style or SubtitleStyle()
     edl = clipping_service.build_edl(session, settings, version)
+    facts = transcript_facts.load(session, version_id)
     out_dir = output_dir(settings, project_id) / "previews"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if burn_subtitles:
         # One ASS file at a fixed path, rewritten per request: it is regenerated by every
         # still anyway, and its content is the style the digest already tracks.
-        _ass_for(session, version_id, edl, resolved_style, out_dir / "preview.ass")
+        _ass_for(session, version_id, edl, resolved_style, out_dir / "preview.ass", facts=facts)
 
     plan = _box(
         session,
@@ -663,7 +695,7 @@ def preview_still(
         items=video_service.list_items(session, project_id),
         edl=edl,
     )
-    tracks = avatar_tracks(session, template, version, edl)
+    tracks = avatar_tracks(session, template, version, edl, facts=facts)
     plates = video_avatars.name_plates(session, template)
     text_png = text_png_for(
         template,
@@ -688,6 +720,12 @@ def preview_still(
     top_chain: box_track.BoxChain | None = None
     top_segment: box_track.BoxSegment | None = None
     top_source: Path | None = None
+    # How far into a *clip* the frame is, so the input itself can be seeked. Zero for an image:
+    # a one-frame loop is positioned exactly by the PTS shift and `-ss` would only decode more.
+    box_seek_ms = 0
+    top_seek_ms = 0
+    box_keep = False
+    top_keep = False
     if not plan.empty:
         covered = video_box.covering(plan, at_ms=at_ms)
         if covered is not None:
@@ -707,6 +745,11 @@ def preview_still(
                 placement=found.placement,
             )
             full = found.placement == "full"
+            # A clip is seeked on its **input**; shifting its PTS in the graph and then running
+            # `fps` lands on the clip's first frame instead (measured, round 129 — the still at
+            # 42.32 s into a video segment was byte-identical to the source at 0.0 s). A still
+            # image keeps the PTS shift, which is exact for a one-frame looped input.
+            seek_input = single.kind == box_track.KIND_VIDEO and offset > 0
             chain = box_track.build_single(
                 single,
                 source_offset_ms=offset,
@@ -718,11 +761,26 @@ def preview_still(
                 # names the export does: [boxout] for the lower chain, [topout] for the
                 # upper one.
                 out_label="topout" if full else "boxout",
+                input_seeked=seek_input,
+                # The two halves of the frame-selection decision: `input_args` seeks a second
+                # early under `-copyts`, this chain trims at the exact instant.
+                keep_timestamps=seek_input,
             )
             if full:
                 top_chain, top_segment, top_source = chain, single, source
             else:
                 box_chain, box_segment, box_source = chain, single, source
+            if seek_input:
+                # A `BoxSegment` is frozen and carries no offset, so how far into the clip the
+                # frame is travels as its own value into `render_still`, which passes it to
+                # `input_args` as `-ss`. `keep_timestamps` additionally asks for the *film's*
+                # frame rather than ffmpeg's ceil one — see `box_track.input_args`.
+                if full:
+                    top_seek_ms = offset
+                    top_keep = True
+                else:
+                    box_seek_ms = offset
+                    box_keep = True
 
     video_media.render_still(
         settings.ffmpeg_path,
@@ -735,14 +793,30 @@ def preview_still(
         box=box_chain,
         box_segment=box_segment,
         box_source=box_source,
+        box_seek_ms=box_seek_ms,
+        box_keep_timestamps=box_keep,
         top=top_chain,
         top_segment=top_segment,
         top_source=top_source,
+        top_seek_ms=top_seek_ms,
+        top_keep_timestamps=top_keep,
         avatars=_avatar_stills(tracks, at_ms=at_ms),
         text=None if text_png is None else video_media.Layer(path=text_png, x=0, y=0),
         subtitles=out_dir / "preview.ass" if burn_subtitles else None,
     )
     return target
+
+
+#: The still pipeline's own version. Bumped when a change makes an existing
+#: ``still-*.png`` show something the code no longer produces.
+#:
+#: Round 129 found two. First, a video segment's frame was placed by a PTS shift followed by
+#: ``fps``, which emits the clip's first frame — so every still inside a video block was of the
+#: opening frame. Second, ``-ss`` picks the frame *at or after* the instant while the film's
+#: ``fps`` grid picks the one *containing* it, so a still could be one frame ahead of the film.
+#: Both fixes produce different pixels for an unchanged file name unless this number moves, and
+#: the browser would keep showing the old PNG under the same URL (§19.11 trap 24).
+STILL_PIPELINE_VERSION = 3
 
 
 def _still_digest(
@@ -778,6 +852,7 @@ def _still_digest(
         )
     lit = ",".join(f"{track.name}@{int(lit_at(track.lit, at_ms))}" for track in tracks)
     parts = [
+        f"v{STILL_PIPELINE_VERSION}",
         f"{style.font_name}/{style.font_size}/{style.primary_colour}/"
         f"{style.outline_colour}/{style.outline}/{style.shadow}/"
         f"{style.margin_v}/{style.margin_l}/{style.margin_r}/{int(style.bold)}",

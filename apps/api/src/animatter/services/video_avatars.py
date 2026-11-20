@@ -34,7 +34,8 @@ from animatter.core.video_avatar import (
 )
 from animatter.errors import AppError
 from animatter.log import get_logger
-from animatter.models import Sentence, Speaker, Token, TranscriptVersion, VideoTemplate
+from animatter.models import Speaker, TranscriptVersion, VideoTemplate
+from animatter.services import transcript_facts
 from animatter.services import video_templates as template_service
 
 log = get_logger(__name__)
@@ -214,6 +215,8 @@ def speaking_intervals(
     version: TranscriptVersion,
     edl: Edl,
     speaker_id: int,
+    *,
+    facts: transcript_facts.TranscriptFacts | None = None,
 ) -> list[Interval]:
     """When ``speaker_id`` talks, **in output time**.
 
@@ -221,21 +224,18 @@ def speaking_intervals(
     wherever audio was cut, and an avatar that lights up on deleted audio would be lit while
     nobody is speaking. Deleted instants map to ``None`` and contribute nothing, which is
     exactly right — the avatar stays dim there.
+
+    ``facts`` is the same escape hatch ``build_cues`` has (§19.33 P0-2). This function used to
+    read every token in the version on **every** call, and ``resolve`` calls it once per bound
+    slot — four loads of 8180 ORM rows (~92 ms each) for one still preview.
     """
-    rows = session.scalars(
-        select(Sentence)
-        .where(Sentence.version_id == version.id, Sentence.speaker_id == speaker_id)
-        .order_by(Sentence.ord)
-    ).all()
+    if facts is None:
+        facts = transcript_facts.load(session, version.id)
+
+    rows = [item for item in facts.sentences if item.speaker_id == speaker_id]
     if not rows:
         return []
 
-    tokens = {
-        token.idx: token
-        for token in session.scalars(
-            select(Token).where(Token.version_id == version.id)
-        ).all()
-    }
     time_map = edl.time_map() if edl.removed_ms else None
 
     intervals: list[Interval] = []
@@ -243,8 +243,8 @@ def speaking_intervals(
         # ``token_end`` is exclusive, so the last token is at ``token_end - 1``. Using
         # ``token_end`` directly takes the *next* sentence's first token and makes every
         # avatar run two sentences long — the kind of error that looks like lag.
-        first = tokens.get(sentence.token_start)
-        last = tokens.get(sentence.token_end - 1)
+        first = facts.tokens.get(sentence.token_start)
+        last = facts.tokens.get(sentence.token_end - 1)
         if first is None or last is None:
             continue
         start_ms, end_ms = first.start_ms, last.end_ms
@@ -264,17 +264,27 @@ def resolve(
     row: VideoTemplate,
     version: TranscriptVersion,
     edl: Edl,
+    *,
+    facts: transcript_facts.TranscriptFacts | None = None,
 ) -> dict[str, list[Interval]]:
     """Lit intervals per **bound** slot, keyed by slot name.
 
     Unbound slots are absent from the result, which is what tells the renderer to leave the
     compiled background (with its static photos) alone for them.
+
+    The transcript is read **once** here and handed to every slot's
+    ``speaking_intervals``: reading it per slot was the single most expensive thing in a
+    still preview (§19.33 P0-2).
     """
+    slots = bound_slots(session, row)
+    if any(slot.speaker_id is not None for slot in slots) and facts is None:
+        facts = transcript_facts.load(session, version.id)
+
     out: dict[str, list[Interval]] = {}
-    for slot in bound_slots(session, row):
+    for slot in slots:
         if slot.speaker_id is None:
             continue
-        pieces = speaking_intervals(session, version, edl, slot.speaker_id)
+        pieces = speaking_intervals(session, version, edl, slot.speaker_id, facts=facts)
         if any_lit(pieces, total_ms=edl.output_duration_ms):
             out[slot.name] = pieces
     return out
@@ -285,6 +295,8 @@ def describe(
     row: VideoTemplate,
     version: TranscriptVersion,
     edl: Edl,
+    *,
+    facts: transcript_facts.TranscriptFacts | None = None,
 ) -> list[dict[str, object]]:
     """What the confirm screen needs: each slot, its speaker, and how much it talks."""
     speakers = {
@@ -293,10 +305,14 @@ def describe(
             select(Speaker).where(Speaker.project_id == row.project_id)
         ).all()
     }
+    slots = bound_slots(session, row)
+    if any(slot.speaker_id is not None for slot in slots) and facts is None:
+        facts = transcript_facts.load(session, version.id)
+
     out: list[dict[str, object]] = []
-    for slot in bound_slots(session, row):
+    for slot in slots:
         intervals = (
-            speaking_intervals(session, version, edl, slot.speaker_id)
+            speaking_intervals(session, version, edl, slot.speaker_id, facts=facts)
             if slot.speaker_id is not None
             else []
         )

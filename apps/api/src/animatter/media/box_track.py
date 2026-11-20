@@ -200,7 +200,35 @@ def frames_per_input(segments: list[BoxSegment], frame_counts: list[int]) -> dic
     return needs
 
 
-def input_args(segment: BoxSegment, source: Path, *, frames: int | None = None) -> list[str]:
+def frame_start_ms(at_ms: int) -> int:
+    """The start of the film frame that covers ``at_ms``, snapped **down** to the 24 fps grid.
+
+    This is how the film itself places an instant: output frame *k* covers
+    ``[k/24, (k+1)/24)`` and carries PTS ``k/24``, so everything the frame shows — its box
+    content, its cue — is decided at ``floor(t * 24) / 24``, never at ``t``. Rounding to the
+    nearest frame instead lands on the *next* one for the top half of every frame, which is the
+    disagreement this removes.
+    """
+    return at_ms * FPS // 1000 * 1000 // FPS
+
+
+#: How far before the wanted instant a clip is seeked when the graph does the frame selection.
+#:
+#: `-copyts` keeps the original timestamps, so the graph can trim at the exact instant — but the
+#: seek has to land on a keyframe *at or before* it, and a second is what the two sample clips
+#: (24 and 25 fps, 2 s GOPs) need. Measured cost of the extra decode: 373–414 ms against 283 ms
+#: for a bare `-ss`, for a frame that is byte-identical to the film's instead of one frame off.
+SEEK_LOOKBACK_MS = 1_000
+
+
+def input_args(
+    segment: BoxSegment,
+    source: Path,
+    *,
+    frames: int | None = None,
+    seek_ms: int = 0,
+    keep_timestamps: bool = False,
+) -> list[str]:
     """The ffmpeg input declaration for one segment.
 
     A still needs ``-loop 1`` *and* ``-t``: without the explicit duration ffmpeg loops
@@ -231,7 +259,22 @@ def input_args(segment: BoxSegment, source: Path, *, frames: int | None = None) 
     )
     if segment.kind == KIND_VIDEO:
         prefix = ["-stream_loop", "-1"] if segment.loop else []
-        return [*prefix, "-t", seconds, "-i", str(source)]
+        # ``-ss`` **on the input**, not a PTS shift in the graph — see ``build_single``. It is
+        # placed after ``-stream_loop`` so a looped clip seeks *and* wraps: measured on a 292 s
+        # clip, asking for 300.281 s returns the frame at 8.0 s, which is exactly what a looped
+        # segment's offset means.
+        #
+        # ``keep_timestamps`` switches the seek to a **lookback**: seek a second early and let the
+        # graph's own ``fps`` + ``trim`` pick the frame. Plain ``-ss`` is *ceil* (first frame at or
+        # after t) while the film's ``fps`` grid is *floor*, so the two land on different frames
+        # exactly when t falls inside a frame's interval but not on its start — measured 17.62 % of
+        # the box differing between the two rules at the same instant.
+        start_ms = max(0, seek_ms - SEEK_LOOKBACK_MS) if keep_timestamps else seek_ms
+        seek = ["-ss", f"{start_ms / 1000:.3f}"] if start_ms > 0 else []
+        copyts = ["-copyts"] if keep_timestamps and seek else []
+        return [*prefix, *seek, *copyts, "-t", seconds, "-i", str(source)]
+    # A still never needs a seek: it is one frame looped, and the PTS shift below lands on it
+    # exactly (there is no second frame for ``fps`` to fall back to).
     return ["-loop", "1", "-framerate", str(FPS), "-t", seconds, "-i", str(source)]
 
 
@@ -491,21 +534,76 @@ def build_single(
     y: int = 0,
     input_base: int = 0,
     out_label: str = "boxout",
+    input_seeked: bool = False,
+    keep_timestamps: bool = False,
 ) -> BoxChain:
     """One segment, seeked ``source_offset_ms`` into itself — for the still preview.
 
-    Seeking the *chain* would mean building the whole film's chain for one frame. Picking
-    the covering segment and shifting its PTS back is the same arithmetic and costs one
-    input instead of hundreds. The shift is negative because ffmpeg starts the input at 0
-    and the frame we want is that far in.
+    Seeking the *chain* would mean building the whole film's chain for one frame. Picking the
+    covering segment and shifting its PTS back is the same arithmetic and costs one input
+    instead of hundreds.
+
+    **A video must be seeked on the input, not shifted in the graph** (round 129, measured).
+    ``setpts=PTS-42.320/TB`` followed by ``fps=24`` does not land on the frame 42.32 s in: the
+    ``fps`` filter re-bases its output timestamps, and the negative-PTS frames the shift created
+    are simply the first ones it emits. The still then showed the clip's **frame 0** — verified
+    byte-for-byte against the source at 0.0 s for a frame whose offset was 42.32 s, and 0.00 %
+    differing from the ``-ss`` render at 42.32 s. ``input_seeked`` is how the caller says it
+    already did that: the graph then leaves the timestamps alone and only trims to one frame.
+
+    A still image keeps the PTS shift. Loop one PNG and shift it: there is no second frame for
+    ``fps`` to choose instead, the shift is exact, and ``-ss`` on an image input would only make
+    ffmpeg decode the sequence pointlessly.
+
+    ``keep_timestamps`` must match the flag handed to :func:`input_args`; they are two halves of
+    one decision. With a lookback seek the graph holds a second of clip from **before** the
+    instant, so the trim selects the frame; with an exact ``-ss`` the first frame *is* the answer
+    and trimming at the offset would throw it away — which produced an empty output file, not a
+    wrong frame.
     """
-    shift = f",setpts=PTS-{source_offset_ms / 1000:.3f}/TB" if source_offset_ms else ""
+    shift = (
+        ""
+        if input_seeked
+        else f",setpts=PTS-{source_offset_ms / 1000:.3f}/TB" if source_offset_ms else ""
+    )
+    # With `-copyts` the first frame that reaches the graph is `SEEK_LOOKBACK_MS` early, so the
+    # trim — not the seek — decides where the frame is. Placed **after** `fps`, so the frame kept
+    # is the one the film's own 24 fps grid picks (floor), not the first frame at or after t.
+    #
+    # The trim point is the **frame's own start**, `floor(t * 24) / 24`, not `t`. `trim=start=t`
+    # keeps the first frame whose PTS is at or after t, which is `ceil` — the same off-by-one as
+    # `-ss`, only later in the graph. Measured at 489 030 ms (42.320 s into the clip): trim at the
+    # raw instant was 22.10 % of the box away from the film's frame, trim on the grid 1.57 %.
+    # ``source_offset_ms`` is already **the frame's own start** on the segment's grid
+    # (`box_track.local_offset_ms`), so the trim keeps the first frame at or after it — which is
+    # that frame. Trimming on a re-derived grid line here would subtract another half frame: the
+    # caller's offset is measured from the segment's start *frame*, not from the wall clock, and
+    # the two differ by up to a frame at every block boundary.
+    # **One film frame back, minus a millisecond.** `trim=start=t` keeps the first frame whose PTS
+    # is at or after ``t`` — that is ``ceil``, while the film shows ``floor``. So the bound has to
+    # sit between the *previous* frame's PTS and the *containing* frame's PTS:
+    #
+    # * a 24 fps source's previous frame starts exactly one film frame before the grid line, so
+    #   `- 1/FPS + 0.001` excludes it by 1 ms;
+    # * a 25 fps source's containing frame can start up to 40 ms before the line (and the sample's
+    #   looped clip is 25 fps, with `-stream_loop` restarting the grid at 190.680 s / 292.249 s —
+    #   neither on the 24 fps grid), so a half-frame bound would miss it.
+    #
+    # The old `1e-6` assumed the two grids coincide. Inside a looped segment they do not: at
+    # 980 950 ms the absolute grid line was 534.166 s while the film's own frame started at
+    # 534.1657 s, so the trim skipped it and the still drew the *next* frame — 13.82 % of the box
+    # away from the DOM stage, which had floored on the loop-local grid.
+    pick = (
+        f",trim=start={frame_start_ms(source_offset_ms) / 1000 - 1.0 / FPS + 0.001:.6f}"
+        if input_seeked and keep_timestamps and source_offset_ms
+        else ""
+    )
     # A still is one frame, so the trim is not a length but a bound: `end_frame=1` keeps exactly
     # the frame the PTS shift selected, whatever the input rate turns out to be. `render_still`
     # asks for one output frame anyway, so a longer trim would only decode more than it uses.
     text = (
-        f"{_normalise(segment, width, height, input_base=input_base, tag=0)}{shift},fps={FPS},"
-        f"trim=end_frame=1,setpts=PTS-STARTPTS[{out_label}]"
+        f"{_normalise(segment, width, height, input_base=input_base, tag=0)}{shift}"
+        f"{pick},fps={FPS},trim=end_frame=1,setpts=PTS-STARTPTS[{out_label}]"
     )
     return BoxChain(
         text=text,
