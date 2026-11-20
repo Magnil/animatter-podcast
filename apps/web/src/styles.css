@@ -1796,8 +1796,8 @@ button.small,
 
 /* --- video area (docs/frontend.md §7.7) ------------------------------------
    Sits above the waveform, collapsed by default. The preview box keeps a 16:9
-   aspect so the layout does not jump when the first still arrives — a panel that
-   grows by 400px the moment you click 生成静帧 pushes the waveform off-screen. */
+   aspect so the layout does not jump when the first frame arrives — a panel that
+   grows by 400px the moment the plan lands pushes the waveform off-screen. */
 .video-panel {
   gap: 8px;
 }
@@ -1826,6 +1826,164 @@ button.small,
   width: 100%;
   height: 100%;
   object-fit: contain;
+}
+
+/* The previous frame stays on screen while the next one composits (round 128): clearing it
+   would make every playhead stop flash an empty box for ~0.65 s, which reads as broken. */
+.video-preview-box img.is-stale {
+  opacity: 0.55;
+  transition: opacity 120ms ease;
+}
+
+/*
+  The real-time DOM stage (round 129, §19.31.3).
+
+  The stage is an inner box of exactly the canvas's pixel size, scaled with a transform, and the
+  layers are absolutely positioned inside it in **canvas pixels**. Percentages would look the same
+  for the full-canvas layers and break the one fit that must not be scaled: `blur_crop` draws its
+  foreground at the material's own pixel size, so "natural size" has to mean canvas pixels.
+
+  `is-live` drops the centring flex: the stage fills the box and does its own scaling.
+*/
+.video-preview-box.is-live {
+  display: block;
+  background: #000;
+}
+
+.dom-stage-host {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.dom-stage {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  /* Nothing in the stage is interactive: the playhead is the audio panel's. */
+  pointer-events: none;
+  user-select: none;
+}
+
+.dom-stage img,
+.dom-stage video {
+  display: block;
+}
+
+/* Every layer is absolutely placed in canvas pixels, never in percentages. */
+.dom-stage > img,
+.dom-stage > div {
+  position: absolute;
+}
+
+.layer-background,
+.layer-overlay,
+.layer-text {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* The 描边 (`overlay.png`) carries alpha and must composite over the poster, not replace it. */
+.layer-overlay {
+  pointer-events: none;
+}
+
+/*
+  The media layer's own box. `overflow: hidden` is what makes `blur_crop` behave like the chain's
+  `overlay`: the parts of an unscaled picture that stick out of the box are simply not drawn.
+*/
+/*
+  The two-slot deck (§19.32). `position: absolute` in canvas pixels, like every other layer; the
+  slots inside are stacked so a flip is a paint.
+*/
+.layer-deck {
+  position: absolute;
+  /*
+    **No background here.** It used to be `#000` on the deck, which is wrong: the deck container is
+    sized to whichever slot it holds, and a `full`-placement video's rect is the whole canvas — so
+    the deck painted a black rectangle over the poster during every image segment that followed a
+    full-frame video. Measured as 41 % of the frame differing on the first three instants of the
+    consistency check.
+
+    Each slot carries its own black (``.layer-deck > .layer-media``), which is where it was before
+    the deck existed; the empty space around the box is the stage's, not the deck's.
+  */
+  overflow: visible;
+}
+
+/*
+  A standby slot holds decoded frames, so it is hidden with `visibility` and never unmounted:
+  `display: none` would drop the frames and the 116 ms this feature exists to remove comes back.
+  `visibility: hidden` still composites, which is what makes the flip free.
+*/
+.layer-deck > .layer-media {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  /* The box's own black under the clip: a source that has not painted yet reads as black box, which
+     is what the film does too (the chain's box is opaque). */
+  background: #000;
+  visibility: visible;
+}
+
+.layer-deck > .layer-media.is-standby {
+  visibility: hidden;
+}
+
+.layer-media {
+  overflow: hidden;
+}
+
+/*
+  A segment the browser cannot decode (§19.32). Deliberately not a black box: black is what a
+  broken preview looks like, and the user needs to tell "this clip will not play here" from "the
+  preview is broken".
+*/
+.layer-undecodable {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: repeating-linear-gradient(
+    45deg,
+    #1c1c1e,
+    #1c1c1e 12px,
+    #24242a 12px,
+    #24242a 24px
+  );
+  color: #c9c9d1;
+  font-size: 28px;
+  letter-spacing: 0.08em;
+}
+
+.layer-media img,
+.layer-media video {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+/*
+  The baked blurred backdrop. `object-fit: cover` and NOT `object-position: center`: the chain
+  crops at `0:0`, and the backdrop is the same top-left-anchored crop.
+*/
+.layer-media .layer-backdrop {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: left top;
+}
+
+/* The foreground is positioned by its inline style (`width: auto` for `blur_crop`). */
+.layer-media .layer-foreground {
+  display: block;
+}
+
+/* A cue band whose PNG has not arrived. Kept in the DOM at its real rect so nothing shifts. */
+.layer-cue.is-blank {
+  background: transparent;
 }
 
 .video-ready {
@@ -2591,3 +2749,22 @@ button.small,
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/*
+  The degradation badge (§19.32). In the host's coordinates and unscaled, so it is still readable
+  when the stage itself has been shrunk to 444 px.
+*/
+.stage-degraded {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: rgba(20, 20, 24, 0.72);
+  color: #f0d48a;
+  font-size: 11px;
+  line-height: 1.5;
+  pointer-events: none;
+}
+

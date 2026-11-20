@@ -45,6 +45,7 @@ import {
   describeMediaError,
   recoveryTarget,
 } from "./playbackRecovery";
+import { playheadClock } from "./playheadClock";
 
 export interface Span {
   start_ms: number;
@@ -273,9 +274,11 @@ export function usePlayback(
         // and does not fire another play event.
         audio.currentTime = hit.end_ms / 1000;
         setPositionMs(hit.end_ms);
+        playheadClock.publish(hit.end_ms);
         return;
       }
       setPositionMs(ms);
+      playheadClock.publish(ms);
       const stopAt = stopAtRef.current;
       if (stopAt !== null && ms >= stopAt) {
         audio.pause();
@@ -298,8 +301,20 @@ export function usePlayback(
     };
   }, [audioUrl]);
 
-  // A finer-grained watchdog than `timeupdate`, which some browsers throttle to
-  // 250ms. Without this the cut leaks up to a quarter second of deleted audio.
+  // A finer-grained watchdog than `timeupdate`, which Chrome throttles to **~217 ms** (measured on
+  // the sample project: p50 217 ms, 42 updates in 12 s). Two things depend on it:
+  //
+  // 1. Without it the cut leaks up to a quarter second of deleted audio.
+  // 2. **The preview follows the same clock**, and at `timeupdate` granularity the layer stack —
+  //    which cue band is up, which segment is drawn — can only change four times a second while
+  //    the `<video>` inside it plays at 48 fps. Measured: an instant held for up to 232 ms, i.e. a
+  //    subtitle appearing five frames late.
+  //
+  // The fine clock is published through `playheadClock` (an external store) rather than state.
+  // Raising `setPositionMs` to 20 Hz re-rendered the entire App tree 20 times a second and cost
+  // half the frame budget — measured rAF 49 → 27 fps — because `positionMs` feeds the transcript,
+  // the waveform and the video track as well as the stage. The store lets the one consumer that
+  // needs 50 ms resolution (the stage) re-render alone.
   useEffect(() => {
     if (!playing) return;
     const id = window.setInterval(() => {
@@ -308,6 +323,7 @@ export function usePlayback(
       const ms = audio.currentTime * 1000;
       const hit = spanAt(deletedRef.current, ms);
       if (hit) audio.currentTime = hit.end_ms / 1000;
+      playheadClock.publish(hit ? hit.end_ms : ms);
     }, TICK_MS);
     return () => window.clearInterval(id);
   }, [playing]);
@@ -324,6 +340,7 @@ export function usePlayback(
       const audible = nextAudible(deletedRef.current, clamped);
       audio.currentTime = audible / 1000;
       setPositionMs(audible);
+      playheadClock.publish(audible);
       return audible;
     },
     [durationMs],

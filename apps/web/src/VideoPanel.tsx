@@ -16,7 +16,13 @@
  * **The preview is a still.** v1 deliberately does not play the film: a `<video>`
  * would need its own clock, its own buffering states and its own sync with the
  * audio playhead, and the thing the user actually needs from a preview is "does the
- * layout look right". A frame costs ~200 ms, so it can follow the playhead.
+ * layout look right".
+ *
+ * Since round 128 it **follows the playhead on its own** (300 ms after it stops) instead of
+ * waiting for a button press, and it converts the playhead from the **original** timeline to
+ * **output** time before asking (round 128, §19.31.5 P0-1). Both are in this file because both
+ * are about *when* to ask and *which instant* to ask for; the arithmetic itself is in
+ * `timeMap.ts`.
  *
  * **Two lengths on every block.** A block spans its own edges on the timeline, but
  * plays for `output_ms` in the film because audio inside it may have been cut. That
@@ -28,21 +34,25 @@
  * and undoing the user's cut on their behalf would be worse than a dead block.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   api,
   type Sentence,
   type SpeakerInfo,
   type VideoAvatar,
   type VideoItem,
+  type VideoPlan,
   type VideoTemplate,
   type VideoTimeline,
 } from "./api";
 import { AssetLibrary } from "./AssetLibrary";
+import { DomStage } from "./DomStage";
 import { CollapsiblePanel } from "./CollapsiblePanel";
 import { DeckPanel } from "./DeckPanel";
 import { TemplateTexts } from "./TemplateTexts";
 import { formatTime } from "./format";
+import { playheadClock } from "./playheadClock";
+import { timeMapFrom, toOutputClamped, type Keep } from "./timeMap";
 import { VideoTrack } from "./VideoTrack";
 import type { View } from "./waveView";
 import { FITS, blockName, dropRange, orphanedBlocks, summaryLine } from "./videoTimeline";
@@ -52,6 +62,22 @@ interface Props {
   versionId: string;
   /** Playhead on the **original** timeline; the preview is asked for output time. */
   positionMs: number;
+  /**
+   * The EDL's keep list — the original→output mapping.
+   *
+   * Passed down rather than fetched here because `App` already holds it for the transport
+   * and the audio panel: a second fetch would be a second thing to keep in sync, and a
+   * slightly different one would make the preview agree with neither.
+   */
+  keeps: Keep[];
+  /**
+   * Whether the audio is currently playing.
+   *
+   * The preview follows the playhead while it is moving, but not while it is playing: a still
+   * costs ~0.65 s (§19.31.5), and asking for one per playhead update would queue up work behind
+   * the audio and finish showing frames nobody is looking at.
+   */
+  playing: boolean;
   /** Sentences of this version — the deck's proofreading pane and its page starts. */
   sentences: Sentence[];
   /**
@@ -59,9 +85,9 @@ interface Props {
    *
    * They used to be local state here, which was fine while the export button was also here.
    * The export moved to the 导出 menu (round 102) and the menu is rendered by `App`; a slider
-   * whose value only the panel can see would be honoured by 「生成静帧」 and silently ignored
-   * by the film — the worst possible split, because the preview would agree with the slider
-   * and the output would not.
+   * whose value only the panel can see would be honoured by the still preview and silently
+   * ignored by the film — the worst possible split, because the preview would agree with the
+   * slider and the output would not.
    */
   fontSize: number;
   marginV: number;
@@ -91,10 +117,40 @@ const VIDEO_TABS: { id: TabId; label: string; hint: string }[] = [
 
 type TabId = "template" | "subtitle" | "library" | "deck";
 
+/**
+ * The real-time stage, subscribed to the 50 ms playhead clock.
+ *
+ * Separated from `VideoPanel` deliberately: only this component re-renders 20 times a second, and
+ * everything it needs (the plan, the time map, the playing flag) is stable across those renders.
+ */
+function LiveDomStage({
+  plan,
+  map,
+  playing,
+  onNotice,
+}: {
+  plan: VideoPlan;
+  map: ReturnType<typeof timeMapFrom>;
+  playing: boolean;
+  onNotice: (message: string) => void;
+}): React.JSX.Element {
+  const fineMs = useSyncExternalStore(playheadClock.subscribe, playheadClock.read);
+  return (
+    <DomStage
+      plan={plan}
+      atMs={toOutputClamped(map, fineMs)}
+      playing={playing}
+      onNotice={onNotice}
+    />
+  );
+}
+
 export function VideoPanel({
   projectId,
   versionId,
   positionMs,
+  keeps,
+  playing,
   sentences,
   fontSize,
   marginV,
@@ -113,6 +169,16 @@ export function VideoPanel({
   const [importPath, setImportPath] = useState("");
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewAt, setPreviewAt] = useState(0);
+  /**
+   * The film as one description, for the real-time stage (P1, §19.31.2).
+   *
+   * `null` until it arrives, and `null` again after a failure — in both cases the panel falls
+   * back to the still preview, which is slower but always works. A real-time preview that
+   * silently showed nothing when the plan failed would look like a broken panel rather than a
+   * degraded one.
+   */
+  const [plan, setPlan] = useState<VideoPlan | null>(null);
+  const [planError, setPlanError] = useState<string | null>(null);
   // P2: the library, the dragged asset, and the selected block.
   const [assetRevision, setAssetRevision] = useState(0);
   const [draggingAsset, setDraggingAsset] = useState<string | null>(null);
@@ -254,22 +320,111 @@ export function VideoPanel({
     }
   };
 
-  const doPreview = async (): Promise<void> => {
+  /**
+   * Ask for the frame at the playhead — **converted to output time**.
+   *
+   * `positionMs` is an original-timeline position and `at_ms` is output time. Passing one as
+   * the other used to show a frame from `removed_ms` later (1.0–1.2 s on the three real
+   * projects, §19.31.5 P0-1); on a project with no deletions it is invisible, which is why it
+   * survived this long. The mapping comes from the EDL's keeps, so a version whose EDL has
+   * not arrived yet maps identically — and with no deletions that is correct.
+   *
+   * `generation` guards against out-of-order answers: dragging the playhead fires several
+   * requests, each ~0.65 s, so without it the *last* response to arrive wins and the panel
+   * can settle on a frame from a position the user has already left.
+   */
+  const generation = useRef(0);
+  const lastRequested = useRef<string | null>(null);
+  const map = useMemo(() => timeMapFrom(keeps), [keeps]);
+
+  const doPreview = useCallback(async (): Promise<void> => {
     if (!timeline) return;
+    const outMs = toOutputClamped(map, positionMs);
+    // The style is part of the key: dragging the 字号 slider must redraw the frame, and the
+    // digest in the server-side file name carries the same two numbers, so the two agree
+    // about what "the same picture" means.
+    const key = `${outMs}:${fontSize}:${marginV}`;
+    // Nothing to redraw when the mapped instant and the style are already on screen: the
+    // server would answer with an identical file and charge 0.65 s for it.
+    if (lastRequested.current === key && previewUrl !== null) return;
+    const ticket = ++generation.current;
+    lastRequested.current = key;
     setBusy(true);
     try {
-      const result = await api.videoPreview(versionId, positionMs, {
+      const result = await api.videoPreview(versionId, outMs, {
         font_size: fontSize,
         margin_v: marginV,
       });
+      // A newer request has been issued while this one was in flight; its answer is the one
+      // the user is waiting for.
+      if (ticket !== generation.current) return;
       setPreviewUrl(api.previewUrl(projectId, result.url.split("/").pop() ?? ""));
-      setPreviewAt(positionMs);
+      setPreviewAt(outMs);
     } catch (caught) {
+      if (ticket !== generation.current) return;
+      // A failed request leaves `lastRequested` pointing at an instant that never rendered,
+      // so the next tick must be allowed to retry it rather than short-circuit.
+      lastRequested.current = null;
       onNotice(caught instanceof Error ? caught.message : String(caught));
     } finally {
-      setBusy(false);
+      if (ticket === generation.current) setBusy(false);
     }
-  };
+  }, [timeline, map, positionMs, previewUrl, versionId, fontSize, marginV, projectId, onNotice]);
+
+  /**
+   * Load the plan that makes the preview real-time.
+   *
+   * Refetched when the timeline changes (a block moved) or the style changes, because both change
+   * the plan's digest — and that digest is in every baked band's URL. Loading it is one request
+   * for the whole film: 167 KB, measured ~210 ms, most of it the slide renders and the text PNG,
+   * both cached on disk by their own digest.
+   *
+   * A failure is **not** fatal. The still preview still works, and a real-time preview that
+   * silently showed nothing would read as a broken panel rather than a degraded one.
+   */
+  useEffect(() => {
+    if (!timeline || template?.status !== "ready") {
+      setPlan(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        // Subtitles are always burned in: `App`'s export call hard-codes
+        // `burn_subtitles: true`, so a preview without them would show a film nobody can make.
+        const next = await api.videoPlan(versionId, {
+          font_size: fontSize,
+          margin_v: marginV,
+        });
+        if (cancelled) return;
+        setPlan(next);
+        setPlanError(null);
+      } catch (caught) {
+        if (cancelled) return;
+        // Keep the previous plan: one failed refetch must not blank a working stage.
+        setPlanError(caught instanceof Error ? caught.message : String(caught));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [versionId, timeline, template?.status, fontSize, marginV]);
+
+  /**
+   * Follow the playhead: 300 ms after it stops moving, redraw.
+   *
+   * This is the **only** caller of `doPreview`, and it is what keeps the still alive as the
+   * fallback for when the plan cannot be loaded (§19.32). There used to be a 「生成静帧」 button on
+   * top of it; round 134 removed the button — with a plan the DOM stage draws every instant for
+   * free, so a manual 0.65 s request could only produce a slightly *worse* picture, and without a
+   * plan this effect already redraws on every playhead stop.
+   */
+  useEffect(() => {
+    if (playing || plan) return;
+    if (!timeline || template?.status !== "ready") return;
+    const timer = window.setTimeout(() => void doPreview(), 300);
+    return () => window.clearTimeout(timer);
+  }, [positionMs, playing, timeline, template?.status, doPreview, plan]);
 
   /**
    * Nothing here exports the film.
@@ -560,19 +715,55 @@ export function VideoPanel({
             className={`video-stage${tab === "deck" ? " wants-wide" : ""}${tab === "template" ? " wants-mid" : ""}`}
           >
             <div className="video-stage-main">
-              <div className="video-preview-box">
-                {previewUrl ? (
-                  <img src={previewUrl} alt={`预览 ${formatTime(previewAt)}`} />
-                ) : (
-                  <p className="muted small">还没有预览。把播放头停在想检查的位置，点「生成静帧」。</p>
-                )}
-              </div>
-              <div className="edl-actions">
-                <button type="button" disabled={busy} onClick={() => void doPreview()}>
-                  生成静帧
-                </button>
-                <span className="muted small">预览为近似：成片 1080p，字号与位置一致</span>
-              </div>
+              {/*
+                The real-time stage when there is a plan, the still otherwise. One box, two
+                renderers: putting them side by side would be two previews of the same film that
+                could disagree, which is the whole problem this round removes.
+              */}
+              {plan ? (
+                <div className="video-preview-box is-live" aria-busy={false}>
+                  {/*
+                    The stage reads the **fine** playhead clock, not `positionMs`.
+
+                    `positionMs` is React state driven by `timeupdate`, which Chrome throttles to
+                    ~217 ms: the video inside the stage runs at 48 fps while the layer stack (which
+                    cue band is up, which segment is drawn) could only change four times a second.
+                    Measured before: an instant held for up to 232 ms, i.e. a subtitle appearing
+                    five frames late.
+
+                    It has to be this component that subscribes, not a prop from `App`: raising
+                    `positionMs` to 20 Hz re-rendered the whole tree (transcript, waveform, video
+                    track) and cost half the frame budget — measured rAF 49 → 27 fps.
+                  */}
+                  <LiveDomStage
+                    plan={plan}
+                    map={map}
+                    playing={playing}
+                    onNotice={onNotice}
+                  />
+                </div>
+              ) : (
+                <div className="video-preview-box" aria-busy={busy}>
+                  {previewUrl ? (
+                    <img
+                      src={previewUrl}
+                      alt={`预览 ${formatTime(previewAt)}`}
+                      /*
+                       * Dimmed, not cleared, while a new frame is on its way: a 0.65 s request
+                       * per playhead stop would otherwise flash an empty box every time, and
+                       * "the preview went blank" reads as broken rather than as busy.
+                       */
+                      className={busy ? "is-stale" : undefined}
+                    />
+                  ) : (
+                    <p className="muted small">
+                      {planError
+                        ? `实时预览没有起来：${planError}。下面用静帧代替。`
+                        : "还没有预览。播放头停下就会自动出图。"}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="video-settings">
@@ -667,7 +858,7 @@ export function VideoPanel({
                       />
                     </label>
                     <p className="section-note">
-                      改完点「生成静帧」看效果。字幕由成片渲染时烧进画面，这里只是预览参数。
+                      改完拖一下播放头就能看到效果。字幕由成片渲染时烧进画面，这里只是预览参数。
                     </p>
                   </div>
                 ) : null}

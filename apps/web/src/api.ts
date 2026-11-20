@@ -1056,6 +1056,32 @@ export const api = {
       { method: "PUT", body: JSON.stringify({ speaker_id: speakerId }) },
     ),
 
+  /**
+   * The whole film as one description, for the real-time DOM stage (P1, §19.31.2).
+   *
+   * One request instead of one per instant: 167 KB of geometry that only changes when the project
+   * does. The style is a query parameter for the same reason the still preview's was — the user
+   * drags the 字号 slider *while deciding* — and it is part of the digest, so a change renames
+   * every baked band rather than showing a stale one.
+   */
+  videoPlan: (
+    versionId: string,
+    options: {
+      font_size?: number;
+      margin_v?: number;
+      burn_subtitles?: boolean;
+    } = {},
+  ) => {
+    const params = new URLSearchParams();
+    if (options.font_size !== undefined) params.set("font_size", String(options.font_size));
+    if (options.margin_v !== undefined) params.set("margin_v", String(options.margin_v));
+    if (options.burn_subtitles === false) params.set("burn_subtitles", "false");
+    const query = params.toString();
+    return request<VideoPlan>(
+      `/api/versions/${versionId}/video/plan${query ? `?${query}` : ""}`,
+    );
+  },
+
   /** One composited frame at `atMs` on the **output** timeline. */
   videoPreview: (
     versionId: string,
@@ -1250,6 +1276,62 @@ export interface VideoAvatar {
   lit_ms: number;
   /** Share of the film's output length, 0–1. */
   share: number;
+}
+
+/** One stretch of box content, on the output clock (P1, §19.31.2). */
+export interface PlanSegment {
+  start_ms: number;
+  end_ms: number;
+  kind: string;
+  fit: string;
+  placement: string;
+  loop: boolean;
+  url: string;
+  backdrop_url: string | null;
+  /** A video whose blurred backdrop is a still: the preview's background cannot move. */
+  backdrop_frozen: boolean;
+  /** The period a browser's own `loop` repeats on, in ms. 0 when the segment does not loop. */
+  period_ms: number;
+}
+
+export interface PlanCue {
+  start_ms: number;
+  end_ms: number;
+  index: number;
+  /** The band's top and height on the canvas, known **before** the PNG is baked. */
+  top: number;
+  height: number;
+  url: string;
+}
+
+export interface PlanAvatar {
+  name: string;
+  rect: VideoRect;
+  lit_url: string;
+  dim_url: string;
+  intervals: { start_ms: number; end_ms: number }[];
+}
+
+/**
+ * The film as one description: what the DOM stage draws (§19.31.2).
+ *
+ * Deliberately parallel to `videoPlan.ts`'s `VideoPlan` rather than importing it: `api.ts` is the
+ * HTTP contract and must not depend on the drawing module, or a change to how a layer is
+ * positioned would look like a change to the wire format.
+ */
+export interface VideoPlan {
+  digest: string;
+  version_id: string;
+  canvas: { w: number; h: number };
+  box: VideoRect;
+  output_duration_ms: number;
+  background_url: string;
+  overlay_url: string | null;
+  text_url: string | null;
+  segments: PlanSegment[];
+  avatars: PlanAvatar[];
+  cues: PlanCue[];
+  unsupported: string[];
 }
 
 export interface VideoTemplate {

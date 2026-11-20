@@ -497,7 +497,7 @@ def render(
             raise AppError(
                 "text_overlay_missing",
                 "文字图层没生成出来",
-                hint="点一次「生成静帧」重试；如果反复失败，检查字体是否还在。",
+                hint="拖动一下播放头再试；如果反复失败，检查字体是否还在。",
                 status=409,
             )
         command += ["-loop", "1", "-t", seconds, "-i", str(text.path)]

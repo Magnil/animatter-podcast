@@ -1386,6 +1386,8 @@ function Desk({
             projectId={boot.projectId}
             versionId={boot.version.id}
             positionMs={playback.positionMs}
+            keeps={edl?.keeps ?? []}
+            playing={playback.playing}
             sentences={boot.sentences}
             fontSize={fontSize}
             marginV={marginV}

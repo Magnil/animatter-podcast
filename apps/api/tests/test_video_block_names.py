@@ -278,7 +278,7 @@ def test_a_page_that_was_cut_out_of_the_audio_does_not_take_the_block_with_it(
 def test_the_plan_opens_on_the_page_covering_the_block_start(
     session: Session, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Same rule one level up, through ``plan()`` — the path 「生成静帧」 and the film take.
+    """Same rule one level up, through ``plan()`` — the path the still preview and the film share.
 
     ``_slide_tables`` is stubbed so the test does not have to draw 30 PNGs: what is under
     test is the ordering decision, not Pillow.

@@ -36,6 +36,7 @@ from animatter.routers import (
     subtitles,
     transcribe,
     video,
+    video_plan,
 )
 from animatter.routers import (
     script as script_router,
@@ -132,6 +133,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(script_router.router)
     app.include_router(align.router)
     app.include_router(video.router)
+    app.include_router(video_plan.router)
     app.include_router(decks.router)
     return app
 
