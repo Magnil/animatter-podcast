@@ -397,9 +397,17 @@ def render(
 
     ``filter_threads`` caps ``-filter_complex_threads`` (§19.28). ffmpeg defaults it to one
     slice per logical CPU and each slice carries its own framesync queue, so a 1920x1080 RGBA
-    frame is queued 16 times: measured on this project's chunk 2, the default peaked at 5.6-6.1
-    GB and died with ``Cannot allocate memory``, two threads at 4.71-4.82 GB, one at 3.58-3.81 GB.
-    ``None`` leaves ffmpeg's own default alone, which is the still-preview path and the tests.
+    frame is queued 16 times: before still pre-compositing and the plate bake that peaked at
+    5.6-6.1 GB and died with ``Cannot allocate memory``. After them the peak is flat from 4 to 16
+    slices (measured, §19.34), so the cap is now a speed knob: 12 beats 4 by 6.6 % over the
+    whole film. ``None`` leaves ffmpeg's own default alone, which is the still-preview path and
+    the tests.
+
+    ``fast_encode`` adds ``-refs 1 -bf 0`` (§19.34.5): measured −6.4 % time for +8.2 % size, and
+    the output is no longer bit-identical to the default settings.
+
+    ``cancel`` makes this chunk killable (round 135). One chunk is up to 200 s of x264, so
+    「停止」 that only took effect between chunks would look broken for three minutes.
     """
     if duration_ms <= 0 and not frames:
         raise AppError("video_duration_invalid", "视频时长为 0", hint="先渲染音频。")
@@ -532,6 +540,10 @@ def render(
         "-pix_fmt",
         "yuv420p",
     ]
+    if fast_encode:
+        # One reference frame and no B-frames: x264's own analysis gets cheaper at a measurable
+        # quality cost (§19.34.5 measured min PSNR 39.7 dB on the motion-heavy chunk).
+        command += ["-refs", "1", "-bf", "0"]
     if not frames:
         # A chunk is never served as-is: it gets `-c copy`-concatenated, which cannot carry a
         # moov atom that has been moved to the front. Paying for faststart on every chunk

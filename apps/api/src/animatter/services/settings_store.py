@@ -59,6 +59,12 @@ DEFAULTS: dict[str, Any] = {
     # -- export --
     "export_format": "m4a",  # m4a | wav
     "export_bitrate": "192k",
+    # -- video export (§19.34) --
+    #: 「加速」: allow a second ffmpeg when the machine has the memory. Still one process when it
+    #: does not — the server decides from free memory and says why in the render's note.
+    "video_faster": False,
+    #: 「编码快一点」: x264 `-refs 1 -bf 0`, measured −6.4 % time for +8.2 % size (§19.34.5).
+    "video_fast_encode": False,
     "subtitle_cps": 9,
     "subtitle_max_line": 20,
     "subtitle_max_lines": 2,

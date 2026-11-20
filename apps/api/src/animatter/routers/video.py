@@ -774,6 +774,11 @@ class VideoExportIn(BaseModel):
     font_size: int | None = Field(default=None, ge=16, le=160)
     margin_v: int | None = Field(default=None, ge=0, le=600)
     lossless_audio: bool = False
+    #: 「加速」: allow a second ffmpeg when the machine has the memory (§19.34). Still one
+    #: process when it does not — the server decides and says why in ``VideoExportOut.note``.
+    faster: bool = False
+    #: 「编码快一点」: `-refs 1 -bf 0`, −6.4 % time for +8.2 % size (§19.34.5). Off by default.
+    fast_encode: bool = False
 
 
 class VideoExportOut(BaseModel):
@@ -783,6 +788,10 @@ class VideoExportOut(BaseModel):
     duration_ms: int
     url: str
     error: str | None = None
+    #: How this export is running: 「14 块，2 个并行（空闲 8.6 GB，单块峰值 2.9 GB）」.
+    #: Empty while queued (the decision needs the plate and the chunk list) and for old rows.
+    note: str = ""
+
 
 
 @router.post("/versions/{version_id}/video/export", response_model=VideoExportOut)
@@ -804,6 +813,8 @@ def export_video(
         else None,
         burn_subtitles=payload.burn_subtitles,
         lossless_audio=payload.lossless_audio,
+        faster=payload.faster,
+        fast_encode=payload.fast_encode,
     )
     record = video_render_service.start_export(
         db, settings, version.project_id, version_id, options=options
@@ -843,4 +854,5 @@ def _to_out(record: Render) -> VideoExportOut:
         duration_ms=record.duration_ms,
         url=f"/api/video/exports/{record.id}/file" if done else "",
         error=record.error,
+        note=record.note or "",
     )

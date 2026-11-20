@@ -231,6 +231,10 @@ class Render(Base):
     progress: Mapped[float] = mapped_column(Float, default=0.0)
     #: Failure text for ``status == 'failed'``; NULL in every other state.
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: One line explaining how this export is running — how many ffmpeg processes and why
+    #: (§19.34). Derived per export from free memory, so it cannot be a constant; the UI shows
+    #: it under the progress percentage, where "14 块串行编码" and "2 个并行" look identical.
+    note: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[str] = mapped_column(String(32))
 
 

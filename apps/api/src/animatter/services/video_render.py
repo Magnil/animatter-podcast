@@ -39,10 +39,11 @@ from animatter.config import Settings
 from animatter.core.edl import Edl
 from animatter.core.video_avatar import Interval, lit_at, track_pieces
 from animatter.core.video_avatar import pieces_in as track_pieces_in
+from animatter.core.video_workers import plan_workers
 from animatter.errors import AppError
 from animatter.ids import new_id, utcnow_iso
 from animatter.log import get_logger
-from animatter.media import avatar_track, box_track, plate_bake, video_chunks
+from animatter.media import avatar_track, box_track, memory, plate_bake, video_chunks
 from animatter.media import text_overlay as overlay_media
 from animatter.media import video as video_media
 from animatter.media.subtitle_ass import AssCue, SubtitleStyle, write_ass
@@ -82,6 +83,17 @@ class ExportOptions:
     subtitle_style: SubtitleStyle | None = None
     burn_subtitles: bool = True
     lossless_audio: bool = False
+    #: 「加速」: let the export start a second ffmpeg when the machine has the memory for it.
+    #: Still one worker when it does not — `core.video_workers.plan_workers` decides, and the
+    #: reason is logged so the panel can say why (§19.34).
+    faster: bool = False
+    #: 「编码快一点」: adds `-refs 1 -bf 0` to x264 (§19.34.5).
+    #:
+    #: Measured on the real chunks: **−6.4 % time for +8.2 % size**, and the picture is no longer
+    #: bit-identical (min PSNR 39.7 dB on the 591 s video block). Default **off** on purpose:
+    #: the size cost is permanent while the time saving varies from −2 % to +9 % by chunk shape,
+    #: so it is a choice for the user, not a silent default.
+    fast_encode: bool = False
 
     def style(self) -> SubtitleStyle:
         return self.subtitle_style or SubtitleStyle()
@@ -1267,6 +1279,33 @@ def _render_picture(
             max_ms=settings.video_chunk_seconds * 1000,
         )
 
+    # How many ffmpeg processes this machine can hold at once (§19.34). Decided here rather
+    # than in `_encode` because it needs the chunk count and whether the plate was baked.
+    chunk_sizes = [chunk.last - chunk.first for chunk in chunks] or [0]
+    worker_plan = plan_workers(
+        free_gb=memory.available_gb(),
+        max_segments=max(chunk_sizes),
+        chunks=len(chunks),
+        allow_parallel=faster,
+        plate_baked=plate is not None,
+        max_workers=settings.video_chunk_workers_max,
+    )
+    log.info(
+        "video.workers",
+        render_id=render_id,
+        workers=worker_plan.workers,
+        chunks=len(chunks),
+        max_segments=max(chunk_sizes),
+        peak_gb=worker_plan.peak_gb,
+        free_gb=round(worker_plan.free_gb, 2),
+        plate_baked=plate is not None,
+    )
+    if announce is not None:
+        # Persisted on the render row: the reason changes per export (free memory moves), and a
+        # user watching a 20-minute progress bar deserves to know it is serial *because* of a
+        # number, not by accident (D6).
+        announce(worker_plan.reason)
+
     chunk_dir = work_dir / f"{stem}-chunks"
     chunk_dir.mkdir(parents=True, exist_ok=True)
     for stale in chunk_dir.glob("*.mp4"):
@@ -1378,12 +1417,13 @@ def _render_picture(
             render_id=render_id,
             chunks=len(chunks),
             segments=len(lower),
-            workers=settings.video_chunk_workers,
+            workers=worker_plan.workers,
+            reason=worker_plan.reason,
         )
         done = 0
         progress_lock = threading.Lock()
         with ThreadPoolExecutor(
-            max_workers=max(1, settings.video_chunk_workers),
+            max_workers=worker_plan.workers,
             thread_name_prefix=f"chunk-{render_id}",
         ) as pool:
             futures = {
@@ -1466,6 +1506,13 @@ def _encode(
                 # split is not fixed; scaling to 0.9 keeps the bar from sitting at
                 # 100 % while the mux runs.
                 row.progress = round(min(0.9, fraction * 0.9), 4)
+
+    def announce(note: str) -> None:
+        """Record *how* this export is running, for the progress line (§19.34)."""
+        with db.session() as note_session:
+            row = note_session.get(Render, render_id)
+            if row is not None:
+                row.note = note
 
     with db.session() as session:
         plan = _box(

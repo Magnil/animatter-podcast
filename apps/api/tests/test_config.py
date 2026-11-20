@@ -38,14 +38,15 @@ def test_unknown_log_level_rejected(tmp_path) -> None:
 
 
 def test_export_memory_settings_have_the_measured_defaults(tmp_path) -> None:
-    """These two numbers are the whole point of §19.28; a silent default change is a regression.
+    """These numbers are the whole point of §19.28 / §19.34; a silent change is a regression.
 
-    ``video_filter_threads`` is the memory lever (ffmpeg's own default is one slice per logical
-    CPU, i.e. 16 here, and that is what ran the machine out of memory), and
-    ``video_still_composite`` is the time lever. Both are read by the export and by nothing else,
-    so a wrong default shows up as an OOM 20 minutes into a full-film render.
+    ``video_filter_threads`` **used to be** the memory lever (16 slices peaked at 5.6–6.1 GB and
+    OOMed); after still pre-compositing and the plate bake the peak is flat from 4 to 16 slices,
+    so it is now a speed lever and 12 wins by 6.6 % over the whole film (§19.34). Both are read
+    by the export and by nothing else, so a wrong default shows up as either an OOM 20 minutes
+    into a render or a render that quietly takes 7 % longer than it should.
     """
     settings = Settings(data_dir=tmp_path)
-    assert settings.video_filter_threads == 4
+    assert settings.video_filter_threads == 12
     assert settings.video_still_composite is True
-    assert settings.video_chunk_workers == 1
+    assert settings.video_chunk_workers_max == 2

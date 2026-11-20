@@ -69,32 +69,28 @@ class Settings(BaseSettings):
     #: generous: 240 s would not have cut it, and cutting it is not possible without
     #: re-encoding the same material twice.
     video_chunk_seconds: int = 600
-    #: Parallel ffmpeg processes during an export.
+    #: Ceiling on parallel ffmpeg processes. The actual count is decided per export by
+    #: ``core.video_workers.plan_workers`` from **available memory** and the chunk shape (§19.34);
+    #: this setting is the operator's override for a shared machine (set ``1`` to force serial).
     #:
-    #: One, and this is a *memory* bound rather than a speed one. The 1.2 GB figure above is not
-    #: what a chunk costs at 1080p24 in practice: measured on this project, chunk 6 (6 materials,
-    #: 204 s) peaks at 3.70 GB and chunk 8 (6 materials, 312 s, two 300 MB video sources) at
-    #: 3.44 GB — the filtergraph's frame queues, not the branch count, dominate once the canvas is
-    #: 1920x1080 RGBA. Three workers therefore ask for ~10 GB on a 15.9 GB machine that also runs
-    #: the API and the browser, and the export died at 46% with ffmpeg `exit -12 Cannot allocate
-    #: memory` (chunk 8's PNG decoder failing to get a buffer). One worker uses ~4 GB peak and
-    #: takes ~25 min for this 61-minute film instead of ~15.
+    #: Why it is not a fixed number any more: measured on this project after the plate bake,
+    #: a 6-segment chunk peaks at 2.54–2.87 GB whatever its material resolution, so two workers
+    #: need ~8.3 GB of headroom while three would need ~11 GB on a 15.9 GB machine that also runs
+    #: the API and a browser — which is what died at 46 % back then with ffmpeg `exit -12`.
+    #: Two is the hard cap: three has never completed a run here (rounds 121 and 123 both OOMed).
+    video_chunk_workers_max: int = 2
+    #: How many threads ffmpeg may slice the filtergraph across (§19.28, §19.34).
     #:
-    #: Raising it is reasonable on a machine with more RAM; it is not a knob to turn up because
-    #: the CPU has cores.
-    video_chunk_workers: int = 1
-    #: How many threads ffmpeg may slice the filtergraph across (§19.28).
+    #: It used to be a **memory** knob: before still pre-compositing and the plate bake the graph
+    #: queued a 1920x1080 RGBA frame per slice and 16 slices peaked at 5.6–6.1 GB, dying with
+    #: `Cannot allocate memory`. Both of those layers are gone, and the peak is now flat across
+    #: 4/8/12/16 slices (measured: chunk 2 2.62–2.67 GB, chunk 8 2.73–2.87 GB), so the knob is
+    #: a **speed** one.
     #:
-    #: This is the **memory** knob, and the biggest single one. ffmpeg defaults to one slice per
-    #: logical CPU, and each slice carries its own framesync queue; a queued 1920x1080 RGBA frame
-    #: is 8.3 MB, so 16 slices ask for gigabytes. Measured on chunk 2 (95 s, 6 still segments):
-    #: auto/16 died with `Cannot allocate memory` at 5.6-6.1 GB, 8 peaked at 6.26 GB, 4 at
-    #: 5.95-6.22 GB, 2 at 4.71-4.82 GB, 1 at 3.58-3.81 GB.
-    #:
-    #: Four rather than one because the time cost is not linear — 1 thread doubles the encode
-    #: (137.8 s vs 93.3 s at two) — and because with still pre-compositing (§19.28) the graph has
-    #: only a handful of filters left, so four slices are enough to keep the CPUs busy.
-    video_filter_threads: int = 4
+    #: Twelve, from an interleaved A/B (A,B,B,A, so drift cannot pose as a win): still-heavy
+    #: chunk −15.0 %, 4K chunk −11.0 %, 591 s single-video chunk −8.6 %, whole film −6.6 %.
+    #: Above 12 the gains stop (ft=16 is within 1 % of ft=12 and a hair worse on stills).
+    video_filter_threads: int = 12
     #: Pre-composite each still material segment into one canvas-sized PNG before encoding.
     #:
     #: The filtergraph used to redraw a static picture 24 times a second: boxblur (radius 20,

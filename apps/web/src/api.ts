@@ -1117,6 +1117,10 @@ export const api = {
       font_name?: string;
       font_size?: number;
       margin_v?: number;
+      /** 「加速」: a second ffmpeg when the machine has the memory for it (§19.34). */
+      faster?: boolean;
+      /** 「编码快一点」: x264 `-refs 1 -bf 0`, −6.4 % time for +8.2 % size (§19.34.5). */
+      fast_encode?: boolean;
     } = {},
   ) =>
     request<VideoExport>(`/api/versions/${versionId}/video/export`, {
@@ -1167,6 +1171,10 @@ export interface AppSettings {
   realtime_skip: boolean;
   export_format: "m4a" | "wav";
   export_bitrate: "128k" | "192k" | "256k" | "320k";
+  /** 「加速」: let a video export use a second ffmpeg when the machine has the memory (§19.34). */
+  video_faster: boolean;
+  /** 「编码快一点」: x264 `-refs 1 -bf 0`, −6.4 % time for +8.2 % size (§19.34.5). */
+  video_fast_encode: boolean;
   subtitle_cps: number;
   subtitle_max_line: number;
   subtitle_max_lines: number;
@@ -1448,6 +1456,14 @@ export interface VideoExport {
   duration_ms: number;
   url: string;
   error: string | null;
+  /**
+   * How this export is running: 「14 块，2 个并行（空闲 8.6 GB，单块峰值 2.9 GB）」.
+   *
+   * Empty while queued (the decision needs the plate and the chunk list) and for exports
+   * from before the column existed. Shown under the progress percentage — without it,
+   * 「串行」 and 「2 个并行」 look identical for twenty minutes.
+   */
+  note: string;
 }
 
 export interface VideoAsset {
