@@ -20,8 +20,15 @@ import {
 } from "./exportPanels.ts";
 
 const running = (progress, note = "") => ({
+  ...IDLE,
   job: { status: "running", progress, error: null, note },
-  stopping: false,
+});
+
+const done = (delivery, savedTo = "") => ({
+  ...IDLE,
+  job: { status: "done", progress: 1, error: null, note: "" },
+  delivery,
+  savedTo,
 });
 
 // --- primary button -----------------------------------------------------
@@ -34,7 +41,7 @@ test("idle says 导出, a running job says 停止", () => {
 test("a job that is already stopping does not offer 停止 again", () => {
   // A second click would send a second cancel to a job that is already dying, and — worse —
   // the button would look like the first click did nothing.
-  const state = { job: running(0.4).job, stopping: true };
+  const state = { ...IDLE, job: running(0.4).job, stopping: true };
   assert.equal(primaryLabel(state), "正在停止…");
   assert.equal(primaryDisabled(state), true);
 });
@@ -54,7 +61,7 @@ test("a running job keeps 停止 clickable even when a precondition is false now
 test("isRunning tracks the job, not the button", () => {
   assert.equal(isRunning(IDLE), false);
   assert.equal(isRunning(running(0.01)), true);
-  assert.equal(isRunning({ job: running(0).job, stopping: true }), true);
+  assert.equal(isRunning({ ...IDLE, job: running(0).job, stopping: true }), true);
 });
 
 // --- progress bar -------------------------------------------------------
@@ -62,6 +69,7 @@ test("isRunning tracks the job, not the button", () => {
 test("a queued job says 排队中 instead of 0 %", () => {
   // The server has not decided the worker count yet, so 0 % with no note reads as stuck.
   const view = progressView({
+    ...IDLE,
     job: { status: "queued", progress: 0, error: null, note: "" },
     stopping: false,
   });
@@ -88,6 +96,7 @@ test("a cancelled job is a warning, not a failure", () => {
   // The user asked for it. Colouring it like an error teaches them to distrust the one
   // signal that means something actually broke.
   const view = progressView({
+    ...IDLE,
     job: { status: "cancelled", progress: 0.37, error: null, note: "" },
     stopping: false,
   });
@@ -98,6 +107,7 @@ test("a cancelled job is a warning, not a failure", () => {
 
 test("a failed job shows the server's error text", () => {
   const view = progressView({
+    ...IDLE,
     job: { status: "failed", progress: 0.2, error: "ffmpeg 退出码 -12", note: "" },
     stopping: false,
   });
@@ -117,6 +127,7 @@ test("done pins the bar at 100 even if the last poll said 89", () => {
   // The server writes progress=1.0 with the terminal state, but the client may act on a
   // response from one poll earlier. A bar that stops at 89 % under 「已完成」 looks broken.
   const view = progressView({
+    ...IDLE,
     job: { status: "done", progress: 0.89, error: null, note: "" },
     stopping: false,
   });
@@ -170,4 +181,35 @@ test("the delivery notice leads with the path, because that is the question", ()
 
 test("a small file is reported in KB rather than 0 MB", () => {
   assert.match(deliveryNotice("D:/x.m4a", 512 * 1024), /512 KB/);
+});
+
+// --- delivery: 「正在保存…」不能永远挂着 ---
+
+test("a finished encode that is still copying says 正在保存", () => {
+  const view = progressView(done("saving"), "正在估算…");
+  assert.equal(view.percent, 100);
+  assert.equal(view.text, "编码完成，正在保存…");
+});
+
+test("the bar says where the file went once it is there", () => {
+  // The defect this pins: `done` used to mean "encode finished", and the panel kept saying
+  // 「正在保存…」 forever after the copy had succeeded — so a finished export looked stuck.
+  const view = progressView(done("saved", "D:/导出/第 7 期-20261120.mp4"), "正在估算…");
+  assert.equal(view.percent, 100);
+  assert.match(view.text, /^已保存到 D:\/导出\//);
+  assert.equal(view.tone, "ok");
+});
+
+test("a saved file with no path still stops claiming it is saving", () => {
+  const view = progressView(done("saved"), "正在估算…");
+  assert.equal(view.text, "已保存");
+});
+
+test("a failed copy is not painted as success", () => {
+  // The encode *did* succeed and the film is in the data directory, so this must not say
+  // 「导出失败」 — but it must not say 「已保存」 either.
+  const view = progressView(done("failed"), "正在估算…");
+  assert.equal(view.tone, "bad");
+  assert.match(view.text, /保存.*失败/);
+  assert.equal(view.percent, 100);
 });

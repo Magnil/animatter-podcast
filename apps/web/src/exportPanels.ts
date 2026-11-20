@@ -20,15 +20,27 @@ export interface ExportProgress {
   note: string;
 }
 
+/**
+ * How the delivery (the copy to the user's folder) is going.
+ *
+ * `done` on the job means the *encode* finished; the copy is a second thing that can still be
+ * in flight or can fail. Keeping them apart is what lets the panel stop saying 「正在保存…」
+ * after it has actually saved.
+ */
+export type DeliveryState = "idle" | "saving" | "saved" | "failed";
+
 /** The export dialog's own state: idle, or one job in flight. */
 export interface ExportState {
   /** Null while idle or after the job reached a terminal state. */
   job: ExportProgress | null;
   /** True from the click on 停止 until the server confirms the job is gone. */
   stopping: boolean;
+  delivery: DeliveryState;
+  /** Where it landed, once it has. Shown instead of a vague 「已保存」. */
+  savedTo: string;
 }
 
-export const IDLE: ExportState = { job: null, stopping: false };
+export const IDLE: ExportState = { job: null, stopping: false, delivery: "idle", savedTo: "" };
 
 const TERMINAL = ["done", "failed", "cancelled"] as const;
 
@@ -101,6 +113,20 @@ export function progressView(state: ExportState, eta: string): ProgressView {
         tone: "work",
       };
     case "done":
+      // Three different sentences, because 「正在保存…」 that never changes is worse than no
+      // text at all: it looks like the save hung, and the user cannot tell whether the file
+      // they asked for exists. The bar is at 100 % in all three — the *encode* is done; the
+      // union of "encoded" and "in my folder" is what the sentence has to communicate.
+      if (state.delivery === "saved") {
+        return {
+          percent: 100,
+          text: state.savedTo ? `已保存到 ${state.savedTo}` : "已保存",
+          tone: "ok",
+        };
+      }
+      if (state.delivery === "failed") {
+        return { percent: 100, text: "编码完成，但保存到文件夹失败（见提示）", tone: "bad" };
+      }
       return { percent: 100, text: "编码完成，正在保存…", tone: "ok" };
     case "cancelled":
       return { percent, text: "已停止", tone: "warn" };

@@ -109,32 +109,50 @@ export function VideoExportDialog(props: Props): React.JSX.Element | null {
     }
     markExportRunning(true);
     onRunningChanged(true);
-    setState({ job: { ...job, note: job.note ?? "" }, stopping: false });
+    setState({
+      job: { ...job, note: job.note ?? "" },
+      stopping: false,
+      delivery: "idle",
+      savedTo: "",
+    });
     let lastShown = -1;
     try {
       for (;;) {
         if (job.status === "done") {
-          setState({ job: { ...job, progress: 1 }, stopping: false });
-          await deliver(job.id, filename, folder, onNotice);
+          // The encode is done; the copy is not. Say 「正在保存…」 only for as long as that is
+          // true, then replace it with the real path — the old code left 「正在保存…」 on screen
+          // forever, so a finished export looked stuck.
+          setState({ job: { ...job, progress: 1 }, stopping: false, delivery: "saving", savedTo: "" });
+          const saved = await deliver(job.id, filename, folder, onNotice);
+          if (alive.current) {
+            setState({
+              job: { ...job, progress: 1 },
+              stopping: false,
+              delivery: saved.ok ? "saved" : "failed",
+              savedTo: saved.path ?? "",
+            });
+          }
           return;
         }
         if (job.status === "failed") {
-          setState({ job, stopping: false });
+          setState({ job, stopping: false, delivery: "idle", savedTo: "" });
           return;
         }
         if (job.status === "cancelled") {
-          setState({ job, stopping: false });
+          setState({ job, stopping: false, delivery: "idle", savedTo: "" });
           return;
         }
         const percent = percentOf(job.progress);
         if (percent !== lastShown) {
           lastShown = percent;
           setEta(renderEta(Date.now() - startedAt, job.progress));
-          if (alive.current) setState({ job, stopping: false });
+          if (alive.current) {
+            setState((current) => ({ ...current, job, stopping: false }));
+          }
         } else if (alive.current) {
           // Keep the note fresh without re-rendering on every poll: the server publishes it a
           // moment after queueing, once it has counted the chunks and the free memory.
-          setState((current) => (current.job === null ? current : { job, stopping: current.stopping }));
+          setState((current) => (current.job === null ? current : { ...current, job }));
         }
         await new Promise((resolve) => setTimeout(resolve, pollDelayMs(Date.now() - startedAt)));
         job = await api.videoExport(job.id);
@@ -147,7 +165,7 @@ export function VideoExportDialog(props: Props): React.JSX.Element | null {
       if (alive.current) {
         // Clear the 「正在停止」 flag if the loop ended some other way (a poll error), so the
         // button is not stuck on 「正在停止…」 with nothing stopping.
-        setState((current) => (current.stopping ? { job: current.job, stopping: false } : current));
+        setState((current) => (current.stopping ? { ...current, stopping: false } : current));
       }
     }
   }, [versionId, props.fontSize, props.marginV, faster, fastEncode, filename, folder, onNotice]);
@@ -155,7 +173,7 @@ export function VideoExportDialog(props: Props): React.JSX.Element | null {
   const stop = useCallback(async () => {
     const job = state.job;
     if (job === null) return;
-    setState({ job, stopping: true });
+    setState((current) => ({ ...current, job, stopping: true }));
     try {
       await api.cancelVideoExport(job.id);
     } catch (caught) {
@@ -325,13 +343,17 @@ async function deliver(
   filename: string,
   folder: string,
   onNotice: (message: string) => void,
-): Promise<void> {
+): Promise<{ ok: boolean; path?: string }> {
   try {
     const saved = await api.saveRenderTo(renderId, folder, filename);
     onNotice(deliveryNotice(saved.path, saved.bytes));
+    return { ok: true, path: saved.path };
   } catch (caught) {
     onNotice(
       `成片已编码，但保存到文件夹失败：${caught instanceof Error ? caught.message : String(caught)}`,
     );
+    // The panel must not claim it saved. The encode *did* succeed and the file is still in the
+    // data directory, which is why this is not reported as an export failure.
+    return { ok: false };
   }
 }
