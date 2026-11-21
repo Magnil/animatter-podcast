@@ -751,11 +751,17 @@ contain` 保留：竖图不能被裁成 16:9。走查在 1440 和 1100 两个宽
 视频区在**有 plan 时**改用 DOM 分层合成：`VideoPanel` 取 `GET /versions/{id}/video/plan`，
 拿到就用 `<DomStage>` 画六层，取不到就退回原来的静帧按钮。两层是并存的，plan 是可选增强。
 
-**图层顺序是量出来的**，不是猜的：`background → overlay.png(描边) → box 内容 → 头像 →
-text → 全屏(top) → 字幕`。注意**描边在素材框下面**（`build_filtergraph` 先铺 `layers` 再叠
-`box`），和直觉相反。这条顺序只写在 `videoPlan.ts::layersAt` 一处。
+**图层顺序是量出来的**，不是猜的：`background → plate.png(底板) → overlay.png(描边) → box 内容
+→ 头像 → text → 全屏(top) → 字幕`。注意**底板和描边都在素材框下面**（`build_filtergraph` 先铺
+`layers` 再叠 `box`），和直觉相反；也正因为它们在下面，`kind="plate"` 的空档段什么都不用画。
+这条顺序只写在 `videoPlan.ts::layersAt` 一处。
 
-**哪些段不画东西**：`kind="plate"` 和 `kind="transparent"` 不产生任何元素（底板本来就在下面）。
+底板和描边**各带自己的 rect**（第 137 轮，§19.35）：底图是海报、底板是 1444×815、描边是
+1456×829，三者不是同一张画布尺寸，所以前端不能用 `rect: canvas` 一把梭——只有 background 和
+text 是画布尺寸。老 plan（后端给的 `plate_url` 为 null）就是「没有底板层」，描边按全画布画，
+前端不需要额外判断。
+
+**哪些段不画东西**：`kind="plate"` 和 `kind="transparent"` 不产生任何元素（底板在下面铺着）。
 
 **只有两种 fit 需要烘图**：`blur_fill` / `blur_crop` 的**背景**要用 ffmpeg 的
 `boxblur` + `eq=brightness` 烘一张，其余（`contain` / `cover` / `stretch` 的前景）都是原生 CSS。
