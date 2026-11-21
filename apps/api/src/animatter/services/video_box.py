@@ -367,6 +367,7 @@ def plan(
     session: Session,
     *,
     template_background: Path,
+    template_origin: tuple[int, int] = (0, 0),
     box_rect: dict[str, int],
     items: list[VideoItem],
     edl: Edl,
@@ -377,8 +378,12 @@ def plan(
 ) -> BoxPlan:
     """Build the full chain for one export, in output time.
 
-    ``template_background`` is the compiled plate: gap and orphan stretches are cut from
-    it, which is also why this needs no separate "empty box" image.
+    ``template_background`` is the image gap and orphan stretches are cut from, and
+    ``template_origin`` is where the box rect's (0,0) sits inside it, in that image's own
+    pixels. Since round 137 the plate is its own file at its own rect, so the cut is usually a
+    1:1 sub-rect of ``plate.png``; a template compiled before the split still passes the whole
+    poster and ``(0, 0)``. Either way the crop lands on the same art, which is why this needs
+    no separate "empty box" image.
 
     ``settings``/``project_id`` are only used to draw slide decks. Passing neither leaves a
     ``slide`` block contributing nothing, which is what the tests want when they are checking
@@ -388,6 +393,10 @@ def plan(
     height = int(box_rect.get("h") or 0)
     box_x = int(box_rect.get("x") or 0)
     box_y = int(box_rect.get("y") or 0)
+    # The crop is in the source image's own pixels, which is not the canvas unless the source
+    # *is* the full poster.
+    crop_x = box_x - int(template_origin[0])
+    crop_y = box_y - int(template_origin[1])
     if width <= 0 or height <= 0:
         raise AppError("template_no_box", "模板没有可用的素材框", status=409)
 
@@ -433,7 +442,17 @@ def plan(
     cursor = 0
     for block in planned:
         if block.start_ms > cursor:
-            placed.append(_plate(cursor, block.start_ms, box_x, box_y, width, height, template_background))
+            placed.append(
+                _plate(
+                    cursor,
+                    block.start_ms,
+                    crop_x,
+                    crop_y,
+                    width,
+                    height,
+                    template_background,
+                )
+            )
             cursor = block.start_ms
         overlap = cursor - block.start_ms
         pieces = _trim_start(block.pieces, overlap) if overlap > 0 else block.pieces
@@ -446,8 +465,8 @@ def plan(
             _plate(
                 cursor,
                 edl.output_duration_ms,
-                box_x,
-                box_y,
+                crop_x,
+                crop_y,
                 width,
                 height,
                 template_background,
@@ -679,7 +698,11 @@ def _slide_tables(
 def _plate(
     start_ms: int, end_ms: int, x: int, y: int, width: int, height: int, background: Path
 ) -> tuple[box_track.BoxSegment, Path]:
-    """A stretch that draws the plate over itself, so the overlay stays opaque."""
+    """A stretch that draws the plate over itself, so the overlay stays opaque.
+
+    ``x``/``y`` are in ``background``'s own pixels, not canvas coordinates — see
+    ``template_origin`` on :func:`plan`.
+    """
     return (
         box_track.BoxSegment(
             input_index=0,

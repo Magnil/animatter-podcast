@@ -115,7 +115,14 @@ class VideoPlanOut(BaseModel):
     box: _RectOut
     output_duration_ms: int
     background_url: str
-    overlay_url: str | None
+    #: The media-box plate on its own, and where it goes. ``None`` for a template compiled
+    #: before round 137, whose poster still has the plate baked in (§19.35).
+    plate_url: str | None
+    plate_rect: _RectOut | None
+    #: The frame stroke, cropped to ``stroke_rect``. An unsplit row reports the whole
+    #: canvas at 0,0, which is what it always was.
+    stroke_url: str | None
+    stroke_rect: _RectOut | None
     text_url: str | None
     segments: list[_SegmentOut]
     avatars: list[_AvatarOut]

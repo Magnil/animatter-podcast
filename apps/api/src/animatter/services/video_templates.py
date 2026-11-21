@@ -366,3 +366,137 @@ def asset_path(session: Session, project_id: str, name: str) -> Path:
 def box_rect_of(row: VideoTemplate) -> dict[str, int]:
     data: dict[str, int] = json.loads(row.box_rect or "{}")
     return data
+
+
+@dataclass(frozen=True)
+class Artwork:
+    """One compiled PNG and the canvas rectangle it belongs at.
+
+    The compile splits the poster into three pieces so the layout can move: the poster itself
+    with no media-box plate, the plate on its own, and the frame stroke cropped to its own
+    bounds. Each of the latter two carries its rect, because a 1444x815 plate drawn at 0,0 of
+    a 1920x1080 canvas is not a smaller plate — it is a broken frame.
+    """
+
+    path: Path
+    x: int
+    y: int
+    width: int
+    height: int
+
+    def as_rect(self) -> dict[str, int]:
+        return {"x": self.x, "y": self.y, "w": self.width, "h": self.height}
+
+    def signature(self) -> str:
+        """What a cache key needs to know: which file, and where it goes."""
+        return f"{self.path.name}@{self.x},{self.y},{self.width}x{self.height}"
+
+
+def _art_of_slots(slots: object, base: Path) -> tuple[Artwork | None, Artwork | None]:
+    art = slots.get("art") if isinstance(slots, dict) else None
+    if not isinstance(art, dict):
+        return None, None
+    parsed: list[Artwork | None] = []
+    for key in ("plate", "stroke"):
+        entry = art.get(key)
+        if not isinstance(entry, dict):
+            parsed.append(None)
+            continue
+        rect = entry.get("rect")
+        name = entry.get("path")
+        if not isinstance(rect, dict) or not isinstance(name, str) or not name:
+            parsed.append(None)
+            continue
+        # ``Path(name).name`` for the same reason ``asset_path`` uses it: the value came from
+        # JSON, and a name carrying a separator must not be able to walk out of the build dir.
+        parsed.append(
+            Artwork(
+                path=base / Path(name).name,
+                x=int(rect.get("x") or 0),
+                y=int(rect.get("y") or 0),
+                width=int(rect.get("w") or 0),
+                height=int(rect.get("h") or 0),
+            )
+        )
+    return parsed[0], parsed[1]
+
+
+def art_of(row: VideoTemplate) -> tuple[Artwork | None, Artwork | None]:
+    """``(plate, stroke)`` for this template, or ``(None, stroke)`` when it predates the split.
+
+    A row compiled before round 137 has no ``art`` block and no ``background_open.png``: its
+    plate is baked into ``background.png`` and its stroke is a full-canvas PNG at 0,0. Reporting
+    that shape here — rather than making every caller test for the block — keeps the graph the
+    old one for old rows, which is what "recompiling changes nothing until someone moves
+    something" requires.
+    """
+    if not row.background_path:
+        return None, None
+    base = Path(row.background_path).parent
+    plate, stroke = _art_of_slots(json.loads(row.slots_json or "{}"), base)
+    if stroke is None and row.overlay_path:
+        stroke = Artwork(
+            path=Path(row.overlay_path),
+            x=0,
+            y=0,
+            width=row.canvas_w or 1920,
+            height=row.canvas_h or 1080,
+        )
+    return plate, stroke
+
+
+def art_signature(row: VideoTemplate) -> str:
+    """The artwork geometry as one cache-key string, ``-`` for a pre-split template."""
+    plate, stroke = art_of(row)
+    parts = [item.signature() if item is not None else "-" for item in (plate, stroke)]
+    return "|".join(parts)
+
+
+def poster_of(row: VideoTemplate, *, bare: bool) -> Path:
+    """The poster to draw before the artwork layer, with the media-box plate **removed**.
+
+    Two twins, for the same reason the unsplit ones exist: with a bound avatar the poster must
+    not have the PSD's own photo flattened into it, or a slot that goes dim shows the bright
+    photo underneath.
+
+    A template whose plate could not be split — or one compiled before the split — has no open
+    twin on disk, and then this returns the old file. That is not a fallback in the "something
+    went wrong" sense: the plate is still inside that file, and drawing it there is exactly what
+    the old graph did.
+    """
+    base = Path(row.background_path)
+    name = "background_bare_open.png" if bare else "background_open.png"
+    candidate = base.with_name(name)
+    if candidate.is_file():
+        return candidate
+    legacy = base.with_name("background_bare.png") if bare else base
+    return legacy if legacy.is_file() else base
+
+
+def box_source(row: VideoTemplate, box_rect: dict[str, int]) -> tuple[Path, tuple[int, int]]:
+    """``(image, origin)`` for cutting an empty-box stretch out of, in the image's own pixels.
+
+    After the split the plate is its own file, so a gap is a piece of *it* rather than of the
+    whole poster. ``origin`` is where the box rect's (0,0) sits inside that image: the caller
+    crops ``(box.x - origin_x, box.y - origin_y, box.w, box.h)``, which for the plate is a 1:1
+    sub-rect (so no rescale, and the gap is pixel-identical to what the poster used to show).
+
+    When the box is not fully inside the plate — a layout the editor will allow in round 138 —
+    the poster is the only image that covers it, so that is what comes back.
+    """
+    plate, _stroke = art_of(row)
+    x = int(box_rect.get("x") or 0)
+    y = int(box_rect.get("y") or 0)
+    w = int(box_rect.get("w") or 0)
+    h = int(box_rect.get("h") or 0)
+    inside = (
+        plate is not None
+        and plate.path.is_file()
+        and x >= plate.x
+        and y >= plate.y
+        and x + w <= plate.x + plate.width
+        and y + h <= plate.y + plate.height
+    )
+    if inside and plate is not None:
+        return plate.path, (plate.x, plate.y)
+    return Path(row.background_path), (0, 0)

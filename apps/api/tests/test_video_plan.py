@@ -288,16 +288,64 @@ def test_lit_avatars_follow_the_intervals(planned: video_plan.VideoPlan) -> None
     assert planned.lit_avatars(first.end_ms) == set()
 
 
-def test_the_overlay_is_a_separate_layer_from_the_box(planned: video_plan.VideoPlan) -> None:
-    """The DOM must draw `overlay.png` under the box content, not merged into the poster.
+def test_the_stroke_is_a_separate_layer_from_the_box(planned: video_plan.VideoPlan) -> None:
+    """The DOM must draw the stroke under the box content, not merged into the poster.
 
-    Measured on the real template: 5930 semi-opaque overlay pixels fall inside the box rect,
+    Measured on the real template: 5930 semi-opaque stroke pixels fall inside the box rect,
     so merging them into the background would put the stroke *over* the photo and the preview
     would disagree with `build_filtergraph`, which overlays the layers first (§19.31.3).
+
+    This row predates the split, so it has no `art` block: the server reports a full-canvas
+    stroke and no plate, which is exactly the shape an uncompiled old project has.
     """
-    assert planned.overlay_url is not None
-    assert planned.overlay_url.endswith("/overlay.png")
-    assert "background" not in planned.overlay_url
+    assert planned.stroke_url is not None
+    assert planned.stroke_url.endswith("/overlay.png")
+    assert "background" not in planned.stroke_url
+    assert planned.stroke_rect == {"x": 0, "y": 0, "w": 1920, "h": 1080}
+    # No plate in the split sense: this poster still has it baked in.
+    assert planned.plate_url is None
+    assert planned.plate_rect is None
+    # And the payload carries the same four fields, so the wire format and the plan agree.
+    payload = video_plan.payload(planned)
+    assert payload["stroke_url"] == planned.stroke_url
+    assert payload["plate_url"] is None
+    assert "overlay_url" not in payload
+
+
+def test_a_split_template_publishes_the_plate_and_the_stroke(
+    session: Session, tmp_path: Path, settings: object
+) -> None:
+    """A row with an `art` block reports both pieces at their own rects (§19.35).
+
+    `_url_map` maps *every* file in the build directory, which is why the split needed no new
+    route — the assertion is that the plan actually names the two files and their rects, and
+    that the plate's rect is not the canvas (a plate stretched to 1920x1080 is a broken frame).
+    """
+    version = with_speaker(session)
+    template = make_template(session, version.project_id, tmp_path, bindings={"头像1": 0})
+    build = tmp_path / "build"
+    Image.new("RGBA", (1444, 815), (244, 244, 244, 255)).save(build / "plate.png")
+    slots = json.loads(template.slots_json)
+    slots["art"] = {
+        "plate": {"path": "plate.png", "rect": {"x": 238, "y": 206, "w": 1444, "h": 815}},
+        "stroke": {"path": "overlay.png", "rect": {"x": 231, "y": 198, "w": 1456, "h": 829}},
+    }
+    template.slots_json = json.dumps(slots, ensure_ascii=False)
+    asset = make_asset(session, version.project_id, tmp_path)
+    make_item(session, version.project_id, start_ms=0, end_ms=4500, asset_id=asset.id)
+    session.commit()
+    plan = video_plan.build(session, settings, version)
+    assert plan.plate_url is not None and plan.plate_url.endswith("/plate.png")
+    assert plan.plate_rect == {"x": 238, "y": 206, "w": 1444, "h": 815}
+    assert plan.stroke_url is not None and plan.stroke_url.endswith("/overlay.png")
+    assert plan.stroke_rect == {"x": 231, "y": 198, "w": 1456, "h": 829}
+    # The crop changed the geometry, so it has to change the cache key too, or moving the
+    # frame would keep serving the old still.
+    slots["art"]["plate"]["rect"] = {"x": 300, "y": 206, "w": 1444, "h": 815}
+    template.slots_json = json.dumps(slots, ensure_ascii=False)
+    session.commit()
+    moved = video_plan.build(session, settings, version)
+    assert moved.digest != plan.digest
 
 
 # --- cues ----------------------------------------------------------------

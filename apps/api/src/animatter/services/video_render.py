@@ -345,20 +345,37 @@ def _ass_for(
 
 
 def _layers(template: VideoTemplate) -> list[video_media.Layer]:
-    """Static overlays above the box content: in P1 just the frame stroke.
+    """The static artwork under the box content: the media-box plate, then the frame stroke.
 
-    Ordered **after** the box in the graph, which is what makes the stroke sit on top of
-    the picture instead of being covered by it.
+    Both are drawn **before** the box chain, in this order, which is exactly what the
+    unsplit graph did — there the plate was baked into the poster and the stroke was the one
+    artwork layer. Keeping the pair here means a plan's layer list and the encoded picture
+    still agree layer for layer.
+
+    Since round 137 each piece is its own file at its own rect. A template compiled before
+    that reports a full-canvas stroke at 0,0 and no plate, so this is the old single layer.
 
     The editable text is **not** here: it has to be drawn after the avatars (an avatar's rect
     contains its own name plate, so text drawn first is covered), and this function cannot
     express an ordering that interleaves with a list it does not receive. It is passed to
     ``render``/``render_still`` as their own ``text=`` argument instead.
     """
-    path = Path(template.overlay_path) if template.overlay_path else None
-    if path is None or not path.is_file():
-        return []
-    return [video_media.Layer(path=path, x=0, y=0)]
+    plate, stroke = template_service.art_of(template)
+    layers: list[video_media.Layer] = []
+    for art in (plate, stroke):
+        if art is None or not art.path.is_file():
+            continue
+        layers.append(
+            video_media.Layer(
+                path=art.path,
+                x=art.x,
+                y=art.y,
+                # Zero would mean "stretch to the canvas"; the plate must keep its own size.
+                width=art.width or None,
+                height=art.height or None,
+            )
+        )
+    return layers
 
 
 def text_png_for(
@@ -420,9 +437,11 @@ def _box(
     ``settings``/``project_id`` are what let a ``slide`` block draw its pages: the PNGs are
     rendered at the box's exact size on the way in, so the overlay never rescales them.
     """
+    background, origin = template_service.box_source(template, box_rect)
     return video_box.plan(
         session,
-        template_background=Path(template.background_path),
+        template_background=background,
+        template_origin=origin,
         box_rect=box_rect,
         items=items,
         edl=edl,
@@ -540,6 +559,24 @@ def avatar_tracks(
     return out
 
 
+def _art(template: VideoTemplate) -> tuple[plate_bake.Art | None, plate_bake.Art | None]:
+    """``(plate, stroke)`` in the bake module's own type, or ``None`` where there is none."""
+    plate, stroke = template_service.art_of(template)
+
+    def convert(item: template_service.Artwork | None) -> plate_bake.Art | None:
+        if item is None or not item.path.is_file():
+            return None
+        return plate_bake.Art(
+            path=item.path,
+            x=item.x,
+            y=item.y,
+            width=item.width or None,
+            height=item.height or None,
+        )
+
+    return convert(plate), convert(stroke)
+
+
 def _avatar_layers(
     settings: Settings,
     tracks: list[AvatarTrack],
@@ -634,17 +671,21 @@ def _base_background(template: VideoTemplate, tracks: list[AvatarTrack]) -> Path
 
     The recomposition was checked pixel-for-pixel: bare plus all four lit PNGs at their
     rects differs from ``background.png`` in **0** pixels, so switching bases changes
-    nothing until a slot actually changes state. If ``background_bare.png`` is missing
-    (a template compiled before P1 finished writing it), fall back rather than fail: the
-    film is wrong by one dim photo, not broken.
+    nothing until a slot actually changes state. If the bare twin is missing (a template
+    compiled before P1 finished writing it), fall back rather than fail: the film is wrong
+    by one dim photo, not broken.
+
+    Since round 137 the twin also has the media-box plate **removed** — ``*_open.png`` — and
+    the plate is drawn as its own layer (:func:`_layers`). :func:`template_service.poster_of`
+    picks the open file when the compile produced one and the old file otherwise.
     """
-    if not tracks:
+
+
+    chosen = template_service.poster_of(template, bare=bool(tracks))
+    if not chosen.is_file():
+        log.warning("video.bare_background_missing", template=template.id)
         return Path(template.background_path)
-    bare = Path(template.background_path).with_name("background_bare.png")
-    if bare.is_file():
-        return bare
-    log.warning("video.bare_background_missing", template=template.id)
-    return Path(template.background_path)
+    return chosen
 
 
 def _plate_for(
@@ -658,10 +699,14 @@ def _plate_for(
     canvas_h: int,
     box_rect: dict[str, int],
 ) -> plate_bake.Plate | None:
-    """Bake poster + stroke (+ text) into one PNG for this export (§19.30, E1).
+    """Bake poster + plate + stroke (+ text) into one PNG for this export (§19.30, E1).
 
     ``None`` when the switch is off, when the compiled poster is missing, or when there is
     nothing to gain — the caller then keeps the graph it had, byte for byte.
+
+    The split artwork is put back at its own rects here rather than from the poster, so a
+    baked plate and a moved box still agree. A template without the split hands over its
+    full-canvas stroke and no plate, i.e. the composite this function always made.
 
     The patched avatar slots are the ones the graph will actually draw, which is exactly
     ``tracks``: a slot without a track is not overlaid at all, so text baked under it stays
@@ -672,7 +717,7 @@ def _plate_for(
     base = _base_background(template, tracks)
     if not base.is_file():
         return None
-    overlay = Path(template.overlay_path) if template.overlay_path else None
+    plate_art, stroke_art = _art(template)
     box = (
         int(box_rect.get("x") or 0),
         int(box_rect.get("y") or 0),
@@ -694,7 +739,8 @@ def _plate_for(
     return plate_bake.bake(
         settings.ffmpeg_path,
         base=base,
-        overlay=overlay,
+        plate=plate_art,
+        stroke=stroke_art,
         text=text_png,
         canvas_w=canvas_w,
         canvas_h=canvas_h,
@@ -936,6 +982,10 @@ def _still_digest(
         str(int(at_ms)),
         str(int(burn_subtitles)),
         template.bindings_json,
+        # Where the plate and the stroke sit. Moving the box without this left every still
+        # byte-identical under an unchanged URL (§19.11 trap 24) — and a moved box is exactly
+        # what round 138's layout editor does.
+        template_service.art_signature(template),
         # The title / episode number / avatar names are pixels too. Without this, typing a
         # new title left every still byte-identical and the browser kept showing the old
         # frame under an unchanged URL (§19.11 trap 24).
@@ -1058,6 +1108,9 @@ def _video_signature(prepared: PreparedVideo, options: ExportOptions) -> str:
     parts = [
         prepared.template.source_sha256,
         prepared.template.box_rect,
+        # Artwork geometry, for the same reason it is in `_still_digest`: an export reused
+        # across a moved plate would hand back a film of the old layout.
+        template_service.art_signature(prepared.template),
         prepared.template.bindings_json,
         # Text and avatar-photo overrides (§19.12). Reusing an export across an edit
         # would otherwise hand back a film with the old title, silently.

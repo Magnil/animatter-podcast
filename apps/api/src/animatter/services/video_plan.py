@@ -180,10 +180,18 @@ class VideoPlan:
     box_w: int
     box_h: int
     output_duration_ms: int
-    #: The compiled poster to start from: `background_bare.png` whenever an avatar track exists,
-    #: which is what makes an unbound slot an **empty frame** rather than a stale photo.
+    #: The compiled poster to start from, **with the media-box plate removed**: the bare twin
+    #: whenever an avatar track exists (that is what makes an unbound slot an empty frame rather
+    #: than a stale photo), otherwise the plain one.
     background_url: str
-    overlay_url: str | None
+    #: The media-box plate, its own PNG at its own rect. `None` for a template compiled before
+    #: round 137, where the plate is baked into the poster instead.
+    plate_url: str | None
+    plate_rect: dict[str, int] | None
+    #: The frame stroke, cropped to its own bounds. Usually present; a template with no stroke
+    #: layer has none, and the DOM stage simply draws one layer fewer.
+    stroke_url: str | None
+    stroke_rect: dict[str, int] | None
     #: The editable text, already resolved for the slots that are visible.
     text_url: str | None
     segments: tuple[PlanSegment, ...]
@@ -357,9 +365,13 @@ def build(
     if facts is None:
         facts = transcript_facts.load(session, version.id)
 
+    # Gap stretches are cut out of the plate, so the planner is told where the box sits inside
+    # whichever image it gets (round 137: a plate-sized PNG, so a 1:1 crop).
+    gap_image, gap_origin = template_service.box_source(template, box_rect)
     box_plan = video_box.plan(
         session,
-        template_background=Path(template.background_path),
+        template_background=gap_image,
+        template_origin=gap_origin,
         box_rect=box_rect,
         items=items,
         edl=edl,
@@ -458,6 +470,15 @@ def build(
         )
 
     background = video_render._base_background(template, tracks)
+    plate, stroke = template_service.art_of(template)
+
+    def art_url(item: template_service.Artwork | None) -> str | None:
+        # `None` rather than a raise: a template that legitimately has no stroke (or one
+        # compiled before the split) is not a broken contract, it is a different shape.
+        if item is None or not item.path.is_file():
+            return None
+        return url_of(item.path)
+
     return VideoPlan(
         digest=digest,
         version_id=version.id,
@@ -470,7 +491,10 @@ def build(
         box_h=int(box_rect.get("h") or 0),
         output_duration_ms=edl.output_duration_ms,
         background_url=url_of(background),
-        overlay_url=None if not template.overlay_path else url_of(Path(template.overlay_path)),
+        plate_url=art_url(plate),
+        plate_rect=None if plate is None or not plate.path.is_file() else plate.as_rect(),
+        stroke_url=art_url(stroke),
+        stroke_rect=None if stroke is None or not stroke.path.is_file() else stroke.as_rect(),
         text_url=None if text_png is None else plan_file(text_png),
         segments=segments,
         avatars=avatars,
@@ -553,6 +577,10 @@ def _digest(
     parts = [
         template.source_sha256 or "",
         template.box_rect or "",
+        # Where the plate and the stroke actually are. `box_rect` alone is not enough: moving
+        # the artwork without moving the box still changes the picture, and round 138's editor
+        # can move either.
+        template_service.art_signature(template),
         template.bindings_json or "",
         video_edits.signature(template),
         json.dumps(avatar_names, sort_keys=True, ensure_ascii=False),
@@ -634,7 +662,10 @@ def payload(plan: VideoPlan) -> dict[str, object]:
         "box": {"x": plan.box_x, "y": plan.box_y, "w": plan.box_w, "h": plan.box_h},
         "output_duration_ms": plan.output_duration_ms,
         "background_url": plan.background_url,
-        "overlay_url": plan.overlay_url,
+        "plate_url": plan.plate_url,
+        "plate_rect": plan.plate_rect,
+        "stroke_url": plan.stroke_url,
+        "stroke_rect": plan.stroke_rect,
         "text_url": plan.text_url,
         "segments": [
             {
