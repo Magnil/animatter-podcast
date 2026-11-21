@@ -1,6 +1,6 @@
 # 变更记录
 
-> **这份文件不要通读。** 它是逐次变更的现场记录，一共 229 KB，其中大部分已经沉淀进
+> **这份文件不要通读。** 它是逐次变更的现场记录，一共 235 KB，其中大部分已经沉淀进
 > 上面几份设计文档。只在两种时候打开：
 >
 > 1. 想知道**某个东西当初为什么这么做**（某条设计看起来多余时，原因通常写在这里）；
@@ -3353,3 +3353,49 @@ PASS  保存完成后按钮回到「导出」
 
 **结论**：被跟踪文件一律走字节 API。这条已经写进 `AGENTS.md` 的铁律之外——它是「怎么改」，
 不是「改什么」。
+
+## 第 137 轮：模板编译产物拆分——layout 变成数据，而不是被烤进 PNG 的常量（2026-11-21）
+
+**症状（还不是 bug，是「下一件事做不了」）**：模板功能要做的三件事——默认模板、`.template`
+导入导出、画布上拖布局——全卡在同一个前提上：**素材框的位置是焊死的**。底板被烤进
+`background.png`，描边是一张 1920×1080 的全画布 PNG，两者的位置都是画布坐标。于是把
+`box_rect` 往右挪 100 px，框动了、框里的白底和蓝描边留在原地。
+
+**根因**：`compile_template` 一次合成交出来的东西，按「能被谁单独移动」分类是混的：海报、
+底板、描边三样东西里只有海报是可移动的，另外两样是画布坐标下的常量，却和海报存在同一张
+PNG 里。烘焙（第 131 轮）把这件事变得更难改——它把这三张图又合成了一张。
+
+**怎么修**：编译多产出两件，各带 rect：
+
+| 文件 | 尺寸 | rect |
+|---|---|---|
+| `background_open.png` | 1920×1080 | 画布 |
+| `plate.png` | 1444×815 | `(238, 206)` |
+| `overlay.png`（改） | 1456×829 | `(231, 198)` |
+
+rect 进 `slots_json` 的 `art` 块，只存文件名。渲染侧 `_layers()` 从「一个全画布描边」变成
+「plate@rect + 描边@rect」，`_base_background` 优先用 `*_open.png`，`box_source()` 让框内空隙从
+`plate.png` 裁（坐标减掉 plate 原点）。前端 `layersAt` 同一条栈插一层 plate。
+
+**判据是逐像素相等，不是「看起来对」**：两个真实项目从 PSD 重编译后，重组
+`background_open + plate@(238,206) + overlay@(231,198)` 与重编译前的
+`background.png + overlay.png` **diff px = 0 / max delta = 0**（四个组合全过）；
+`ffmpeg` 侧用 `render_still` 各渲一张，**PSNR `inf`**；框内空隙从 plate 裁与从旧 poster 裁
+**diff px = 0**。
+
+**四次失败都是「羽化」**：`plate` 不能从 PSD 单独合成（它是 group 子层，`psd.composite` 的
+filter 进不了 group，结果是全透明）；「plate + 祖先」多出 2 px 羽化，贴回去 11 864 px 差；
+`bg_old.crop(box)` 有 1 444 px 差，全在框外；保留羽化 alpha 有 20 868 px 差。
+**唯一 diff=0 的配方是「从含底板的 poster 按差异 bbox 裁、alpha 强制 255」，并且 rect 要量
+出来而不是用 bbox×0.75 预测**——预测会在框上沿留一条半像素旧底板。
+
+**顺带修的两处**：`plate_bake` 的 `_composite` 原来把每一层都 `scale` 到全画布再 `overlay=x=0:y=0`，
+带 rect 的层会被拉变形，改成按层自身尺寸 + 位置拼；四个 digest（导出签名、静帧 digest、
+plan digest、烘焙 digest）全部加 `art_signature`，`PLATE_VERSION` 1→2 作废旧缓存。
+
+**闸门**：`pytest -n 1` **1501 passed / 2 skipped**、ruff 干净、`mypy --strict` **111 files** 干净、
+`tsc --noEmit` 干净、`npm test` 341 passed。（本轮新增 `tests/test_video_template_art.py`
+8 条，钉的是老行兼容与 bad JSON 降级，不是 happy path。）
+
+**配套文档**：`docs/video.md` §19.35（含四次失败）、决策 D25、`milestones.md` 视频 P8。
+

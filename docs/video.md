@@ -70,8 +70,10 @@
 
 | 编译产物 | 内容 | 怎么来 |
 |---|---|---|
-| `background.png` | 模板外观，**没有**头像、**没有**素材框内容 | `composite(layer_filter=..., ignore_preview=True)` |
-| `overlay.png` | 素材框的边框/描边（z 序在素材框**之上**的图层） | 同一棵树里取 z 序在框上方的那几层 |
+| `background.png` | 模板外观，**没有**头像、**没有**素材框内容（含底板；第 137 轮起只作兼容与裁剪来源） | `composite(layer_filter=..., ignore_preview=True)` |
+| `background_open.png` | 同上但**去掉**素材框底板，底板单独一张（§19.35） | 同一 filter 再加 `id(layer) != id(plate)` |
+| `plate.png` | 素材框的白色底板，1444×815，放在 rect `(238,206)` | 从含底板的 poster 按差异 bbox 裁、alpha 强制 255 |
+| `overlay.png` | 素材框的边框/描边（z 序在素材框**之上**的图层），裁到自身 bbox | 同一棵树里取 z 序在框上方的那几层，再按 alpha bbox 裁 |
 | `box_rect` | 素材框矩形 | 框所在组的 bbox（这版：(320,278)-(2240,1358)） |
 | `avatar_slots[]` | 每个头像位的 rect / 照片 rect / 名牌 rect / 圆环图 | 头像组里的子图层逐个给 |
 | `text_slots[]` | 标题/期号/脚注的框 + 字体 + 字号 + 颜色 | type layer 的 `bbox` + `typesetting` |
@@ -222,11 +224,11 @@ video_template(
   source_path TEXT,            -- 用户导入的 .psd（只留档，渲染不读它）
   source_sha256 TEXT,          -- 重复导入同一份时直接复用编译产物
   canvas_w INT, canvas_h INT,  -- PSD 画布尺寸
-  background_path TEXT,        -- 编译产物：无头像、无框内容
-  overlay_path TEXT,           -- 编译产物：框的描边，盖在框内容上方
+  background_path TEXT,        -- 编译产物：无头像、无框内容（含底板，老形状）
+  overlay_path TEXT,           -- 编译产物：框的描边，盖在框内容上方（第 137 轮起裁到自身 bbox）
   box_rect TEXT,               -- json {"x","y","w","h"}，画布坐标
   box_fit_default TEXT,        -- contain|cover|blur_fill|stretch
-  slots_json TEXT,             -- json: 头像位 + 文本位
+  slots_json TEXT,             -- json: 头像位 + 文本位 + art（plate/stroke 的文件名与 rect，§19.35）
   status TEXT,                 -- pending|compiling|ready|failed
   error TEXT,                  -- status=failed 时的人话原因
   compiled_at TEXT
@@ -2264,14 +2266,16 @@ Canvas2D + 4K 掉到 **15.5 fps / 142 个长任务 / 146 丢帧**——差距不
 
 #### 19.31.1.1 还没接的一半：预览仍用三张全画布图
 
-§19.30 烘出来的 `plate-<digest>.png`（底板 + 描边 + 文字）**只有导出在用**。预览这边目前仍然下发
-`background_url` + `overlay_url` + `text_url` 三张全画布图，也就是浏览器每帧混合三次——和导出改前
-是同一个形状。
+§19.30 烘出来的 `plate-<digest>.png`（底板 + 描边 + 文字）**只有导出在用**。预览这边不下发这张
+烘好的图，而是下发**组成它的那几张**：`background_url`（海报，已去底板）+ `plate_url` + `stroke_url`
+（各带自己的 rect，见 §19.35）+ `text_url`。浏览器每帧混合四次，但**其中三次是贴着素材框的小图**，
+真正的开销仍然是全画布的海报——所以「预览要不要也走烘焙」这件事的收益从「三合一会快很多」变成了
+「省两次小图 draw」，实测在 45 fps 的预算里看不出来。
 
-> **这是「一张图，两个出口」那条原则唯一没落地的地方**，而且它是**故意留着**的：接上去的改动不大
-> （plan 多下发一个 `plate_url` + 一张「哪些槽位的头像 PNG 被补丁过」的映射，`videoPlan.layersAt`
-> 把三张换成一张），但它**会改变 20 个时刻一致性判据的输入**，属于独立一轮的工作量。而 §19.30 已经
-> 证明导出侧那张图逐位可用，所以这件事是「还没排期」，不是「做不了」。
+> **这是「一张图，两个出口」那条原则唯一没落地的地方**，而且它是**故意留着**的：要落地就得让预览
+> 也消费烘焙产物，而烘焙产物会把头像补丁、文字、底板全焊进一张图，**和画布编辑器的需求相反**（编辑器
+> 要能单独拖动底板）。§19.35 拆分之后，导出侧走「烘焙一张」，预览侧走「分层四张」，两者由
+> `art_signature` 保证指向同一批像素——这正是现在想要的形状。
 
 #### 19.31.2 数据模型：一份 `plan`，两处消费
 
@@ -2282,7 +2286,12 @@ Canvas2D + 4K 掉到 **15.5 fps / 142 个长任务 / 146 丢帧**——差距不
   "digest": "9f2c…",                 // 影响画面的所有输入的摘要，前端据此判断要不要重取
   "canvas": { "w": 1920, "h": 1080 },
   "box": { "x": 240, "y": 209, "w": 1440, "h": 810 },
-  "background_url": "…", "overlay_url": "…", "text_url": "…",
+  "background_url": "…",                 // 海报，底板已挖掉（§19.35）
+  "plate_url": "…", "plate_rect": { "x": 238, "y": 206, "w": 1444, "h": 815 },
+  "stroke_url": "…", "stroke_rect": { "x": 231, "y": 198, "w": 1456, "h": 829 },
+  "text_url": "…",                       // 全画布，文字整张 PNG
+  // 老行（第 137 轮之前编译的）没有 art：plate_url 为 null，stroke 给全画布 rect
+
   "segments": [                      // 按 out_start_ms 排序，覆盖全片，含 plate 空档
     { "out_start_ms": 0, "out_end_ms": 142000,
       "placement": "box", "kind": "video", "fit": "contain",
@@ -2309,8 +2318,9 @@ DOM 从下到上，**顺序必须与 `media/video.py::build_filtergraph` 一致*
 
 | z | 层 | 元素 | 来源 |
 |---|---|---|---|
-| 0 | 底板（`background_bare.png`，有头像轨道时） | `<img>` 铺满 | 模板编译产物 |
-| 1 | 描边（`overlay.png`） | `<img>` 铺满，**在框内内容之下** | 模板编译产物 |
+| 0 | 底板（`background_bare_open.png`，有头像轨道时） | `<img>` 铺满 | 模板编译产物 |
+| 0.5 | 素材框白底板（`plate.png`） | `<img>` 放在**自己的 rect** | 模板编译产物（§19.35） |
+| 1 | 描边（`overlay.png`） | `<img>` 放在自己的 rect，**在框内内容之下** | 模板编译产物 |
 | 2 | 框内（含模糊底） | `<img>`/`<video>`，绝对定位到 `box` | plan.segments（`placement="box"`） |
 | 3 | 头像位（**只有真有轨道的**） | lit/dim 两张 `<img>`，切 `opacity` | plan.avatars |
 | 4 | 可编辑文字（`text.png`） | `<img>` 铺满 | `text_png_for` 的产物 |
@@ -2692,4 +2702,109 @@ ft=12）：
 
 > **停在 mux 之前也是对的。** 画面都编完了、只剩 0.2 % 的封装时收到取消，仍然抛 `video_cancelled`：
 > 用户要的是成片，不是 900 MB 的中间产物。
+
+### 19.35 编译产物拆分：底板和描边各是一张图（第 137 轮）
+
+第 131 轮的烘焙把「每帧重算的三张全画布图」变成了每块一次，但**布局仍然是焊死的**：
+素材框底板被烤进 `background.png`，描边是一张 1920×1080 的全画布 PNG，两个位置都是画布坐标。
+后果不是画面不好看，是**布局不能改**——把 `box_rect` 往右挪 100 px，框移动了，框里的白底板和
+蓝色描边留在原地。
+
+所以第 137 轮把编译产物拆成三件：
+
+| 文件 | 内容 | 尺寸 | rect |
+|---|---|---|---|
+| `background_open.png` | 海报，**没有**底板、**没有**描边、**没有**头像 | 1920×1080 | 画布 |
+| `plate.png` | 素材框的白色底板 | **1444×815** | `(238, 206)` |
+| `overlay.png` | 框的蓝色描边 | **1456×829** | `(231, 198)` |
+
+两张小图各自带 rect，存进 `slots_json` 的 `art` 块（**只存文件名**，build 目录由
+`background_path` 的 parent 推导 —— 存绝对路径会在数据目录搬家那天全部失效）：
+
+```json
+{"art": {"plate":  {"path": "plate.png",   "rect": {"x": 238, "y": 206, "w": 1444, "h": 815}},
+         "stroke": {"path": "overlay.png", "rect": {"x": 231, "y": 198, "w": 1456, "h": 829}}}}
+```
+
+旧的 `background.png` / `background_bare.png` 仍然照旧写（含底板、含压平的头像），一是向下兼容
+还没重编译的行，二是**裁剪来源**：`plate.png` 就是从这里裁出来的。
+
+#### 19.35.1 三件必须逐像素相等，否则这次改动就是把布局重新编码一遍
+
+判据不是「看起来一样」，是 **diff px = 0**：
+
+```
+background_open.png + plate@(238,206) + overlay@(231,198)  ==  background.png + overlay.png
+```
+
+两个真实项目（`prj_1m6v2m8anfpyqq3w8qt` 费那奇MV、`prj_1m6nxk6d7d3e05cbcvv` M3 校正台）
+从 PSD 重编译后，`background.png` / `background_bare.png` 与重编译前的 golden 也各自 diff = 0，
+四个组合全部 `max delta = 0`。ffmpeg 侧同样验：用旧文件和新文件各渲一张静帧，
+**PSNR `inf`**（`render_still`，同一条 `build_filtergraph`，200 ms 而不是 20 分钟）。
+
+框内空隙的 plate 摘录也验了：从 `plate.png` 裁 `(240-238, 209-206, 1440, 810)` 与从旧
+`background.png` 裁 `(240, 209, 1440, 810)` **diff px = 0**。这是 `box_source()` 存在的理由 ——
+底板拆走之后空隙必须从 plate 裁，而且**坐标要减掉 plate 原点**，否则框内画面整体斜 2×3 px。
+
+#### 19.35.2 为什么 plate 必须强制不透明
+
+`plate.png` 的正确配方只有一条：**从含底板的 poster 里按差异 bbox 裁下来，alpha 全部改成 255**。
+证法是把它 `alpha_composite` 回无底板的 poster，逐字节等于原 poster 才算通过（`_split_plate`
+里的两个候选按这个顺序试，第一个通过就落盘）。
+
+试错的四次，都留在代码注释里而不是这里：
+
+* 单独 `psd.composite(layer_filter=id == plate)` → **全透明**。plate 是 group 的子层，
+  `psd.composite` 的 filter 只在 top-level 上跑，进不了 group。
+* 加上「plate + 所有祖先」才出像素，但 X 方向多 2 px 羽化（alpha 123..255），贴回去
+  **11 864 px 差、max delta 63**。
+* 用 `bg_old.crop(box)` 当 plate → 仍有 1 444 px 差，全在框**外面**（半透明描边被叠了两次）。
+* 裁到 bbox 但保留羽化 alpha → 20 868 px 差 / max 64。
+
+**羽化是 2560→1920 那次 LANCZOS 缩放造出来的**，所以 rect 不是「PSD bbox × 0.75」，
+而是**量出来的差异 bbox**：预测的矩形会在框上沿留一条半像素的旧底板。
+
+#### 19.35.3 四个缓存键都要带上布局
+
+拆完之后「画面 = 底板 + plate@rect + 描边@rect + …」，而 rect 是数据，不是常量。
+四个 digest 全部加了 `template_service.art_signature(row)`（形如
+`plate.png@238,206,1444x815|overlay.png@231,198,1456x829`，老行是
+`-|overlay.png@0,0,1920x1080`）：
+
+| 键 | 在哪 | 漏了会怎样 |
+|---|---|---|
+| `_video_signature` | `services/video_render.py` | 挪过布局的模板复用旧成片 |
+| `_still_digest` | `services/video_render.py` | 浏览器拿到同一个 URL，看到旧帧 |
+| `_digest`（plan） | `services/video_plan.py` | 实时预览的图层 rect 与成片不一致 |
+| `plate_bake._digest` | `media/plate_bake.py` | 烘焙的 plate 复用了旧位置的那张 |
+
+`plate_bake` 那边是**另一个**键：它烘的是导出用的合成图，`plate_part`/`stroke_part` 里带
+`@x,y,WxH`，`PLATE_VERSION` 1→2 把所有旧缓存一次性作废。
+
+#### 19.35.4 前端与后端是同一条图层栈
+
+`videoPlan.ts::layersAt` 是前端唯一写图层顺序的地方，注释里明说它镜像 `build_filtergraph`：
+`background → plate → stroke → media → avatars → text → cue`。plate 和 stroke 都用**自己**的
+rect，不是画布 rect —— 把 1444×815 的 plate 拉成 1920×1080 不是「小一点的底板」，是坏掉的框。
+
+plan 的字段也随之改名：旧 `overlay_url` 拆成 `plate_url`/`plate_rect` 与
+`stroke_url`/`stroke_rect`。`domStage` 里判断「这是静态画作」的集合从
+`{background, overlay}` 变成 `{background, plate, stroke}`。
+
+#### 19.35.5 老行不迁移，也绝不降级
+
+一个 `art` 块都没有的行（这一轮之前编译的）走 `art_of()` 的兼容分支：`plate=None`，
+`stroke` 用 `overlay_path` + 全画布 rect —— **正是拆分前的图**。`poster_of()` 同理，找不到
+`*_open.png` 就退回 `background*.png`。判据是「重编译之前，渲染结果一个像素都不变」：
+老行不重编译就等于没这一轮，重编译了才拿到可移动的布局。
+
+`slots_json` 里畸形的 `art`（缺 rect、path 带分隔符、整块是字符串）一律当「老行」处理而不是抛错：
+这个 JSON 在 SQLite 里，被手工改坏过就会渲染失败，而渲染失败时用户连模板界面都进不去。
+path 过 `Path(name).name` 是第一道边界（`asset_path` 早就这么做）。
+
+#### 19.35.6 代价
+
+一次编译从 ~6 s 变成 ~9 s（两次全画布合成：含底板 3.2 s + 去底板 2.5 s），导入是一次性动作。
+导出速度**不变**（图层数从 1 变 2，但 plate 是 1444×815 而不是全画布，实测 PSNR `inf` 的那次
+只差几毫秒）。
 

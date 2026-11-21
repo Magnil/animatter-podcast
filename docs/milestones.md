@@ -188,6 +188,20 @@ D:\Videos\费那奇MV-1080p24-v2.mp4
 | 一个开关可逐字节回退 | `config.video_still_composite` | 置 `false` 走原来的实时链，图里仍有 `boxblur`（两条路径都有测试） |
 | 预合成残留不会跨导出让复用 | `_render_picture` 每块导出前删 `still-*.png`、收尾再删一遍 | 失败残留与下次同名，不删会被静默复用 |
 
+
+### 视频 P8 交付清单（2026-11-21，第 137 轮）
+
+模板的**布局变成数据**。设计、四次失败与实测在 `docs/video.md` §19.35，决策 D25。
+
+| 交付物 | 落在哪 | 验收 |
+|---|---|---|
+| 底板拆成独立 `plate.png`，描边裁到自身 bbox，两个 rect 进 `slots_json.art` | `media/template.py`、`services/video_templates.py` | 重组后与拆分前 **diff px = 0**（两个真实项目、四个组合） |
+| 渲染侧按 rect 摆 art：plate/stroke 各一层 | `services/video_render.py`、`services/video_plan.py`、`routers/video_plan.py` | `render_still` 新旧各渲一张，**PSNR `inf`** |
+| 框内空隙从 plate 裁（坐标减 plate 原点） | `services/video_box.py::plan(template_origin=)` | 摘录与旧 poster 裁切 **diff px = 0** |
+| 布局进四个缓存键 | 导出签名 / 静帧 digest / plan digest / `plate_bake` digest | 挪 plate rect 后四个键全部变化 |
+| 前端 plan 字段 `overlay_url` → `plate_url`/`plate_rect` + `stroke_url`/`stroke_rect` | `apps/web/src/videoPlan.ts`、`DomStage.tsx`、`api.ts` | 层序 `background → plate → stroke → media`，plate 用自己 rect |
+| 老行（无 `art`）不迁移也不降级 | `art_of()` 的兼容分支、`poster_of()` 的回退 | `tests/test_video_template_art.py` 8 条 |
+
 ### 进度一览（2026-11-14 订正）
 
 ```
@@ -212,6 +226,7 @@ M6 ⬜ 稳定性
         **导出侧到这里做完了**：整片 27.84 → **17.67 min（累计 −36.6 %）**。
         设计与实测并入 `docs/video.md` §19.31–§19.34（预览架构、播放与降级、静帧、导出并行与编码），
         决策 D19–D23
+视频 P8 ✅（11-21）：模板编译产物拆分——底板/描边各带 rect，**diff px = 0**、PSNR `inf`
 ```
 
 **P7 的预览侧三档（P0 / P1 / P2）与导出侧的全部档位（E1 / E2 / E3，E4 判定不做）已落地**，
