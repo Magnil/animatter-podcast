@@ -219,6 +219,18 @@ class CompiledTemplate:
     #: Worth telling the user on the confirm screen, e.g. "3 avatar groups were
     #: hidden in the PSD and are not part of the layout".
     notes: list[str] = field(default_factory=list)
+    #: The same poster with the media-box plate **removed**, so the plate can be drawn at an
+    #: arbitrary rect later: a layout edit moves the box, and a baked-in plate cannot move.
+    #: ``background_path``/``background_bare_path`` keep the plate, so a template compiled
+    #: before this existed still renders exactly as it did.
+    background_open_path: Path | None = None
+    background_bare_open_path: Path | None = None
+    #: The plate as its own PNG plus where it goes, and where the cropped stroke goes. All
+    #: three are in canvas coordinates; ``None``/absent means "no split" and every consumer
+    #: falls back to the full canvas file it already knows.
+    plate_path: Path | None = None
+    plate_rect: Rect | None = None
+    overlay_rect: Rect | None = None
 
     def slots_json(self) -> dict[str, Any]:
         return {
@@ -253,6 +265,18 @@ class CompiledTemplate:
                 for slot in self.texts
             ],
             "notes": list(self.notes),
+            # Artwork geometry, so a render can *place* the plate and the stroke instead of
+            # trusting that they sit at 0,0 of a full-canvas file. File **names**, not paths:
+            # the build directory is derived from the row's own ``background_path``, and an
+            # absolute path stored here would break the moment the data directory moved.
+            "art": {
+                "plate": None
+                if self.plate_path is None or self.plate_rect is None
+                else {"path": self.plate_path.name, "rect": self.plate_rect.as_dict()},
+                "stroke": None
+                if self.overlay_rect is None
+                else {"path": self.overlay_path.name, "rect": self.overlay_rect.as_dict()},
+            },
         }
 
 
@@ -918,6 +942,45 @@ def _text_slots(
 # --- the compile --------------------------------------------------------
 
 
+def _split_plate(
+    out_dir: Path, poster: Image.Image, open_poster: Image.Image
+) -> tuple[Path | None, Rect | None]:
+    """Cut the media-box plate out of ``poster`` and prove the cut is lossless.
+
+    Two candidates, in order: the changed region **as it is** in the poster (correct when the
+    poster under it is transparent — then the crop already *is* the plate), and the same crop
+    with its alpha forced opaque (correct when the poster under it is opaque — then source-over
+    and replace agree). The rule is not a guess: each candidate is composited back over
+    ``open_poster`` and accepted only if that reproduces ``poster`` **byte for byte**.
+
+    The rect is **measured** from the difference between the two composites rather than
+    predicted from the plate's PSD bbox: the 2560→1920 resize feathers the plate's edge by
+    about a pixel, so the region that actually changed is wider than the scaled bbox.
+    Predicting it left a half-pixel rim of poster showing along the top of the box.
+
+    ``(None, None)`` is the honest failure: the caller then leaves the plate in the poster,
+    which is what every earlier compile did, so a file this does not work on renders the way it
+    always did instead of one pixel off.
+    """
+    after = np.array(poster).astype(int)
+    before = np.array(open_poster).astype(int)
+    rect = mask_bbox(np.abs(after - before).max(axis=2) > 0)
+    if rect is None:
+        return None, None
+    crop = poster.crop((rect.x, rect.y, rect.right, rect.bottom))
+    opaque = crop.copy()
+    opaque.putalpha(255)
+    for candidate in (crop, opaque):
+        check = open_poster.copy()
+        check.alpha_composite(candidate, dest=(rect.x, rect.y))
+        if not np.array_equal(np.array(check), np.array(poster)):
+            continue
+        path = out_dir / "plate.png"
+        candidate.save(path)
+        return path, rect
+    return None, None
+
+
 def compile_template(psd_path: Path, out_dir: Path) -> CompiledTemplate:
     """Compile one PSD into the artefacts the renderer needs."""
     if not psd_path.is_file():
@@ -995,28 +1058,54 @@ def compile_template(psd_path: Path, out_dir: Path) -> CompiledTemplate:
         and not _is_full_bleed(rect, canvas_w=psd.width, canvas_h=psd.height)
     ]
     overlay_ids = {id(layer) for layer in overlay_layers}
+    keep = make_background_filter(media_group, content, avatar_groups, overlay_layers, text_layers)
     bare_path = out_dir / "background_bare.png"
-    resize(
-        composite(
-            psd,
-            make_background_filter(
-                media_group, content, avatar_groups, overlay_layers, text_layers
-            ),
-        ),
-        TARGET_W,
-        TARGET_H,
-    ).save(bare_path)
+    # **Two** composites, not one: the media-box plate becomes its own PNG so a layout edit can
+    # move the box, and a plate baked into the poster cannot move. Measured on the sample:
+    # 3.2 s + 2.5 s, i.e. a compile goes ~6 s → ~9 s. A compile is a one-off per import, and
+    # the second pass is what makes the split *exact* rather than merely close.
+    poster = resize(composite(psd, keep), TARGET_W, TARGET_H).convert("RGBA")
+    poster.save(bare_path)
+    open_bare_path = out_dir / "background_bare_open.png"
+    open_poster = poster
+    plate_path: Path | None = None
+    plate_rect: Rect | None = None
+    if plate is not None:
+        open_poster = resize(
+            composite(psd, lambda layer: keep(layer) and id(layer) != id(plate)),
+            TARGET_W,
+            TARGET_H,
+        ).convert("RGBA")
+        plate_path, plate_rect = _split_plate(out_dir, poster, open_poster)
+        if plate_path is None or plate_rect is None:
+            # The identity check refused: keep the plate where it has always been, i.e. baked
+            # into the poster. Nothing breaks — the box just cannot be moved on this file.
+            plate_path, plate_rect = None, None
+            log.warning("template.plate_split_refused", plate=layer_name(plate))
+        else:
+            log.info("template.plate_split", rect=plate_rect.as_dict(), plate=plate_path.name)
+    open_poster.save(open_bare_path)
 
     overlay_path = out_dir / "overlay.png"
-    resize(
+    overlay_full = resize(
         composite(psd, lambda layer: layer.visible and id(layer) in overlay_ids), TARGET_W, TARGET_H
+    ).convert("RGBA")
+    # Cropped to the pixels that carry alpha. Compositing a crop back at its own origin is
+    # lossless — a fully transparent pixel contributes nothing — and it is what lets the stroke
+    # be *placed* like any other layer instead of being a full-canvas image that boots nothing.
+    overlay_rect = mask_bbox(np.array(overlay_full)[:, :, 3] > 0) or Rect(
+        x=0, y=0, w=TARGET_W, h=TARGET_H
+    )
+    overlay_full.crop(
+        (overlay_rect.x, overlay_rect.y, overlay_rect.right, overlay_rect.bottom)
     ).save(overlay_path)
     if overlay_layers:
         log.info("template.overlay", layers=[layer_name(layer) for layer in overlay_layers])
 
     # --- avatars ---------------------------------------------------------
     avatars: list[AvatarSlot] = []
-    flat = Image.open(bare_path).convert("RGBA")
+    flat = poster.copy()
+    open_flat = open_poster.copy()
     # Per-side counters, assigned in reading order (top first) so 「主播1」 is the upper left one.
     # Computed up front rather than inside the loop: the loop runs in PSD stack order, which is
     # bottom-up, and numbering by that would put 主播1 under 主播2.
@@ -1091,10 +1180,14 @@ def compile_template(psd_path: Path, out_dir: Path) -> CompiledTemplate:
         )
         # Flatten it in for P1: it keeps the poster looking like the PSD until
         # per-speaker binding exists (P3 uses background_bare.png instead).
-        flat.alpha_composite(resize(lit, target.w, target.h), dest=(target.x, target.y))
+        fitted = resize(lit, target.w, target.h)
+        flat.alpha_composite(fitted, dest=(target.x, target.y))
+        open_flat.alpha_composite(fitted, dest=(target.x, target.y))
 
     background_path = out_dir / "background.png"
     flat.save(background_path)
+    open_path = out_dir / "background_open.png"
+    open_flat.save(open_path)
 
     texts = _text_slots(
         text_layers,
@@ -1128,4 +1221,9 @@ def compile_template(psd_path: Path, out_dir: Path) -> CompiledTemplate:
         avatars=avatars,
         texts=texts,
         notes=notes,
+        background_open_path=open_path,
+        background_bare_open_path=open_bare_path,
+        plate_path=plate_path,
+        plate_rect=plate_rect,
+        overlay_rect=overlay_rect,
     )

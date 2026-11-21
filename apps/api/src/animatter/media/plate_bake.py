@@ -54,13 +54,33 @@ log = get_logger(__name__)
 
 #: Bumped when a change makes an existing ``plate-*.png`` show something the code no longer
 #: produces. Part of the digest, so an old plate stops being reused rather than going stale.
-PLATE_VERSION: Final[int] = 1
+#:
+#: 2 (round 137): the plate and the stroke are separate files at their own rects instead of
+#: full-canvas images assumed to sit at 0,0. Same pixels, different inputs.
+PLATE_VERSION: Final[int] = 2
 
 #: A pixel is "text" when its alpha is at least this. **1, not 8**: the composite has to
 #: reproduce every pixel the old graph's ``overlay`` touched, and an alpha of 1/255 still
 #: moves an opaque base by one unit. A threshold above 1 would leave a few hundred faint
 #: edge pixels unpatched, and the acceptance bar is `inf`, not "invisible".
 TEXT_ALPHA_MIN: Final[int] = 1
+
+
+@dataclass(frozen=True)
+class Art:
+    """One artwork PNG and where it goes on the canvas.
+
+    ``width``/``height`` default to the canvas, which is right for a full-frame layer. The
+    media-box plate and the cropped stroke are **not** full-frame: scaling a 1444×815 plate to
+    1920×1080 would smear it across the poster and off its own edge, so their own size travels
+    with them.
+    """
+
+    path: Path
+    x: int = 0
+    y: int = 0
+    width: int | None = None
+    height: int | None = None
 
 
 @dataclass(frozen=True)
@@ -143,13 +163,19 @@ def _rect_mask(shape: tuple[int, int], rect: tuple[int, int, int, int]) -> np.nd
     return mask
 
 
-def _composite(ffmpeg: str, *, target: Path, layers: list[Path], width: int, height: int) -> Path:
+def _composite(
+    ffmpeg: str, *, target: Path, layers: list[Art], width: int, height: int
+) -> Path:
     """Composite ``layers`` bottom-up into one PNG at ``width`` × ``height``.
 
     Each input gets the same ``scale``+``setsar=1`` the graph applies to its own branch: the
     compiled PNGs carry no pixel aspect, and a SAR mismatch makes ``overlay`` scale a layer
     silently. ``format=auto`` is what :func:`~animatter.media.video.build_filtergraph` uses,
     so this is the same arithmetic in the same precision rather than a second spelling of it.
+
+    ``layers[0]`` is the canvas-sized base; every later layer is drawn at its own size and
+    position, which is what lets the media-box plate and the cropped stroke go where they
+    belong instead of being stretched over the whole poster.
 
     The output **keeps its alpha channel**. Flattening to RGB looks harmless — the compiled
     poster is 99.94 % opaque — but it moves a thousand pixels from alpha 254 to 255, and
@@ -160,17 +186,21 @@ def _composite(ffmpeg: str, *, target: Path, layers: list[Path], width: int, hei
         raise AppError("plate_empty", "底板烘焙没有输入")
     parts: list[str] = []
     current = ""
-    for index in range(len(layers)):
-        parts.append(f"[{index}:v]scale={width}:{height},setsar=1[s{index}]")
+    for index, layer in enumerate(layers):
+        layer_w = layer.width if layer.width is not None else width
+        layer_h = layer.height if layer.height is not None else height
+        parts.append(f"[{index}:v]scale={layer_w}:{layer_h},setsar=1[s{index}]")
         if index == 0:
             current = f"s{index}"
         else:
-            parts.append(f"[{current}][s{index}]overlay=x=0:y=0:format=auto[m{index}]")
+            parts.append(
+                f"[{current}][s{index}]overlay=x={layer.x}:y={layer.y}:format=auto[m{index}]"
+            )
             current = f"m{index}"
 
     command = [ffmpeg, "-nostdin", "-y", "-loglevel", "error"]
-    for path in layers:
-        command += ["-i", str(path)]
+    for layer in layers:
+        command += ["-i", str(layer.path)]
     command += [
         "-filter_complex",
         ";\n".join(parts),
@@ -316,7 +346,8 @@ def bake(
     ffmpeg: str,
     *,
     base: Path,
-    overlay: Path | None,
+    plate: Art | None,
+    stroke: Art | None,
     text: Path | None,
     canvas_w: int,
     canvas_h: int,
@@ -324,15 +355,25 @@ def bake(
     slots: list[PatchSlot],
     work_dir: Path,
 ) -> Plate:
-    """Bake poster + stroke (+ text) into one PNG, patching the avatars where they cover text.
+    """Bake poster + plate + stroke (+ text) into one PNG, patching avatars that cover text.
+
+    ``base`` is the poster with the media-box plate **removed**; ``plate`` and ``stroke`` are
+    drawn at their own rects. Baking them back in is exact (each was extracted by proving that
+    re-compositing it reproduces the original poster byte for byte), so the plate can be
+    positioned from ``slots_json`` instead of being frozen into the poster.
+
+    A template compiled before the split has no ``plate`` and keeps its old full-canvas stroke:
+    then this is the same composite it always was.
 
     Always returns a :class:`Plate` when the poster itself is bakeable: a precondition that
     fails only drops the **text** from the plate (the measured −16.8 % fallback), it never
     blocks a film on an optimisation.
     """
-    overlays: list[Path] = [base]
-    if overlay is not None and overlay.is_file():
-        overlays.append(overlay)
+    overlays: list[Art] = [Art(base)]
+    if plate is not None and plate.path.is_file():
+        overlays.append(plate)
+    if stroke is not None and stroke.path.is_file():
+        overlays.append(stroke)
 
     text_baked = False
     #: Whether the text pixels actually went into the composite. ``text_baked`` is also set
@@ -359,8 +400,16 @@ def bake(
             else:
                 text_baked, text_merged, skipped = True, True, ""
 
-    has_stroke = overlay is not None and overlay.is_file()
-    stroke = _ident(overlay, "overlay") if overlay is not None and has_stroke else "-"
+    stroke_part = (
+        f"{_ident(stroke.path, 'stroke')}@{stroke.x},{stroke.y},{stroke.width}x{stroke.height}"
+        if stroke is not None and stroke.path.is_file()
+        else "-"
+    )
+    plate_part = (
+        f"{_ident(plate.path, 'plate')}@{plate.x},{plate.y},{plate.width}x{plate.height}"
+        if plate is not None and plate.path.is_file()
+        else "-"
+    )
     if text_baked and text is not None:
         text_part = _ident(text, "text")
         slot_part = ",".join(
@@ -371,11 +420,19 @@ def bake(
         text_part = "-"
         slot_part = "-"
     digest = _digest(
-        [f"v{PLATE_VERSION}", f"{canvas_w}x{canvas_h}", _ident(base, "base"), stroke, text_part, slot_part]
+        [
+            f"v{PLATE_VERSION}",
+            f"{canvas_w}x{canvas_h}",
+            _ident(base, "base"),
+            plate_part,
+            stroke_part,
+            text_part,
+            slot_part,
+        ]
     )
     target = work_dir / f"plate-{digest}.png"
     if text_merged and text is not None:
-        overlays.append(text)
+        overlays.append(Art(text))
     _composite(ffmpeg, target=target, layers=overlays, width=canvas_w, height=canvas_h)
 
     for stale in work_dir.glob("plate-*.png"):

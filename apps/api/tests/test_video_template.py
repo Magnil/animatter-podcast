@@ -126,6 +126,10 @@ def test_real_compile_leaves_the_content_rect_empty(compiled: object) -> None:
 
     Measured before the fix: 12 distinct colours and std 2.93 inside the box,
     because the PSD's own poster and two text layers were still in the background.
+
+    Since round 137 the flat plate lives in ``plate.png``; ``background_open.png`` has the box
+    rect **transparent** there, which is the same promise seen from the other side — nothing the
+    PSD drew may remain under the box.
     """
     from animatter.media.template import CompiledTemplate
 
@@ -136,6 +140,22 @@ def test_real_compile_leaves_the_content_rect_empty(compiled: object) -> None:
     ]
     assert pixels.std() < 1.0, f"content rect is not uniform (std={pixels.std():.2f})"
 
+    # What the split promises is narrower than "transparent under the box": the frame stroke
+    # legitimately crosses into it (5930 semi-opaque pixels on the sample), and the stroke is
+    # drawn on top of the plate anyway. The promise is that **the plate** was the only thing
+    # removed — so nothing outside the plate rect may have changed.
+    flat = np.array(Image.open(compiled.background_bare_path).convert("RGBA")).astype(np.int32)
+    opened = np.array(Image.open(compiled.background_bare_open_path).convert("RGBA")).astype(
+        np.int32
+    )
+    changed = np.abs(flat - opened).max(axis=2) > 0
+    rect = compiled.plate_rect
+    assert rect is not None
+    outside = np.ones(changed.shape, dtype=bool)
+    outside[rect.y : rect.bottom, rect.x : rect.right] = False
+    assert not (changed & outside).any(), "the split changed pixels outside the plate rect"
+    assert changed.any(), "the split removed nothing — the plate is still in the poster"
+
 
 def test_real_compile_keeps_the_overlay_to_the_frame_stroke(compiled: object) -> None:
     """The overlay must be the frame, not a full-canvas sheet.
@@ -143,19 +163,96 @@ def test_real_compile_keeps_the_overlay_to_the_frame_stroke(compiled: object) ->
     Before excluding full-bleed layers, 「透明框架」 (2560×1440) was classed as an
     overlay and covered 44 % of the canvas — the composite lost the logo, the title
     and every avatar.
+
+    Since round 137 the file is **cropped** to the stroke's own bounds and its rect is
+    recorded, so the ink now fills the PNG instead of sitting inside a 1920×1080 sheet. The
+    thing worth pinning moved with it: the rect still hugs the box from slightly outside.
     """
     from animatter.media.template import CompiledTemplate
 
     assert isinstance(compiled, CompiledTemplate)
     alpha = np.array(Image.open(compiled.overlay_path).convert("RGBA"))[:, :, 3]
+    # "Ink" for the fraction stays at alpha > 8 — the stroke is a soft blue glow and counting
+    # every 1/255 pixel would call the anti-aliasing halo part of the frame.
     ink = alpha > 8
-    assert 0.005 < ink.mean() < 0.05, f"overlay ink fraction {ink.mean():.4f}"
-    rows = np.where(ink.any(axis=1))[0]
-    cols = np.where(ink.any(axis=0))[0]
+    assert 0.005 < ink.mean() < 0.10, f"overlay ink fraction {ink.mean():.4f}"
+    # The crop is tight by *any* ink, which is the bound the split actually used.
+    rows = np.where((alpha > 0).any(axis=1))[0]
+    cols = np.where((alpha > 0).any(axis=0))[0]
+    assert (int(cols[0]), int(rows[0])) == (0, 0)
+    assert (int(cols[-1]) + 1, int(rows[-1]) + 1) == alpha.shape[::-1]
+    rect = compiled.overlay_rect
+    assert rect is not None
+    assert (rect.w, rect.h) == (alpha.shape[1], alpha.shape[0])
     box = compiled.box_rect
-    # The stroke hugs the box from slightly outside it.
-    assert cols[0] < box.x and rows[0] < box.y
-    assert cols[-1] + 1 > box.right - 40 and rows[-1] + 1 > box.bottom
+    # And placed at its rect it hugs the box from slightly outside it.
+    assert rect.x < box.x and rect.y < box.y
+    assert rect.right > box.right - 40 and rect.bottom > box.bottom
+
+
+def test_real_compile_splits_the_plate_out_of_the_poster(compiled: object) -> None:
+    """The white media-box plate is its own file now, at its own rect (§19.35).
+
+    Recombining the pieces has to reproduce a pre-split compile **exactly** — that is the whole
+    acceptance bar for this refactor, and it is checked against the flat twins that are still
+    written, so the test does not need a stored golden image.
+    """
+    from animatter.media.template import CompiledTemplate
+
+    assert isinstance(compiled, CompiledTemplate)
+    assert compiled.plate_path is not None and compiled.plate_rect is not None
+    assert compiled.plate_path.is_file()
+    plate = Image.open(compiled.plate_path).convert("RGBA")
+    rect = compiled.plate_rect
+    assert (plate.width, plate.height) == (rect.w, rect.h)
+    # Opaque by construction: the split is accepted only if a fully opaque patch at this rect
+    # reproduces the poster, and a translucent patch is what broke the first three attempts.
+    assert np.asarray(plate.getchannel("A")).min() == 255
+    # Inside the box, so the box content has a clean plate to draw on.
+    assert rect.x <= compiled.box_rect.x and rect.y <= compiled.box_rect.y
+    assert rect.right >= compiled.box_rect.right
+
+    stroke_rect = compiled.overlay_rect
+    assert stroke_rect is not None
+    stroke = Image.new("RGBA", (compiled.canvas_w, compiled.canvas_h), (0, 0, 0, 0))
+    with Image.open(compiled.overlay_path) as image:
+        stroke.alpha_composite(image.convert("RGBA"), dest=(stroke_rect.x, stroke_rect.y))
+
+    for flat, opened in (
+        (compiled.background_path, compiled.background_open_path),
+        (compiled.background_bare_path, compiled.background_bare_open_path),
+    ):
+        assert opened is not None and opened.is_file()
+        expected = Image.open(flat).convert("RGBA")
+        expected.alpha_composite(stroke)
+        rebuilt = Image.open(opened).convert("RGBA")
+        rebuilt.alpha_composite(plate, dest=(rect.x, rect.y))
+        rebuilt.alpha_composite(stroke)
+        diff = np.abs(
+            np.asarray(rebuilt).astype(np.int32) - np.asarray(expected).astype(np.int32)
+        )
+        assert int(diff.max()) == 0, f"{Path(flat).name}: the split is not pixel-identical"
+
+
+def test_real_compile_records_the_art_rects_in_slots_json(compiled: object) -> None:
+    """The rects have to survive the JSON round trip, or the render side cannot place anything."""
+    from animatter.media.template import CompiledTemplate
+
+    assert isinstance(compiled, CompiledTemplate)
+    art = compiled.slots_json()["art"]
+    assert art["plate"]["path"] == Path(compiled.plate_path or "").name
+    assert art["plate"]["rect"] == {
+        "x": compiled.plate_rect.x if compiled.plate_rect else -1,
+        "y": compiled.plate_rect.y if compiled.plate_rect else -1,
+        "w": compiled.plate_rect.w if compiled.plate_rect else -1,
+        "h": compiled.plate_rect.h if compiled.plate_rect else -1,
+    }
+    assert art["stroke"]["path"] == Path(compiled.overlay_path).name
+    assert art["stroke"]["rect"]["x"] == (compiled.overlay_rect.x if compiled.overlay_rect else -1)
+    # File names only: the build directory is derived from ``background_path``, so an absolute
+    # path here would break the moment the data directory moved.
+    assert "/" not in art["plate"]["path"] and "\\" not in art["plate"]["path"]
+    assert "/" not in art["stroke"]["path"] and "\\" not in art["stroke"]["path"]
 
 
 def test_real_compile_finds_four_visible_avatars(compiled: object) -> None:

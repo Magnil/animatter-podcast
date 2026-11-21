@@ -1,5 +1,10 @@
 """Baking the static plate, and the two preconditions it rests on (§19.30, E1).
 
+Round 137 changed the inputs, not the arithmetic: the poster no longer contains the media-box
+plate, so the bake is handed the **poster, the plate and the cropped stroke separately**
+(`plate_bake.Art` carries each one's rect). Every measurement in this module still holds — a
+plate baked from the three pieces has to be pixel-identical to one baked from the split poster.
+
 The optimisation is only acceptable if it is **invisible**, and the only way to know that is to
 render the same frame through both paths and compare. So the central test here is a real encode:
 a small canvas, an avatar whose rect overlaps a piece of editable text, and a frame-by-frame
@@ -77,9 +82,14 @@ def _fixture(tmp_path: Path, *, inside_box: bool = False, translucent: bool = Fa
         avatar.paste((30, 160, 90, 128), (4, 4, 14, 14))
     lit = _write(tmp_path / "avatar_lit.png", avatar)
     dim = _write(tmp_path / "avatar_dim.png", _solid((AVATAR_W, AVATAR_H), (10, 60, 40, 255)))
+    # The media-box plate, on its own, exactly as the compile now writes it: opaque, and sized
+    # to the box rather than the canvas.
+    plate_image = _solid((BOX[2], BOX[3]), (244, 244, 244, 255))
+    plate = _write(tmp_path / "plate.png", plate_image)
     return {
         "base": background,
         "overlay": stroke,
+        "plate": plate_bake.Art(plate, x=BOX[0], y=BOX[1], width=BOX[2], height=BOX[3]),
         "text": _text_png(tmp_path / "text.png", inside_box=inside_box),
         "lit": lit,
         "dim": dim,
@@ -94,7 +104,8 @@ def _bake(tmp_path: Path, fixture: dict, **kwargs: object) -> plate_bake.Plate:
     return plate_bake.bake(
         str(FFMPEG),
         base=fixture["base"],
-        overlay=fixture["overlay"],
+        plate=fixture["plate"],
+        stroke=plate_bake.Art(fixture["overlay"]),
         text=fixture["text"],
         canvas_w=CANVAS_W,
         canvas_h=CANVAS_H,
@@ -144,7 +155,8 @@ def test_a_template_without_text_still_bakes_the_poster_and_stroke(tmp_path: Pat
     plate = plate_bake.bake(
         str(FFMPEG),
         base=fixture["base"],
-        overlay=fixture["overlay"],
+        plate=fixture["plate"],
+        stroke=plate_bake.Art(fixture["overlay"]),
         text=None,
         canvas_w=CANVAS_W,
         canvas_h=CANVAS_H,
@@ -237,7 +249,12 @@ def test_the_baked_plate_renders_the_same_frame_as_the_old_graph(tmp_path: Path)
         width=CANVAS_W,
         height=CANVAS_H,
         background=fixture["base"],
-        layers=[Layer(path=fixture["overlay"], x=0, y=0)],
+        # The pre-split graph: the poster already had the plate baked in, then the stroke,
+        # then the text. Now the plate is its own input, at its own rect, *before* the stroke.
+        layers=[
+            Layer(path=fixture["plate"].path, x=BOX[0], y=BOX[1], width=BOX[2], height=BOX[3]),
+            Layer(path=fixture["overlay"], x=0, y=0),
+        ],
         avatars=[avatar],
         text=Layer(path=fixture["text"], x=0, y=0),
     )
@@ -274,7 +291,8 @@ def test_without_the_patch_the_text_would_be_covered(tmp_path: Path) -> None:
     plate = plate_bake.bake(
         str(FFMPEG),
         base=fixture["base"],
-        overlay=fixture["overlay"],
+        plate=fixture["plate"],
+        stroke=plate_bake.Art(fixture["overlay"]),
         text=fixture["text"],
         canvas_w=CANVAS_W,
         canvas_h=CANVAS_H,
@@ -292,7 +310,10 @@ def test_without_the_patch_the_text_would_be_covered(tmp_path: Path) -> None:
         width=CANVAS_W,
         height=CANVAS_H,
         background=fixture["base"],
-        layers=[Layer(path=fixture["overlay"], x=0, y=0)],
+        layers=[
+            Layer(path=fixture["plate"].path, x=BOX[0], y=BOX[1], width=BOX[2], height=BOX[3]),
+            Layer(path=fixture["overlay"], x=0, y=0),
+        ],
         avatars=[
             AvatarLayer(
                 path=fixture["lit"],
