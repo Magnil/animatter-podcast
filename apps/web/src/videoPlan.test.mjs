@@ -32,7 +32,10 @@ function samplePlan(overrides = {}) {
     box: { x: 240, y: 209, w: 1440, h: 810 },
     output_duration_ms: 20_000,
     background_url: "/api/bg.png",
-    overlay_url: "/api/overlay.png",
+    plate_url: "/api/plate.png",
+    plate_rect: { x: 239, y: 206, w: 1444, h: 815 },
+    stroke_url: "/api/overlay.png",
+    stroke_rect: { x: 231, y: 198, w: 1456, h: 829 },
     text_url: "/api/text.png",
     segments: [
       {
@@ -207,21 +210,59 @@ test("the layer stack matches build_filtergraph, bottom-up", () => {
   // different picture from not drawing it, and keeping one element is what stops the lit/dim
   // switch from re-decoding a PNG on every turn change.
   const roles = layersAt(plan, 2_500).map((layer) => layer.role);
-  assert.deepEqual(roles, ["background", "overlay", "media", "avatar", "text"]);
+  assert.deepEqual(roles, ["background", "plate", "stroke", "media", "avatar", "text"]);
   const dim = layersAt(plan, 2_500).find((layer) => layer.role === "avatar");
   assert.equal(dim?.lit, false);
   assert.equal(dim?.url, "/api/dim.png");
   // At an instant with a lit avatar, it sits between the media and the text.
   const litRoles = layersAt(plan, 5_200).map((layer) => layer.role);
-  assert.deepEqual(litRoles, ["background", "overlay", "media", "avatar", "text", "cue"]);
+  assert.deepEqual(litRoles, ["background", "plate", "stroke", "media", "avatar", "text", "cue"]);
 });
 
-test("the overlay is drawn under the box content, never merged into the poster", () => {
+test("the plate and the stroke are drawn under the box content, never merged into the poster", () => {
   const plan = samplePlan();
   const roles = layersAt(plan, 1_000).map((layer) => layer.role);
-  const overlay = roles.indexOf("overlay");
+  const plate = roles.indexOf("plate");
+  const stroke = roles.indexOf("stroke");
   const media = roles.indexOf("media");
-  assert.ok(overlay >= 0 && overlay < media);
+  assert.ok(plate >= 0 && plate < media);
+  assert.ok(stroke >= 0 && stroke < media);
+  // Plate under stroke: the frame's inner edge must stay visible over the plate's rim.
+  assert.ok(plate < stroke);
+});
+
+test("the plate and the stroke keep their own rects instead of the canvas", () => {
+  // A 1444x815 plate stretched to 1920x1080 is not a smaller plate — it is a smeared poster
+  // with the box in the wrong place. This is the whole point of recording the rects.
+  const plan = samplePlan();
+  const layers = layersAt(plan, 1_000);
+  const plate = layers.find((layer) => layer.role === "plate");
+  const stroke = layers.find((layer) => layer.role === "stroke");
+  assert.deepEqual(plate?.rect, { x: 239, y: 206, w: 1444, h: 815 });
+  assert.deepEqual(stroke?.rect, { x: 231, y: 198, w: 1456, h: 829 });
+  assert.deepEqual(layers.find((layer) => layer.role === "background")?.rect, {
+    x: 0,
+    y: 0,
+    w: 1920,
+    h: 1080,
+  });
+});
+
+test("a pre-round-137 template still draws its full-canvas stroke and no plate", () => {
+  // A row compiled before the split has the plate baked into the poster and no `art` in its
+  // slots, so the server sends `plate_*: null` and a full-canvas `stroke_rect`. The stage must
+  // paint that exactly as it did before, otherwise recompiling would be mandatory to show an
+  // old project at all.
+  const plan = samplePlan({
+    plate_url: null,
+    plate_rect: null,
+    stroke_url: "/api/overlay.png",
+    stroke_rect: { x: 0, y: 0, w: 1920, h: 1080 },
+  });
+  const roles = layersAt(plan, 2_500).map((layer) => layer.role);
+  assert.deepEqual(roles, ["background", "stroke", "media", "avatar", "text"]);
+  const stroke = layersAt(plan, 2_500).find((layer) => layer.role === "stroke");
+  assert.deepEqual(stroke?.rect, { x: 0, y: 0, w: 1920, h: 1080 });
 });
 
 test("a plate gap leaves the background and overlay but no media layer", () => {
@@ -231,7 +272,8 @@ test("a plate gap leaves the background and overlay but no media layer", () => {
   const roles = layersAt(plan, 5_500).map((layer) => layer.role);
   assert.equal(roles.includes("media"), false);
   assert.equal(roles.includes("background"), true);
-  assert.equal(roles.includes("overlay"), true);
+  assert.equal(roles.includes("plate"), true);
+  assert.equal(roles.includes("stroke"), true);
 });
 
 test("a 全屏 block promotes the media layer instead of adding one", () => {

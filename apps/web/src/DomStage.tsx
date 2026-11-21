@@ -157,10 +157,10 @@ export function DomStage({ plan, atMs, playing, onNotice }: Props): React.JSX.El
       }),
     [plan, frameMs, exportRunning, degrade],
   );
-  // Where the box content belongs: after the background and 描边, before avatars/text/全屏/subtitles.
-  const insertionIndex = layers.findIndex(
-    (layer) => layer.role !== "background" && layer.role !== "overlay",
-  );
+  // Where the box content belongs: after the poster, the 底板 and the 描边, before
+  // avatars/text/全屏/subtitles — the same boundary `build_filtergraph` uses.
+  const ARTWORK_ROLES: ReadonlySet<string> = new Set(["background", "plate", "stroke"]);
+  const insertionIndex = layers.findIndex((layer) => !ARTWORK_ROLES.has(layer.role));
   /**
    * The scale to draw at.
    *

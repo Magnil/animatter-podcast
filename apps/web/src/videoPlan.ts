@@ -71,7 +71,12 @@ export interface VideoPlan {
   box: { x: number; y: number; w: number; h: number };
   output_duration_ms: number;
   background_url: string;
-  overlay_url: string | null;
+  /** The media-box plate on its own, at `plate_rect`. `null` for a pre-round-137 template. */
+  plate_url: string | null;
+  plate_rect: { x: number; y: number; w: number; h: number } | null;
+  /** The frame stroke, cropped to `stroke_rect`. */
+  stroke_url: string | null;
+  stroke_rect: { x: number; y: number; w: number; h: number } | null;
   text_url: string | null;
   segments: PlanSegment[];
   avatars: PlanAvatar[];
@@ -328,7 +333,7 @@ export interface DrawLayer {
    * Stable identity, used as the React key. It encodes the *role* so a re-render moves the same
    * element rather than unmounting an `<img>` and losing its decoded bitmap.
    */
-  role: "background" | "overlay" | "media" | "avatar" | "text" | "cue";
+  role: "background" | "plate" | "stroke" | "media" | "avatar" | "text" | "cue";
   kind: "image" | "video";
   url: string;
   /** Canvas-pixel placement. */
@@ -359,9 +364,13 @@ export interface DrawLayer {
  * The full stack to draw at one instant, **bottom-up**.
  *
  * This is the one place the layer order is written, and it mirrors `build_filtergraph`:
- * background → 描边 → box content → avatars → text → 全屏 → subtitles. The component draws this
- * array in order, so a reordering bug is a one-line change here that the test next to it fails
- * on, rather than a subtle mis-stack that only shows up in a screenshot comparison.
+ * background → 底板 → 描边 → box content → avatars → text → 全屏 → subtitles. The component
+ * draws this array in order, so a reordering bug is a one-line change here that the test next
+ * to it fails on, rather than a subtle mis-stack that only shows up in a screenshot comparison.
+ *
+ * The 底板/描边 pair is where the encoder puts `layers`: before the box chain, so the box content
+ * covers the plate but the stroke stays on top of the picture. Each carries **its own** rect
+ * (§19.35) — a plate drawn at the canvas rect would scale a 1444x815 image up to 1920x1080.
  */
 export function layersAt(plan: VideoPlan, atMs: number): DrawLayer[] {
   const stage = stageAt(plan, atMs);
@@ -369,9 +378,21 @@ export function layersAt(plan: VideoPlan, atMs: number): DrawLayer[] {
   const canvas = { x: 0, y: 0, w: plan.canvas.w, h: plan.canvas.h };
 
   layers.push({ role: "background", kind: "image", url: plan.background_url, rect: canvas, fit: "stretch" });
-  if (plan.overlay_url) {
-    // Above the poster but **below** the box: the chain overlays the artwork layers first.
-    layers.push({ role: "overlay", kind: "image", url: plan.overlay_url, rect: canvas, fit: "stretch" });
+  if (plan.plate_url && plan.plate_rect) {
+    // The media-box plate, in its own pixels. `stretch` is right here even though it is not the
+    // canvas: the rect *is* the plate's size, so stretching it to the rect is the identity.
+    layers.push({ role: "plate", kind: "image", url: plan.plate_url, rect: plan.plate_rect, fit: "stretch" });
+  }
+  if (plan.stroke_url) {
+    // Above the poster but **below** the box: the chain overlays the artwork layers first. The
+    // rect is the crop's own, so a moved box or a moved stroke needs no code change here.
+    layers.push({
+      role: "stroke",
+      kind: "image",
+      url: plan.stroke_url,
+      rect: plan.stroke_rect ?? canvas,
+      fit: "stretch",
+    });
   }
   // The 全屏 block is the *same* slot as the box content — promoted, not an extra layer. Two
   // elements would leave the box one visible underneath whenever a full-frame block is up.

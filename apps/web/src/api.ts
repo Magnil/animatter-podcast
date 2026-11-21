@@ -1369,7 +1369,10 @@ export interface VideoPlan {
   box: VideoRect;
   output_duration_ms: number;
   background_url: string;
-  overlay_url: string | null;
+  plate_url: string | null;
+  plate_rect: VideoRect | null;
+  stroke_url: string | null;
+  stroke_rect: VideoRect | null;
   text_url: string | null;
   segments: PlanSegment[];
   avatars: PlanAvatar[];
