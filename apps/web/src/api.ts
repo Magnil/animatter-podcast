@@ -904,6 +904,27 @@ export const api = {
     };
   },
 
+  /** Where every draggable box is now, and where the compile put it. */
+  videoLayout: (projectId: string) =>
+    request<VideoLayout>(`/api/projects/${projectId}/video/layout`),
+
+  /**
+   * Move one or more slots.
+   *
+   * Merges by key: sending `{texts: {title: rect}}` leaves the other slots alone, which is what
+   * a drag produces. `replace` rebuilds from empty instead, so a single slot can be returned to
+   * the compile's own position without resetting everything else.
+   */
+  updateVideoLayout: (projectId: string, layout: VideoLayoutIn) =>
+    request<VideoLayout>(`/api/projects/${projectId}/video/layout`, {
+      method: "PUT",
+      body: JSON.stringify(layout),
+    }),
+
+  /** Drop every override (⑮). Text, fonts and photos are a different column and survive. */
+  resetVideoLayout: (projectId: string) =>
+    request<VideoLayout>(`/api/projects/${projectId}/video/layout/reset`, { method: "POST" }),
+
   /**
    * Install a `.template` package chosen in the browser.
    *
@@ -1448,6 +1469,50 @@ export interface VideoTemplate {
     notes?: string[];
   };
   compiled_at: string | null;
+}
+
+/** One draggable box on the canvas editor. Same shape for the box, a text slot and an avatar. */
+export interface VideoSlotBox {
+  key: string;
+  kind: "box" | "text" | "avatar";
+  /** What the panel calls it: 「期号」, 「主播1」, 「素材框」. */
+  label: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  font_size: number | null;
+  /** The avatar's lit frame, so the editor draws a face instead of an empty box. */
+  lit_url?: string;
+}
+
+/**
+ * The canvas editor's world: where everything is **now**, plus where the compile put it.
+ *
+ * Both are needed. `compiled_*` is what 「恢复默认」 returns to, and comparing the two is the
+ * only way to say 「已改动」 without a second request.
+ */
+export interface VideoLayout {
+  canvas: { w: number; h: number };
+  box: VideoRect;
+  compiled_box: VideoRect;
+  plate: VideoRect | null;
+  stroke: VideoRect | null;
+  background_url: string;
+  plate_url: string;
+  stroke_url: string;
+  texts: VideoSlotBox[];
+  avatars: VideoSlotBox[];
+  /** True once any slot differs from where the compile put it. */
+  is_default: boolean;
+}
+
+export interface VideoLayoutIn {
+  box?: VideoRect;
+  texts?: Record<string, VideoRect>;
+  avatars?: Record<string, VideoRect>;
+  /** Rebuild from empty instead of merging — used by 「恢复默认」 on a single slot. */
+  replace?: boolean;
 }
 
 export interface VideoItem {

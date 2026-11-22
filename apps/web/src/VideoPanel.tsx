@@ -50,6 +50,7 @@ import { DomStage } from "./DomStage";
 import { CollapsiblePanel } from "./CollapsiblePanel";
 import { DeckPanel } from "./DeckPanel";
 import { TemplateTexts } from "./TemplateTexts";
+import { LayoutEditor } from "./LayoutEditor";
 import { formatTime } from "./format";
 import { playheadClock } from "./playheadClock";
 import { timeMapFrom, toOutputClamped, type Keep } from "./timeMap";
@@ -120,12 +121,13 @@ interface Props {
 /** The four things that used to be stacked; they are tabs now. */
 const VIDEO_TABS: { id: TabId; label: string; hint: string }[] = [
   { id: "template", label: "模板", hint: "素材框尺寸、头像绑定、框内默认填充" },
+  { id: "layout", label: "布局", hint: "拖动素材框、文字和头像的位置与大小" },
   { id: "subtitle", label: "字幕", hint: "烧进画面的字幕字号与底部留白" },
   { id: "library", label: "素材库", hint: "导入图片/视频，拖到视频轴上" },
   { id: "deck", label: "演示稿", hint: "从字幕分页，逐页改标题正文" },
 ];
 
-type TabId = "template" | "subtitle" | "library" | "deck";
+type TabId = "template" | "layout" | "subtitle" | "library" | "deck";
 
 /**
  * The real-time stage, subscribed to the 50 ms playhead clock.
@@ -196,6 +198,12 @@ export function VideoPanel({
    * silently showed nothing when the plan failed would look like a broken panel rather than a
    * degraded one.
    */
+  /**
+   * Bumped when the layout changes. The plan's digest covers the layout, so every baked band's
+   * URL changes with it — a preview that kept the old plan would show the film where the boxes
+   * used to be, and the canvas would be the only place the drag was visible.
+   */
+  const [layoutRevision, setLayoutRevision] = useState(0);
   const [plan, setPlan] = useState<VideoPlan | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
   // P2: the library, the dragged asset, and the selected block.
@@ -488,7 +496,7 @@ export function VideoPanel({
     return () => {
       cancelled = true;
     };
-  }, [versionId, timeline, template?.status, fontSize, marginV]);
+  }, [versionId, timeline, template?.status, fontSize, marginV, layoutRevision]);
 
   /**
    * Follow the playhead: 300 ms after it stops moving, redraw.
@@ -821,15 +829,28 @@ export function VideoPanel({
             that tab only, rather than making every tab pay for the widest one.
           */}
           <div
-            className={`video-stage${tab === "deck" ? " wants-wide" : ""}${tab === "template" ? " wants-mid" : ""}`}
+            className={`video-stage${tab === "deck" ? " wants-wide" : ""}${tab === "template" || tab === "layout" ? " wants-mid" : ""}`}
           >
             <div className="video-stage-main">
+              {/*
+                The 布局 tab owns the left pane: dragging a 1 px handle inside the 320 px settings
+                column is not a drag. The canvas draws the same stack the preview does — poster,
+                plate, 描边, faces — so what is being arranged is the film, not a wireframe of it.
+              */}
+              {tab === "layout" ? (
+                <LayoutEditor
+                  projectId={projectId}
+                  template={template}
+                  onNotice={onNotice}
+                  onChanged={() => setLayoutRevision((value) => value + 1)}
+                />
+              ) : null}
               {/*
                 The real-time stage when there is a plan, the still otherwise. One box, two
                 renderers: putting them side by side would be two previews of the same film that
                 could disagree, which is the whole problem this round removes.
               */}
-              {plan ? (
+              {tab === "layout" ? null : plan ? (
                 <div className="video-preview-box is-live" aria-busy={false}>
                   {/*
                     The stage reads the **fine** playhead clock, not `positionMs`.
@@ -969,6 +990,25 @@ export function VideoPanel({
                       />
                     </div>
                   </>
+                ) : null}
+
+                {tab === "layout" ? (
+                  <div className="video-style">
+                    <label className="field">
+                      <span>这块是什么</span>
+                      <p className="section-note" style={{ margin: 0 }}>
+                        素材框是成片里放图 / 视频的那块；期号、当期标题、页脚、四个头像框各自有
+                        位置。框里那两行给作者看的说明文字（role=content）不会画进成片，所以
+                        这里也没有它们。
+                      </p>
+                    </label>
+                    <p className="section-note">
+                      布局只存在这个项目里：换一份模板、重新编译 PSD 都不会丢，导出模板包也不会带走。
+                      想让别人的项目也用这套位置，改完再导出模板包——模板包里的位置会跟着更新吗？
+                      不会，包带走的是编译时的布局，这是故意的：模板是设计师的作品，位置是你对这个
+                      项目的决定。
+                    </p>
+                  </div>
                 ) : null}
 
                 {tab === "subtitle" ? (
