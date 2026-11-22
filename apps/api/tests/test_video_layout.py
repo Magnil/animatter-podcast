@@ -493,11 +493,36 @@ def test_replace_writes_the_whole_object(
 ) -> None:
     row = make_template(session, project_id, tmp_path / "build")
     video_layout.save(session, project_id, texts={"title": {"x": 100, "y": 100, "w": 617, "h": 109}})
-    video_layout.save(
-        session, project_id, texts={"title": TITLE_RECT}, replace=True
-    )
-    # Back to the compiled rect: the only way a drag can express "undo this one".
-    assert video_layout.layout_of(row).texts["title"].x == TITLE_RECT["x"]
+    video_layout.save(session, project_id, texts={"title": TITLE_RECT}, replace=True)
+    # A placement equal to the compiled one is **not stored**: an override means "this differs
+    # from where the compile put it", so storing an identity would leave `is_empty()` false for
+    # ever on a project nobody moved — and change all four cache keys for a save that changed no
+    # pixel.
+    assert video_layout.layout_of(row).is_empty()
+    assert "layout" not in json.loads(row.edits_json)
+
+
+def test_dragging_a_slot_back_to_where_it_was_forgets_the_override(
+    session: Session, project_id: str, tmp_path: Path
+) -> None:
+    row = make_template(session, project_id, tmp_path / "build")
+    moved = {"x": 100, "y": 100, "w": 617, "h": 109}
+    video_layout.save(session, project_id, texts={"title": moved})
+    assert not video_layout.layout_of(row).is_empty()
+    video_layout.save(session, project_id, texts={"title": TITLE_RECT})
+    assert video_layout.layout_of(row).is_empty()
+
+
+def test_a_two_pixel_difference_still_counts_as_moved(
+    session: Session, project_id: str, tmp_path: Path
+) -> None:
+    # Rounding inside the editor can produce a rect a pixel or two off the compiled one. Two is a
+    # real move: dropping it would make the stored layout disagree with the picture, and the drag
+    # would look like it did nothing on reload.
+    row = make_template(session, project_id, tmp_path / "build")
+    nudged = {**TITLE_RECT, "x": TITLE_RECT["x"] + 2}
+    video_layout.save(session, project_id, texts={"title": nudged})
+    assert video_layout.layout_of(row).texts["title"].x == nudged["x"]
 
 
 def test_a_template_that_is_not_ready_refuses_to_store_a_layout(
@@ -631,6 +656,35 @@ def test_editor_state_is_one_payload_for_the_whole_screen(
     # The name plate moved with its frame, and the editor sees the same number the render does.
     plate = next(item for item in state["texts"] if item["key"] == "avatar:头像1")
     assert plate["x"] == NAME_RECT["x"] + 500
+
+
+def test_the_editor_carries_the_poster_and_the_artwork_urls(
+    session: Session, project_id: str, tmp_path: Path
+) -> None:
+    """Decision ⑱: the canvas shows the film's own background, not a grey rectangle.
+
+    Three URLs and not one composited image: the artwork has to end up *under* the handles, and
+    a second bake of the same poster for the editor would be a fifth thing that can drift from
+    what the export draws.
+    """
+    row = make_template(session, project_id, tmp_path / "build")
+    state = video_layout.editor_state(row)
+    assert state["background_url"].endswith("/video/template/asset/background.png")
+    assert state["plate_url"].endswith("/video/template/asset/plate.png")
+    assert state["stroke_url"].endswith("/video/template/asset/overlay.png")
+    assert state["avatars"][0]["lit_url"].endswith("/video/template/asset/avatar0_lit.png")
+
+
+def test_a_template_that_is_not_ready_serves_no_images(
+    session: Session, project_id: str, tmp_path: Path
+) -> None:
+    """``asset_url`` returns ``""`` for a row that is not ready; the editor must cope."""
+    row = make_template(session, project_id, tmp_path / "build")
+    row.status = "compiling"
+    session.flush()
+    state = video_layout.editor_state(row)
+    assert state["background_url"] == ""
+    assert state["plate_url"] == ""
 
 
 def test_the_editor_lists_the_compiled_geometry_alongside(

@@ -304,7 +304,9 @@ def save(
             even=True,
         )
 
-    merged = layout_core.Layout(box=box_out, texts=texts_out, avatars=avatars_out)
+    merged = _drop_defaults(
+        row, layout_core.Layout(box=box_out, texts=texts_out, avatars=avatars_out)
+    )
     _write(row, merged)
     session.flush()
     log.info(
@@ -324,6 +326,57 @@ def reset(session: Session, project_id: str) -> VideoTemplate:
     session.flush()
     log.info("template.layout_reset", template=row.id)
     return row
+
+
+def _rect_of(slot: dict[str, Any]) -> dict[str, Any]:
+    """The ``rect`` of one compiled slot, or an empty dict when it has none."""
+    rect = slot.get("rect")
+    return rect if isinstance(rect, dict) else {}
+
+
+def _same(rect: dict[str, Any], compiled: dict[str, Any]) -> bool:
+    """Whether two rects are the same placement, within a pixel of rounding."""
+    if not compiled:
+        return False
+    return all(
+        abs(int(rect.get(axis) or 0) - int(compiled.get(axis) or 0)) <= 1
+        for axis in ("x", "y", "w", "h")
+    )
+
+
+def _drop_defaults(
+    row: VideoTemplate, layout: layout_core.Layout
+) -> layout_core.Layout:
+    """Remove placements that put a slot exactly where the compile did.
+
+    A drag that ends where it started, and a per-slot 「恢复默认」, both produce a rect equal to
+    the compiled one. Storing it would be harmless to the picture and harmful to everything that
+    reads the layout as a *difference*: ``is_empty`` would say 「已改动」 forever for a project
+    nobody touched, and the four cache keys would all change for a save that changed nothing.
+    """
+    compiled_box = template_service.box_rect_of(row)
+    box = layout.box
+    if box is not None and _same(box.as_dict(), compiled_box):
+        box = None
+    compiled_texts = {
+        str(slot.get("key") or ""): _rect_of(slot)
+        for slot in video_edits.slot_defaults(row)
+    }
+    compiled_avatars = {
+        str(slot.get("name") or ""): _rect_of(slot)
+        for slot in template_service.slot_list(row)
+    }
+    texts = {
+        key: item
+        for key, item in layout.texts.items()
+        if not _same(item.as_dict(), compiled_texts.get(key) or {})
+    }
+    avatars = {
+        key: item
+        for key, item in layout.avatars.items()
+        if not _same(item.as_dict(), compiled_avatars.get(key) or {})
+    }
+    return layout_core.Layout(box=box, texts=texts, avatars=avatars)
 
 
 def _write(row: VideoTemplate, layout: layout_core.Layout) -> None:
@@ -363,6 +416,22 @@ class SlotBox:
         return out
 
 
+def _asset_url(row: VideoTemplate, path: str) -> str:
+    return template_service.asset_url(row.project_id, path, row.status)
+
+
+def _avatar_lit(row: VideoTemplate, slot: dict[str, Any]) -> str:
+    """The portrait the editor should draw for this slot — the **replacement** when there is one.
+
+    ``slots_json`` records what the compile produced, so reading ``lit_path`` directly would show
+    the PSD's own photo in the editor after the user replaced it. The film would show the new
+    face and the canvas the old one; the canvas is the one people trust before pressing 导出.
+    """
+    replacement = video_edits.photo_paths(row, slot)
+    path = replacement[0] if replacement is not None else slot.get("lit_path")
+    return _asset_url(row, str(path or ""))
+
+
 def editor_state(row: VideoTemplate) -> dict[str, Any]:
     """Everything the canvas editor draws, resolved to where it currently is.
 
@@ -382,6 +451,17 @@ def editor_state(row: VideoTemplate) -> dict[str, Any]:
         "compiled_box": compiled_box,
         "plate": plate.as_rect() if plate is not None else None,
         "stroke": stroke.as_rect() if stroke is not None else None,
+        # The four images the editor draws underneath its handles, so the canvas is the poster
+        # the film will use rather than a grey rectangle (decision ⑱). Bunched together and
+        # named by role, because a client that receives one URL and not the others has to be
+        # able to tell which piece is missing.
+        # The **open** poster (no plate, no avatars) is the film's own stack's bottom layer:
+        # `background.png` has both baked in, so drawing the plate and the faces on top of it
+        # would show each of them twice — at exactly the same place, which is the kind of double
+        # image that reads as a rendering bug rather than as a compositing one.
+        "background_url": _asset_url(row, str(template_service.poster_of(row, bare=True))),
+        "plate_url": _asset_url(row, str(plate.path)) if plate is not None else "",
+        "stroke_url": _asset_url(row, str(stroke.path)) if stroke is not None else "",
         "texts": [
             SlotBox(
                 key=str(slot.get("key") or ""),
@@ -409,6 +489,7 @@ def editor_state(row: VideoTemplate) -> dict[str, Any]:
                 w=int((slot.get("rect") or {}).get("w") or 0),
                 h=int((slot.get("rect") or {}).get("h") or 0),
             ).as_dict()
+            | {"lit_url": _avatar_lit(row, slot)}
             for slot in avatars
         ],
         "changed": layout.as_json(),

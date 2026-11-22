@@ -130,6 +130,9 @@ class SlotBoxOut(BaseModel):
     w: int
     h: int
     font_size: int | None = None
+    #: The avatar's lit frame, for the editor to draw a real face in the handle. Empty for a
+    #: text slot and for a compile that is not ready.
+    lit_url: str = ""
 
 
 class LayoutOut(BaseModel):
@@ -145,6 +148,11 @@ class LayoutOut(BaseModel):
     compiled_box: dict[str, int]
     plate: dict[str, int] | None = None
     stroke: dict[str, int] | None = None
+    #: The poster and the two artwork pieces, so the canvas shows the film's own background
+    #: rather than a placeholder colour (decision ⑱).
+    background_url: str = ""
+    plate_url: str = ""
+    stroke_url: str = ""
     texts: list[SlotBoxOut]
     avatars: list[SlotBoxOut]
     changed: dict[str, object]
