@@ -107,6 +107,52 @@ EDL 音频——否则一条 105 分钟的片子要多烧十几分钟 CPU。见 
 4. `routers/` 只做参数校验与权限（本地无鉴权，但要有 CSRF/Origin 校验）。
 5. 前端不得直接拼 ffmpeg 参数，也不得持有 API Key。
 
+### 4.1 模块清单（`core/` / `media/` / `services/`）
+
+上面那张图只画到 `template.py` / `video.py` 这一层——§19 的模块数量在两轮提速之后翻了一倍，
+所以单独列一张表。只写**名字不能说明的那句**，名字能说明的不写。
+
+| `core/`（纯函数） | 一句话 |
+|---|---|
+| `layout.py` | 用户挪过的位置（§19.38）：`scale_art` / `scale_font` / `cascade_name_plate`，编译几何是默认值 |
+| `textslot.py` | 哪些 PSD 文字层变成可编辑槽，以及它们的默认值（§19.12） |
+| `textspan.py` | `**...**` 标出的变色段（§19.13） |
+| `video_box.py` | 一个时间轴块的时长怎么分给它的几张图（§19.3.1） |
+| `video_avatar.py` | 谁说谁亮：lit/dim 的算术（§19.5） |
+| `video_workers.py` | 按空闲内存决定开几个 ffmpeg（§19.34） |
+| `deck.py` / `slide.py` | 文稿→页面切分、页面文字排版（§19.6） |
+| `video_anchor.py` | 句子起点网格、吸附、跨锚点检查（§19.3） |
+
+| `media/`（ffmpeg 与 PIL） | 一句话 |
+|---|---|
+| `template.py` | PSD → 底图/底板/描边/头像槽/文字槽（§19.2、§19.35） |
+| `plate_bake.py` | 把不变的三层焊成一张 PNG，以及被头像盖住的文字（§19.30） |
+| `box_track.py` | 素材框内容：很多段进、**一个** overlay 出（§19.5） |
+| `avatar_track.py` | lit/dim 静帧拼成一条 RGBA 片（§19.5） |
+| `video_chunks.py` | 把整片切成一个 ffmpeg 进程能渲染的块（§19.27） |
+| `text_overlay.py` / `fonts.py` | 可编辑文字画成透明 PNG / 字体发现（含 `data/fonts/`） |
+| `subtitle_ass.py` / `cue_png.py` | 烧进画面的字幕（ASS）/ 预览用的单条字幕条带 PNG |
+| `backdrop.py` / `slide_render.py` | `blur_fill` 底衬 / 演示稿页面 PNG |
+| `memory.py` | 编码前的内存闸门（低内存时降并行而不是 OOM） |
+
+| `services/`（事务边界） | 一句话 |
+|---|---|
+| `video_templates.py` | 模板生命周期：导入、编译、确认、槽几何（§19.2） |
+| `video_template_package.py` | `.template` 包：导出、导入、七类拒绝（§19.36） |
+| `video_layout.py` | 有效几何的唯一读取点：编译几何 + 用户覆盖（§19.38） |
+| `video_edits.py` | 文字覆盖与换头像（§19.12） |
+| `video_avatars.py` | 槽→说话人绑定，以及它隐含的亮暗时间线（§19.5） |
+| `video_plan.py` | 整片计划：前端实时预览的数据模型（§19.31.2） |
+| `video_render.py` | 视频导出与静帧预览（后台任务，可取消） |
+| `video_assets.py` / `video.py` / `video_anchors.py` | 素材库 / 时间轴块与吸附 / 编辑后修锚点（§19.3、§19.4） |
+
+三个边界值得单独记一句：
+
+* `video_layout.py` 是**唯一**读 `slots_json[*]["rect"]` 的 service——别处要位置就问它，
+  否则「用户挪过」这件事会有一半代码不知道（§19.38.1）；
+* `template.py` 与 `plate_bake.py` 只被 `services/` 调用，不碰数据库；
+* `core/` 里唯一需要外部数字的是 `video_workers.py`，它的入参是空闲内存 GB，不是 `psutil`。
+
 ---
 
 ## 5. 数据模型
@@ -219,31 +265,55 @@ job(id TEXT PK, kind TEXT, payload_json TEXT,
       created_at, started_at, finished_at, error TEXT)
 
 -- 视频（§19）：模板 / 素材库 / 演示稿 / 时间轴。完整字段见 docs/video.md §19.4，
--- 这里只列一条这一轮加的东西——
+-- 这里只列两条容易记错的——
 -- video_asset.original_name：素材落盘按 sha256 改名，界面要显示导入时的文件名，
 --   所以名字必须存下来（文件名反推不出来）。空串 = 这一行早于这一列，显示时退回哈希名。
+-- video_template.edits_json：**三个写者共享一个 JSON 列**（文字覆盖 / 换头像 / 布局覆盖），
+--   每个写者都必须保留另外两个键；布局项与编译值差 ≤1 px 时会被丢掉，这样 is_default 才诚实。
 ```
 
 ### 5.2 文件树
 
 ```
 data/
+├─ app.db                        # SQLite（WAL）
+├─ fonts/                        # 模板包带进来的字体（§19.36），fonts.set_private_dir() 加进扫描目录
 └─ projects/<project_id>/
-   ├─ project.json              # 轻量快照，可读
+   ├─ <项目名>.project           # 轻量快照，可读（文件名跟项目名走）
    ├─ media/
-   │   ├─ original.<ext>        # 原始，只读，永不变（剪辑永远读它）
-   │   ├─ asr_input.mp3         # 16k 单声道，仅供上传
-   │   └─ derived/              # 预览成片、临时分段
+   │   └─ original.<ext>        # 原始，只读，永不变（剪辑永远读它）
    ├─ transcripts/
    │   ├─ v1.raw.json           # 服务端原样，存档
    │   └─ v1.normalized.json    # 归一化 token 流快照（供 diff）
    ├─ peaks/
    │   └─ <sha256>.pkc          # 多级波形峰值，二进制
+   ├─ silences/
+   │   └─ <sha256>.v1--35db-0.3s.json   # 按媒体 sha + 参数缓存；改了门限就是另一个文件
+   ├─ derived/
+   │   └─ asr/asr_input.mp3     # 16k 单声道，仅供上传（转写完可以删，下次转写会重建）
    ├─ edits/
    │   └─ ops.jsonl             # 【未实现】最初设计的追加式事件日志；撤销实际走 edit_op 表
    ├─ exports/
-   └─ logs/
+   │   ├─ <ver_id>-<edlhash12>.m4a / .wav     # 成片音频（拷到用户文件夹后这份仍留着）
+   │   └─ exp_<id>.srt          # 导出过的时间轴文本
+   ├─ logs/
+   └─ video/                    # §19 的全部产物，四类各一个目录
+      ├─ assets/<sha256>.<ext>  # 素材库：拷进来的图与视频，按内容哈希改名
+      ├─ decks/<deck_id>/       # 演示稿：每页一张 PNG
+      ├─ out/                   # 静帧预览、chunk、中间图层、导出缓存
+      └─ templates/
+         ├─ source-<sha12>.psd        # 导入时拷的 PSD 副本（原文件可以删）
+         ├─ build-<sha12>/            # 编译产物（§19.35：底图/底板/描边各一张，各带 rect）
+         │  ├─ background{,_open,_bare,_bare_open}.png
+         │  ├─ plate.png  overlay.png
+         │  ├─ avatar<N>_{lit,dim,frame,mask}.png
+         │  └─ edits/                 # 换头像写这里；asset_path() 也只查这两个目录
+         └─ packages/<sha12>/         # 导入 .template 解出来的内容（manifest.json 当 source_path）
 ```
+
+**`video/` 下四个目录不是同一种东西**：`assets/` 是用户素材（可删，删了时间轴会警告）、
+`decks/` 是可重建的派生物、`out/` 全是缓存（删了只会重算）、`templates/` 是唯一「删了就要重新
+导入 PSD」的东西。清理磁盘时按这个顺序动手。
 
 **原则：原始媒体 immutable，所有编辑是"对原文的引用"。** 用户删了 3 小时音频，磁盘上也只多一个 EDL。
 

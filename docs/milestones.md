@@ -29,6 +29,40 @@
 | **§ 视频 P5 ✅** | 模板可编辑（文字/头像可换）、双时间轴界面、S 与全屏、随时导出、分块渲染 | ✅ 见下方「视频 P5 及之后（2026-11-12 → 11-13）」 |
 | M6 | 稳定性：崩溃恢复、错误提示、成本面板、打包 | 断电重开不丢编辑（未开始，见 `todolist.md` E2） |
 
+### 进度一览（2026-11-14 订正）
+
+```
+M0 ✅ 骨架          M1 ✅ 转写闭环       M2a ✅ 热词库
+M2b ✅ LLM 校对     M2c ⏸  影子测试(推迟)  M3 ✅ 校正台 UI
+M4 ✅ 剪辑+时间轴   M5a ✅ 字幕导出       M5b ✅ 文稿(md)
+M6 ⬜ 稳定性
+工作台 ✅  时间轴对齐(整体) ✅  视频 P1–P4 ✅（2026-11-11）
+视频 P5 ✅（2026-11-12 → 11-13）：模板可编辑、双时间轴、S/全屏、分块渲染、1080p24
+视频 P6 ✅（2026-11-14）：过滤线程数封顶、静帧预合成（chunk 2 33 s / 3.03 GB）、top 链跳过
+真机成片 ✅  3,695.9 秒 / 88,702 帧 / 24 fps（第 121 轮，两个 bug 修完后重导）
+视频 P7 ✅ **全部实施完成**（11-17 方案 / 11-18 P0 / 11-19 P1、P2 / 11-20 E1、E2、E3）
+        已做：静帧预览 1.02–1.33 s → **0.63–0.93 s**；**DOM 分层实时预览已验收**——
+        45.8 fps / 0 丢帧 / 跨块切换 75 ms / 图层粒度 p50 32 ms / 一致性 20 时刻 20/20。
+        P2 已做：**双 `<video>` 槽位预热**（切点后 600 ms 内 0 帧无画面，关掉预热则每次切点都有）
+        + **四条降级路径**；**720p 代理按实测决定不做**（D23，§19.32）。
+        E1 已做：**烘焙 plate** ——整片导出 27.84 → **19.46 min（−30.1 %）**，逐帧 PSNR `inf`，
+        两个 mp4 MD5 相同。
+        E2/E3 已做：`filter_complex_threads` 4→12（整片 **19.46 → 17.67 min，−9.21 %**，输出**逐位相同**）+ 按内存算的
+        并行度（可选，1.09–1.23×）+ `-refs 1 -bf 0` 开关（可选，−4 %，+8 % 体积）；
+        **E4 的 4K 代理判定不做**——前提（chunk 峰值 5.52 GB）复现不出来，真实值 2.84 GB。
+        **导出侧到这里做完了**：整片 27.84 → **17.67 min（累计 −36.6 %）**。
+        设计与实测并入 `docs/video.md` §19.31–§19.34（预览架构、播放与降级、静帧、导出并行与编码），
+        决策 D19–D23
+视频 P8 ✅（11-21）：模板编译产物拆分——底板/描边各带 rect，**diff px = 0**、PSNR `inf`
+视频 P9 ✅（11-22）：模板包（`.template` 导出/导入）+ 默认模板随包发、新项目自带
+视频 P10 ✅（11-22）：布局覆盖层——画布编辑器拖框、`edits_json.layout`、四个缓存键带布局签名
+```
+
+**P7 的预览侧三档（P0 / P1 / P2）与导出侧的全部档位（E1 / E2 / E3，E4 判定不做）已落地**，
+判据分别在下文五份「交付清单」里。**现在已经能做实时预览了**——播放头一动，画面就跟着走，跨块不再露出
+空白帧；导出从 **27.84 min 降到 17.67 min**（同一台机器、同一份片子、都是整片实跑），
+2 个 worker 打开后还能再快 1.09–1.23×。
+
 ### 视频 P1 交付清单（2026-11-11）
 
 设计见 `docs/video.md` §19，完成状态表见本文件下方「视频 P1–P4 交付清单」。
@@ -187,87 +221,6 @@ D:\Videos\费那奇MV-1080p24-v2.mp4
 | 全透明的 top 链不建 | `services/video_render.py::_needs_top_chain` | chunk 8 **267.4 s → 206.4 s**，输出逐帧 **PSNR inf**、字节数不变 |
 | 一个开关可逐字节回退 | `config.video_still_composite` | 置 `false` 走原来的实时链，图里仍有 `boxblur`（两条路径都有测试） |
 | 预合成残留不会跨导出让复用 | `_render_picture` 每块导出前删 `still-*.png`、收尾再删一遍 | 失败残留与下次同名，不删会被静默复用 |
-
-
-### 视频 P8 交付清单（2026-11-21，第 137 轮）
-
-模板的**布局变成数据**。设计、四次失败与实测在 `docs/video.md` §19.35，决策 D25。
-
-| 交付物 | 落在哪 | 验收 |
-|---|---|---|
-| 底板拆成独立 `plate.png`，描边裁到自身 bbox，两个 rect 进 `slots_json.art` | `media/template.py`、`services/video_templates.py` | 重组后与拆分前 **diff px = 0**（两个真实项目、四个组合） |
-| 渲染侧按 rect 摆 art：plate/stroke 各一层 | `services/video_render.py`、`services/video_plan.py`、`routers/video_plan.py` | `render_still` 新旧各渲一张，**PSNR `inf`** |
-| 框内空隙从 plate 裁（坐标减 plate 原点） | `services/video_box.py::plan(template_origin=)` | 摘录与旧 poster 裁切 **diff px = 0** |
-| 布局进四个缓存键 | 导出签名 / 静帧 digest / plan digest / `plate_bake` digest | 挪 plate rect 后四个键全部变化 |
-| 前端 plan 字段 `overlay_url` → `plate_url`/`plate_rect` + `stroke_url`/`stroke_rect` | `apps/web/src/videoPlan.ts`、`DomStage.tsx`、`api.ts` | 层序 `background → plate → stroke → media`，plate 用自己 rect |
-| 老行（无 `art`）不迁移也不降级 | `art_of()` 的兼容分支、`poster_of()` 的回退 | `tests/test_video_template_art.py` 8 条 |
-
-### 视频 P9 交付清单（2026-11-22，第 138 轮）
-
-模板**可以交出去**了：一个 `.template` 文件带走海报、底板、描边、四个头像和两套字体。设计、
-拒绝表与那个只坏在真机的 bug 在 `docs/video.md` §19.36–§19.37，决策 D26。
-
-| 交付物 | 落在哪 | 验收 |
-|---|---|---|
-| 导出 `.template`（zip：`manifest.json` + `art/*.png` + `fonts/*.ttf`） | `services/video_template_package.py::build_package`、`GET …/video/template/package` | 真模板 1,723,077 B / 25 成员；包里**无** `edits_json`、`bindings_json`，`content` 槽被剥 |
-| 导入（唯一一条外部字节变磁盘文件的路） | `import_package`、`POST …/video/template/package` | 22 张图**逐字节**相同；再导出 25 成员 `lost=0 changed=0`；五个指针全落新目录 |
-| 七类拒绝（炸弹 / 穿越 / 后缀 / 无 manifest / 新 schema / 哈希不符 / 缺 art） | `read_package` / `_safe_name` / `_check_hashes` | `tests/test_video_template_package.py` 17 条，判据是错误码 |
-| 默认模板随包发布，新项目自动装 | `defaults/default.template`、`services/projects.py::create_project`、`POST …/template/default` | `test_video_template_default.py` 8 条；内置包装坏时项目仍建成 |
-| 占位头像一张人像 + 各槽自身环色 | `.tmp/work/make_default.py`（一次性生成脚本） | 四张 `lit` 内圈一致（8×8 缩略两两差 ≤ 12，实测 5）、环色 ≥ 2 种 |
-| 字体跟着包走 | `services/video_template_package.py::_install_fonts`、`media/fonts.py::set_private_dir` | 导入后 `resolve("Baigo")` / `resolve("Alimama ShuHeiTi")` 非空 |
-| 界面上五条路 | `apps/web/src/VideoPanel.tsx`、`templatePackage.ts`、`download.ts` | 三条 CDP 走查全通过（按钮在视口内、不重叠、accept 含 `.template`） |
-
-### 视频 P10 交付清单（2026-11-22，第 139 轮）
-
-位置与大小不再是设计师的单方面决定。每个框都能在浏览器里拖，改的是 `edits_json.layout`，
-**`slots_json` 不被改写**——重编译不会吞掉用户的布局。设计在 `docs/video.md` §19.38，决策 D27。
-
-| 交付物 | 落在哪 | 验收 |
-|---|---|---|
-| 布局覆盖层（`box` / `texts` / `avatars`，每项 `{x,y,w,h,font_size?}`） | `core/layout.py`、`services/video_layout.py` | `tests/test_video_layout.py` 38 条；空布局时每个框逐字段等于编译值 |
-| 挪框时底板/描边按比例跟、字号跟两轴小者、头像名按位移平移 | `scale_art` / `scale_font` / `cascade_name_plate` | 同尺寸恒等（`{238,206,1444,815}` 不变）；标题 `617×109→720×130` 时 56→64 px |
-| 四个缓存键都带 `layout.signature()` | `video_edits.signature`、`_still_digest`、`_video_signature`、`video_plan._digest` | 移动标题后同刻静帧 URL 换 digest；`sort_keys` 保证顺序无关 |
-| 三个端点 + 两类拒绝 | `GET/PUT …/video/layout`、`POST …/layout/reset` | `content` 槽 → `layout_slot_fixed` 409；不存在的 key → `layout_slot_unknown` 404；未就绪 → `template_not_ready` |
-| 画布编辑器（模板页签里「编辑布局…」打开的弹窗） | `apps/web/src/LayoutEditor.tsx`、`layoutMath.ts` | `layoutMath.test.mjs` 28 条；`check-r139-layout-editor.mjs` 五组判据 `problems: []` |
-| 手势：松手提交 / 方向键 400 ms 防抖 / 缩放不吸附 / 框偶数 / 头像锁比例 | `layoutMath.ts` | 拖动一次一个请求；拖后 `location.reload()`「已改动」仍在 |
-| 两个恢复默认 | 单块 `PUT`、全部 `POST …/layout/reset` | 「全部恢复默认」后库里 `is_default=true`、`changed == {}` |
-| 画面只动该动的地方 | `video_render` 走 `video_layout` | 移动标题前后静帧 `ImageChops.difference` bbox = `(1002, 82, 1698, 181)` |
-
-第 140 轮把入口从「第五个页签」改成模板页签里的「编辑布局…」按钮 + 模态框：布局一次调完就不再动，页签等于每期都问一句。对话框 980 px，画布实测 944 px，比页签里的 478 px 宽一倍；页脚只有「关闭」。决策 D28。
-
-### 进度一览（2026-11-14 订正）
-
-```
-M0 ✅ 骨架          M1 ✅ 转写闭环       M2a ✅ 热词库
-M2b ✅ LLM 校对     M2c ⏸  影子测试(推迟)  M3 ✅ 校正台 UI
-M4 ✅ 剪辑+时间轴   M5a ✅ 字幕导出       M5b ✅ 文稿(md)
-M6 ⬜ 稳定性
-工作台 ✅  时间轴对齐(整体) ✅  视频 P1–P4 ✅（2026-11-11）
-视频 P5 ✅（2026-11-12 → 11-13）：模板可编辑、双时间轴、S/全屏、分块渲染、1080p24
-视频 P6 ✅（2026-11-14）：过滤线程数封顶、静帧预合成（chunk 2 33 s / 3.03 GB）、top 链跳过
-真机成片 ✅  3,695.9 秒 / 88,702 帧 / 24 fps（第 121 轮，两个 bug 修完后重导）
-视频 P7 ✅ **全部实施完成**（11-17 方案 / 11-18 P0 / 11-19 P1、P2 / 11-20 E1、E2、E3）
-        已做：静帧预览 1.02–1.33 s → **0.63–0.93 s**；**DOM 分层实时预览已验收**——
-        45.8 fps / 0 丢帧 / 跨块切换 75 ms / 图层粒度 p50 32 ms / 一致性 20 时刻 20/20。
-        P2 已做：**双 `<video>` 槽位预热**（切点后 600 ms 内 0 帧无画面，关掉预热则每次切点都有）
-        + **四条降级路径**；**720p 代理按实测决定不做**（D23，§19.32）。
-        E1 已做：**烘焙 plate** ——整片导出 27.84 → **19.46 min（−30.1 %）**，逐帧 PSNR `inf`，
-        两个 mp4 MD5 相同。
-        E2/E3 已做：`filter_complex_threads` 4→12（整片 **19.46 → 17.67 min，−9.21 %**，输出**逐位相同**）+ 按内存算的
-        并行度（可选，1.09–1.23×）+ `-refs 1 -bf 0` 开关（可选，−4 %，+8 % 体积）；
-        **E4 的 4K 代理判定不做**——前提（chunk 峰值 5.52 GB）复现不出来，真实值 2.84 GB。
-        **导出侧到这里做完了**：整片 27.84 → **17.67 min（累计 −36.6 %）**。
-        设计与实测并入 `docs/video.md` §19.31–§19.34（预览架构、播放与降级、静帧、导出并行与编码），
-        决策 D19–D23
-视频 P8 ✅（11-21）：模板编译产物拆分——底板/描边各带 rect，**diff px = 0**、PSNR `inf`
-视频 P9 ✅（11-22）：模板包（`.template` 导出/导入）+ 默认模板随包发、新项目自带
-视频 P10 ✅（11-22）：布局覆盖层——画布编辑器拖框、`edits_json.layout`、四个缓存键带布局签名
-```
-
-**P7 的预览侧三档（P0 / P1 / P2）与导出侧的全部档位（E1 / E2 / E3，E4 判定不做）已落地**，
-判据分别在下文五份「交付清单」里。**现在已经能做实时预览了**——播放头一动，画面就跟着走，跨块不再露出
-空白帧；导出从 **27.84 min 降到 17.67 min**（同一台机器、同一份片子、都是整片实跑），
-2 个 worker 打开后还能再快 1.09–1.23×。
 
 ### 视频 P7 · P0 交付清单（2026-11-18，第 128 轮）
 
@@ -452,6 +405,52 @@ M6 ⬜ 稳定性
 **两条口径**：① 整片的 2 worker 导出仍然没有真机跑过（内存 1.4 GB 那台起不来）；
 ② 「取消后 0 个 ffmpeg」量的是 `tasklist`，不是 `Popen` 的返回值——返回值只能证明调用过 `kill()`。
 
+### 视频 P8 交付清单（2026-11-21，第 137 轮）
+
+模板的**布局变成数据**。设计、四次失败与实测在 `docs/video.md` §19.35，决策 D25。
+
+| 交付物 | 落在哪 | 验收 |
+|---|---|---|
+| 底板拆成独立 `plate.png`，描边裁到自身 bbox，两个 rect 进 `slots_json.art` | `media/template.py`、`services/video_templates.py` | 重组后与拆分前 **diff px = 0**（两个真实项目、四个组合） |
+| 渲染侧按 rect 摆 art：plate/stroke 各一层 | `services/video_render.py`、`services/video_plan.py`、`routers/video_plan.py` | `render_still` 新旧各渲一张，**PSNR `inf`** |
+| 框内空隙从 plate 裁（坐标减 plate 原点） | `services/video_box.py::plan(template_origin=)` | 摘录与旧 poster 裁切 **diff px = 0** |
+| 布局进四个缓存键 | 导出签名 / 静帧 digest / plan digest / `plate_bake` digest | 挪 plate rect 后四个键全部变化 |
+| 前端 plan 字段 `overlay_url` → `plate_url`/`plate_rect` + `stroke_url`/`stroke_rect` | `apps/web/src/videoPlan.ts`、`DomStage.tsx`、`api.ts` | 层序 `background → plate → stroke → media`，plate 用自己 rect |
+| 老行（无 `art`）不迁移也不降级 | `art_of()` 的兼容分支、`poster_of()` 的回退 | `tests/test_video_template_art.py` 8 条 |
+
+### 视频 P9 交付清单（2026-11-22，第 138 轮）
+
+模板**可以交出去**了：一个 `.template` 文件带走海报、底板、描边、四个头像和两套字体。设计、
+拒绝表与那个只坏在真机的 bug 在 `docs/video.md` §19.36–§19.37，决策 D26。
+
+| 交付物 | 落在哪 | 验收 |
+|---|---|---|
+| 导出 `.template`（zip：`manifest.json` + `art/*.png` + `fonts/*.ttf`） | `services/video_template_package.py::build_package`、`GET …/video/template/package` | 真模板 1,723,077 B / 25 成员；包里**无** `edits_json`、`bindings_json`，`content` 槽被剥 |
+| 导入（唯一一条外部字节变磁盘文件的路） | `import_package`、`POST …/video/template/package` | 22 张图**逐字节**相同；再导出 25 成员 `lost=0 changed=0`；五个指针全落新目录 |
+| 七类拒绝（炸弹 / 穿越 / 后缀 / 无 manifest / 新 schema / 哈希不符 / 缺 art） | `read_package` / `_safe_name` / `_check_hashes` | `tests/test_video_template_package.py` 17 条，判据是错误码 |
+| 默认模板随包发布，新项目自动装 | `defaults/default.template`、`services/projects.py::create_project`、`POST …/template/default` | `test_video_template_default.py` 8 条；内置包装坏时项目仍建成 |
+| 占位头像一张人像 + 各槽自身环色 | `.tmp/work/make_default.py`（一次性生成脚本） | 四张 `lit` 内圈一致（8×8 缩略两两差 ≤ 12，实测 5）、环色 ≥ 2 种 |
+| 字体跟着包走 | `services/video_template_package.py::_install_fonts`、`media/fonts.py::set_private_dir` | 导入后 `resolve("Baigo")` / `resolve("Alimama ShuHeiTi")` 非空 |
+| 界面上五条路 | `apps/web/src/VideoPanel.tsx`、`templatePackage.ts`、`download.ts` | 三条 CDP 走查全通过（按钮在视口内、不重叠、accept 含 `.template`） |
+
+### 视频 P10 交付清单（2026-11-22，第 139 轮）
+
+位置与大小不再是设计师的单方面决定。每个框都能在浏览器里拖，改的是 `edits_json.layout`，
+**`slots_json` 不被改写**——重编译不会吞掉用户的布局。设计在 `docs/video.md` §19.38，决策 D27。
+
+| 交付物 | 落在哪 | 验收 |
+|---|---|---|
+| 布局覆盖层（`box` / `texts` / `avatars`，每项 `{x,y,w,h,font_size?}`） | `core/layout.py`、`services/video_layout.py` | `tests/test_video_layout.py` 38 条；空布局时每个框逐字段等于编译值 |
+| 挪框时底板/描边按比例跟、字号跟两轴小者、头像名按位移平移 | `scale_art` / `scale_font` / `cascade_name_plate` | 同尺寸恒等（`{238,206,1444,815}` 不变）；标题 `617×109→720×130` 时 56→64 px |
+| 四个缓存键都带 `layout.signature()` | `video_edits.signature`、`_still_digest`、`_video_signature`、`video_plan._digest` | 移动标题后同刻静帧 URL 换 digest；`sort_keys` 保证顺序无关 |
+| 三个端点 + 两类拒绝 | `GET/PUT …/video/layout`、`POST …/layout/reset` | `content` 槽 → `layout_slot_fixed` 409；不存在的 key → `layout_slot_unknown` 404；未就绪 → `template_not_ready` |
+| 画布编辑器（模板页签里「编辑布局…」打开的弹窗） | `apps/web/src/LayoutEditor.tsx`、`layoutMath.ts` | `layoutMath.test.mjs` 28 条；`check-r139-layout-editor.mjs` 五组判据 `problems: []` |
+| 手势：松手提交 / 方向键 400 ms 防抖 / 缩放不吸附 / 框偶数 / 头像锁比例 | `layoutMath.ts` | 拖动一次一个请求；拖后 `location.reload()`「已改动」仍在 |
+| 两个恢复默认 | 单块 `PUT`、全部 `POST …/layout/reset` | 「全部恢复默认」后库里 `is_default=true`、`changed == {}` |
+| 画面只动该动的地方 | `video_render` 走 `video_layout` | 移动标题前后静帧 `ImageChops.difference` bbox = `(1002, 82, 1698, 181)` |
+
+第 140 轮把入口从「第五个页签」改成模板页签里的「编辑布局…」按钮 + 模态框：布局一次调完就不再动，页签等于每期都问一句。对话框 980 px，画布实测 944 px，比页签里的 478 px 宽一倍；页脚只有「关闭」。决策 D28。
+
 ### M0 交付清单（2026-11-05）
 
 ```
@@ -519,4 +518,3 @@ samples/speech.wav  17.6s 中文测试音频（SAPI 合成）
 **M1 之前不要动前端**。转写链路的不确定性（鉴权、地域、模型名、OSS 头）必须在 CLI 里先全部打穿。
 
 ---
-

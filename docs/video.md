@@ -24,6 +24,13 @@
 方案文档 `docs/video-preview-and-export.md`（章节号 §20），七个阶段全部落地或判定之后，还成立的
 结论并进了本章，那份文档已删除（第 133 轮）。**源码里的 `§20.x` 已全部改指本章的 `§19.x`。**
 
+**§19.35–§19.38 是「模板」那四期工程**（第 137–140 轮）：编译产物拆分成三张图（§19.35）、
+`.template` 模板包与默认模板（§19.36）、十八个取舍（§19.37）、布局覆盖层与画布编辑器（§19.38）。
+当时排期里还留着「第四期：文档（§19.13 重写、新决策进 `decisions.md`、`CHANGELOG`）」——
+**它是分次落地的，没有单独的一节**：D25–D28 写进了 `docs/decisions.md`，P8–P10 写进了
+`docs/milestones.md`，第 137–140 轮写进了 `docs/CHANGELOG.md`，而 §19.13 的过时说法在第 141 轮
+统一清掉（`§19.13` 只讲**模板怎么导入与怎么改**，布局在 §19.38）。
+
 ### 19.1 边界：这个视频是什么
 
 它不是一个剪辑器，是**把已经剪好的音频套进一个模板**，产出一条能上传的视频：
@@ -224,11 +231,23 @@ video_template(
   source_path TEXT,            -- 用户导入的 .psd（只留档，渲染不读它）
   source_sha256 TEXT,          -- 重复导入同一份时直接复用编译产物
   canvas_w INT, canvas_h INT,  -- PSD 画布尺寸
-  background_path TEXT,        -- 编译产物：无头像、无框内容（含底板，老形状）
-  overlay_path TEXT,           -- 编译产物：框的描边，盖在框内容上方（第 137 轮起裁到自身 bbox）
+  background_path TEXT,        -- 编译产物：海报（头像压平、无框内容、含底板）。
+                               -- **同目录还有三个 twin**：background_open（无头像）、
+                               -- background_bare（无头像、含底板）、background_bare_open
+                               -- （无头像无底板，第 137 轮起渲染与预览都用它）。
+                               -- 这一列同时是其他编译产物的**锚点**（都在它的 parent 里）。
+  overlay_path TEXT,           -- 编译产物：框的描边，盖在框内容上方（第 137 轮起**裁到自身 bbox**，
+                               -- 所以要配 slots_json.art.stroke 的 rect 才能摆对）
   box_rect TEXT,               -- json {"x","y","w","h"}，画布坐标
   box_fit_default TEXT,        -- contain|cover|blur_fill|stretch
-  slots_json TEXT,             -- json: 头像位 + 文本位 + art（plate/stroke 的文件名与 rect，§19.35）
+  slots_json TEXT,             -- json: 头像位 + 文本位 + art（plate/stroke 的文件名与 rect，§19.35）。
+                               -- 这是**编译出来的几何**，不是用户摆的位置——问位置要过
+                               -- services/video_layout.py（§19.38）
+  bindings_json TEXT,          -- json {"<槽名>": <speaker local_id>}（§19.14）。单独一列因为
+                               -- slots_json 每次编译都会被 PSD 重写
+  edits_json TEXT,             -- json {"texts":{...}, "photos":{...}, "layout":{...}}（§19.12、§19.38）。
+                               -- **三个写者共享这一列**（改文字 / 换头像 / 挪位置），
+                               -- 每个写者都必须保留另外两个键
   status TEXT,                 -- pending|compiling|ready|failed
   error TEXT,                  -- status=failed 时的人话原因
   compiled_at TEXT
@@ -834,14 +853,20 @@ alpha 也参与比较 —— 照片是白色线稿，底板也是白的，只比
 底板 → 素材框 → 头像 → **文字** → 字幕。它不是 `layers` 里的一项，因为那个列表无法表达
 「排在另一个列表之后」这件事。
 
-#### 19.13.7 未绑定的头像：一个 P3 起就存在的缺陷
+#### 19.13.7 未绑定的头像：从 P3 起就是「什么都不画」
 
-只要**有一个**头像槽有轨道，底板就切换成 `background_bare.png`（四个头像全被挖掉），
-而轨道只覆盖**已绑定**的槽。样例 4 槽绑 2 个说话人 —— 于是另外两张脸在每一帧里都是空的。
-这不是这轮引入的：`_base_background` 从 P3 起就是这个行为，只是没有测试看过未绑定槽的像素。
+只要**有一个**头像槽有轨道，底板就切换成**去掉头像的那一版**，而轨道只覆盖**已绑定**的槽。
+样例 4 槽绑 2 个说话人 —— 于是另外两个位置在每一帧里都是空的。这不是这一轮引入的：
+`_base_background` 从 P3 起就是这个行为，只是没有测试看过未绑定槽的像素。
 
-现在多一份 `static_avatar_layers`：没有轨道的槽各画一张静态 lit PNG。没有绑定的时候它是空的
-（那时候底板本来就是完整的 `background.png`，再画一遍会重影）。
+第 97 轮曾经想「未绑定也画一张静态 lit」，加过一份 `static_avatar_layers`；**第 98 轮按用户的话
+删掉了**，而且补上漏掉的一半：名字也是文字层，不画照片还不够，名字也得一起消失（见 19.13.12
+第 4 条）。现在的判据是「未绑定槽的矩形里，像素与去头像的底板完全相同」——§19.31.3 有一段
+实测（0 px 差）。
+
+底板文件的名字随第 137 轮变过一次：现在是 `background_bare_open.png`（无头像、**也无素材框
+底板**），更早叫 `background_bare.png`（无头像，但底板还烤在里面）。两者在素材框矩形内逐像素
+相同，差别只在「底板是不是一张能挪的独立图」（§19.35）。
 
 #### 19.13.8 缓存键必须包含「谁画的」
 
@@ -901,19 +926,29 @@ digest 覆盖了数据和样式，但**绘制规则**也是画面的输入。
   `font_size` 限制 `[6, 400]`（五位数的 point size 会让 Pillow 去分配一个几米高的字形）；
 * `PUT /api/projects/{id}/video/template/avatars/{slot}/photo` —— `{"asset_id": null}` = 还原；
 * `GET /api/fonts` —— 族名 + 推荐 + face 数；
+* `GET /api/projects/{id}/video/template/package` —— 导出 `.template`（zip：
+  `manifest.json` + `art/*.png` + `fonts/*.ttf`，§19.36）；`POST` 同名 —— 导入，
+  这是全仓库唯一一条「外部字节变成磁盘文件」的路，七类拒绝都在 `read_package` 里；
+* `POST /api/projects/{id}/video/template/default` —— 换回程序自带的默认模板
+  （**替换**而非合并，旧 build 目录留在磁盘上因为渲染可能还在读）；
 * `GET /api/projects/{id}/video/layout` / `PUT` 同名 / `POST …/layout/reset` —— 布局覆盖层
   （§19.38），`PUT` 的 body 是 `{box?, texts?{key}, avatars?{key}, replace?}`。
+
+包与布局为什么是**两件事**：包带走的是模板本身（海报、底板、描边、头像、字体），布局是**这个
+项目**对这一份模板的覆盖，存在 `edits_json.layout` 里，导出模板包**不带走**它（换个项目就该
+是设计师的原始位置）。
 
 换图写在 **编译目录下的 `edits/`**，不是它旁边：`asset_path` 只在这两个目录里按文件名找，
 放到上一层会让 JSON 说成功、图片 404 —— 最糟糕的那种 bug 形状。
 
 #### 19.13.11 这一轮没做的
 
+三条都已经被后续轮次做掉，留在这里只是因为**它们各自有一个「看起来能做、实际不能」的理由**：
+
 * **框内文字不参与渲染**：素材会盖住它们，画出来就是把「本期嘉宾——」印在嘉宾脸上。
-  它们仍在 slot 列表里（`:class:` 服务端保留该角色），但**第 99 轮起界面不再列出**。
-* **多段颜色只保留第一段**（见 19.13.3）。第 98 轮改成用 `**` 标记（见 19.13.12）。
-* **头像名不跟随说话人改名**：名字和绑定的说话人是两件事，绑定时不覆盖用户手写的名字。
-  *（第 99 轮已改：名字牌现在**就是**绑定说话人的名字，见 §19.14。）*
+  它们仍在 slot 列表里（服务端保留该角色），但**第 99 轮起界面不再列出**。
+* **多段颜色**：这一轮只保留第一段；第 98 轮改成用 `**` 标记（19.13.12 第 3 条）。
+* **头像名跟随说话人**：第 99 轮起名字牌**就是**绑定说话人的名字（§19.14）。
 
 #### 19.13.12 第 98 轮的四条修改
 
@@ -953,8 +988,9 @@ digest 覆盖了数据和样式，但**绘制规则**也是画面的输入。
 **4. 未绑定的头像槽整个消失。** 第 97 轮我加过「未绑定也画一张静态照片」，那是理解反了；这一轮
 按用户的话改回来，并且补上漏掉的一半：**名字也要一起消失**。
 
-底板本来就是 `background_bare.png`（四个头像全被挖掉），只有有轨道的槽会画上去，所以照片本来就
-会消失；但名字是文字层，还在原地 —— 画面上「彼方」浮在一张空海报上。现在 `draw_slots` 收一个
+底板本来就是去头像的那一版（第 137 轮起叫 `background_bare_open.png`；更早的名字
+`background_bare.png` 还把素材框底板烤在里面），只有有轨道的槽会画上去，所以照片本来就会消失；
+但名字是文字层，还在原地 —— 画面上「彼方」浮在一张空海报上。现在 `draw_slots` 收一个
 **可见头像集合**（= 有轨道的槽），不在里面的头像名直接跳过。`None` 表示「全部可见」，也就是
 一个都没绑定的时候（那时用的是完整底板）。
 
@@ -2152,13 +2188,15 @@ chunk 2 上 `-f null`（跑完所有滤镜、只去掉编码器）83.5 s vs 完�
 ### 19.30 烘焙 plate（第 127 轮方案，第 131 轮实施）
 
 静帧预合成（§19.28）把「每个静帧段一次归一化」变成了「每段一张 PNG」，但**还剩三张整片都不变的
-全画布图没有合并**：`background_bare.png`、`overlay.png`（描边）、`text.png`。它们在 filtergraph
+全画布图没有合并**：底板（当时叫 `background_bare.png`，第 137 轮起是 `background_bare_open.png`）、
+描边（`overlay.png`）、文字（`text.png`）。它们在 filtergraph
 里各占一次全画布 `scale` + `overlay`，实测**成本**合计 **25.15 s/100 s（47 %）**，
 而 x264 只占 38 %。⚠️ 注意这是「成本」口径：「删掉这两层能省 15.95 s」不等于「烘焙能省 15.95 s」
 ——两张全画布基础层烘焙后还在（仍要过一次 `scale=1920:1080`），**可回收的是 19.62 s / 36.7 %**。
 
-**已实施（第 131 轮，决策 D20）。** `media/plate_bake.py` 在导出准备阶段合成一张
-`plate-<digest>.png` = 底板 + 描边 + 文字，并把 `text` 落在**会被画出来的**头像矩形里的像素
+**已实施（第 131 轮，决策 D20；第 137 轮起输入换成三张带 rect 的图，见下）。**
+`media/plate_bake.py` 在导出准备阶段合成一张
+`plate-<digest>.png` = 底图 + 底板 + 描边 + 文字，并把 `text` 落在**会被画出来的**头像矩形里的像素
 （真实样片 **598** 个，两个槽位）合进该头像的 lit/dim PNG；图里于是 `layers=[]`、`text=None`。
 两个前提**每次烘焙现算**（文字会被用户改，编译期那份会过期）：`text ∩ box_rect = 0`，
 且那些文字像素下面那张头像 PNG 的 alpha 全为 255；不满足就自动退回「只烘底板 + 描边」。
@@ -2340,9 +2378,12 @@ DOM 从下到上，**顺序必须与 `media/video.py::build_filtergraph` 一致*
 - **`kind="plate"` 的段在 DOM 里不需要任何元素。** 它画的是 `background.png` 在 `box` 处的一块
   裁片，而 `background.png` 与 `background_bare.png` 在 **box 矩形内**逐像素相同（diff bbox =
   `None`）——所以「画这块裁片」和「什么都不画」像素等价。样片 67 段里有 3 段是 plate。
+  （这段末的那次测量之后，第 137 轮把 `plate.png` 拆成了独立图层，`kind="plate"` 段的裁片就是
+  从它裁的，坐标要减 plate 原点——见 §19.35.2 与 `video_box.plan(template_origin=)`。）
 
 > **未绑定的头像槽 = 照片被删掉，不是「保留静态照片」。** 实测未绑定且有轨道存在的模板上，
-> 未绑定槽矩形内的像素与 `background_bare.png` **完全相同（0 px）**，与 `background.png` 差
+> 未绑定槽矩形内的像素与 `background_bare.png`（第 137 轮起叫 `background_bare_open.png`，
+> 那个 name 里的 `open` 指「底板也被拿走了」）**完全相同（0 px）**，与 `background.png` 差
 > 25 000+ px。DOM 必须照做：**只为 plan.avatars 里出现的槽建元素**，不要给 4 个槽各建一对。
 
 5 种 fill 的 CSS 必须逐条对齐 ffmpeg 的 `_normalise`（`media/box_track.py`）：
@@ -2793,7 +2834,7 @@ background_open.png + plate@(238,206) + overlay@(231,198)  ==  background.png + 
 rect，不是画布 rect —— 把 1444×815 的 plate 拉成 1920×1080 不是「小一点的底板」，是坏掉的框。
 
 plan 的字段也随之改名：旧 `overlay_url` 拆成 `plate_url`/`plate_rect` 与
-`stroke_url`/`stroke_rect`。`domStage` 里判断「这是静态画作」的集合从
+`stroke_url`/`stroke_rect`。`DomStage.tsx` 里判断「这是静态画作」的集合从
 `{background, overlay}` 变成 `{background, plate, stroke}`。
 
 #### 19.35.5 老行不迁移，也绝不降级
@@ -2819,14 +2860,16 @@ path 过 `Path(name).name` 是第一道边界（`asset_path` 早就这么做）�
 「我调好的模板给我同事用」这件事因此只有一条路：把 PSD 发过去，请他重新导入、重新调文字、
 重新换头像。第 138 轮把这条路换成一个文件。
 
-包里是 **24 个成员**（一个真模板实测 1 723 077 B，压缩后）：
+包里是 **24 个文件加一份 manifest.json**——zip 里共 25 个成员（一个真模板实测 1 723 077 B，
+压缩后）。数一次就容易记错的正是这个差：`files` 记的是 22 张图 + 2 套字体，manifest 自己不算在内，
+而它以 `manifest.json` 的名字同样占一个 zip 条目。
 
 ```
 manifest.json                     schema / 画布 / box_rect / fit / slots / art / 每文件 sha256
 art/background.png                海报（头像已压平）
-art/background_open.png           海报（没有头像）
-art/background_bare.png           同一个 twin，无头像无底板
-art/background_bare_open.png
+art/background_open.png           同一张，但头像没压进去（DOM 预览用这张，再叠头像层）
+art/background_bare.png           无头像，但素材框底板还烤在里面（第 137 轮之前的主力）
+art/background_bare_open.png      无头像、也无底板（第 137 轮起的主力，底板是 plate.png）
 art/plate.png          1444×815   底板，rect 在 manifest 的 art 里
 art/overlay.png        1456×829   描边
 art/avatar<N>_{lit,dim,frame,mask}.png   ×4 槽

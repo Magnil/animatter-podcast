@@ -60,6 +60,32 @@ GET    /api/video/exports/{id}                         轮询（note 是并行�
 POST   /api/video/exports/{id}/cancel                  请求停止；**返回的 status 通常仍是 running**
 GET    /api/video/exports/{id}/file                    下载
 
+GET/POST /api/projects/{id}/video/template             模板：GET 没模板返回 null；POST 导入本机 PSD 路径
+POST   /api/projects/{id}/video/template/recompile     重新编译（约 9 s，后台线程）
+PATCH  /api/projects/{id}/video/template               只接受 box_fit_default
+PATCH  /api/projects/{id}/video/template/texts/{key}   改一条文字槽（avatar_name 槽 409：名字来自绑定）
+PUT    /api/projects/{id}/video/template/avatars/{slot}/photo  换头像图（素材 id 或 null 清覆盖）
+GET    /api/projects/{id}/video/template/asset/{name}  取一张编译产物；只认 Path(name).name，只查 build 与 edits/
+GET/POST /api/projects/{id}/video/template/package     .template 包：导出 zip / 导入上传（七类拒绝）
+POST   /api/projects/{id}/video/template/default       装回默认模板；**替换**而非合并，旧 build 目录留盘
+GET/PUT /api/projects/{id}/video/layout                布局覆盖层（PUT 只给要改的槽；与编译值差 ≤1 px 的不落库）
+POST   /api/projects/{id}/video/layout/reset           全部恢复编译时的样子
+GET    /api/versions/{vid}/video/avatars               槽与说话人绑定
+PUT    /api/projects/{id}/video/avatars/{slot}         绑定说话人
+GET    /api/versions/{vid}/video/plan                  整片计划：图层栈、段落、字幕、art rect
+GET    /api/versions/{vid}/video/timeline              时间轴（素材段落）
+POST   /api/versions/{vid}/video/items                 往时间轴加一段
+PATCH  /api/video/items/{item_id}                      改一段（起止、fit、循环）
+DELETE /api/video/items/{item_id}
+GET/POST /api/projects/{id}/video/assets               素材库列表 / 按本机路径导入
+POST   /api/projects/{id}/video/assets/upload          上传导入（multipart）
+DELETE /api/video/assets/{asset_id}                    删素材（被时间轴引用时拒绝）
+GET    /api/projects/{id}/video/assets/{asset_id}/file 取素材原图/原片
+GET    /api/versions/{vid}/video/preview?at_ms=&project_id=   某一刻的静帧；返回 {url, at_ms}
+GET    /api/video/preview/file/{name}                  取那张静帧（**要带 ?project_id=**，否则 422）
+GET    /api/video/subtitle-style                       字幕样式的默认值（字号/颜色/位置/字体名）
+GET    /api/fonts                                      可用字体 family 与 face（含 data/fonts/ 里的私有字体）
+
 POST   /api/system/pick-folder?initial=                调系统文件夹对话框，返回 {path}
        服务端在本机，所以能用真的对话框；拿不到（无 GUI / 被取消）返回 409 + hint，
        输入框仍然可手打——选择是方便，不是唯一路径。
@@ -68,6 +94,15 @@ POST   /api/projects/{id}/script/generate              生成文稿
 GET    /api/projects/{id}/script
 POST   /api/projects/{id}/export                       导出（kind 参数）
 ```
+
+模板与布局这两组端点的三条约定（细节在 `docs/video.md` §19.13.10 与 §19.36、§19.38）：
+
+- **模板是「长这样」，布局是「这个项目把它摆在哪」。** `…/video/layout` 存的是
+  `edits_json.layout`，导出 `.template` 包**不带走**；
+- **`POST …/template/default` 会替换**，所以界面只在这个位置弹出确认；空态那个「用默认模板」
+  走同一个端点但不确认，因为那时没有可失去的东西（`docs/frontend.md` §7.9）；
+- **编译产物按文件名给**，`asset/{name}` 不接路径——`Path(name).name` 之后只查 `build-<hash>/`
+  与 `build-<hash>/edits/` 两个目录。
 
 约定：
 - 所有写操作返回 `{data, edit_op_id}`，便于前端撤销栈与后端对齐；
