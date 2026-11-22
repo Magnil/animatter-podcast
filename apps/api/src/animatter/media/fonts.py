@@ -66,6 +66,13 @@ USER_DIRS: Final[tuple[Path, ...]] = (
 #: ``zy`` for the personal product; the guid is per user and deliberately not hard-coded.
 ZIYOU_ROOT: Final[Path] = Path.home() / "AppData/Roaming/hellofont/f"
 
+#: A directory this app owns, holding fonts that arrived inside a ``.template`` package.
+#: Not a constant path because only the caller knows ``settings.data_dir``; :func:`set_private_dir`
+#: is called once at startup and again whenever a package installs a font. A template that
+#: needs 「Baigo」 has to work on a machine that never installed it, and the only alternative —
+#: threading a per-template font path through ``_fit``/``_face``/libass — is a much larger change.
+_private_dir: Path | None = None
+
 #: Extensions an installed font can have. 字由's store has **no** extensions at all, which
 #: is why discovery also sniffs the first bytes instead of trusting the suffix.
 _FONT_SUFFIXES: Final[frozenset[str]] = frozenset({".ttf", ".ttc", ".otf"})
@@ -120,9 +127,25 @@ def _is_font_file(path: Path) -> bool:
         return False
 
 
+def set_private_dir(directory: Path | None) -> None:
+    """Tell discovery about the app's own font directory (``data/fonts``).
+
+    Called from the app's lifespan and again after a package installs a font. Setting the
+    same directory twice is cheap; the walk is cached anyway. Passing ``None`` forgets it,
+    which is what the tests want between cases.
+    """
+    global _private_dir
+    resolved = Path(directory) if directory is not None else None
+    if resolved == _private_dir:
+        return
+    _private_dir = resolved
+    forget()
+
+
 def _candidate_files() -> list[Path]:
     files: list[Path] = []
-    for directory in (*SYSTEM_DIRS, *USER_DIRS):
+    extra = (_private_dir,) if _private_dir is not None else ()
+    for directory in (*SYSTEM_DIRS, *USER_DIRS, *extra):
         if not directory.is_dir():
             continue
         try:

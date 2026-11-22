@@ -19,6 +19,7 @@ from animatter.config import Settings, load_settings
 from animatter.db import Database
 from animatter.errors import install_error_handlers
 from animatter.log import configure_logging, get_logger
+from animatter.media import fonts
 from animatter.migrate import upgrade_to_head
 from animatter.routers import (
     align,
@@ -72,6 +73,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     upgrade_to_head(settings)
 
     app.state.db = Database(settings)
+    # Imported templates carry their own fonts; ``media.fonts`` has to know where they land
+    # before the first render, not after someone remembers to install a font.
+    fonts.set_private_dir(settings.fonts_dir)
     # A render queued by the previous process cannot finish: its thread died with
     # it. Mark those rows failed now, or the UI polls a job that never completes.
     renders_service.fail_orphaned(app.state.db)

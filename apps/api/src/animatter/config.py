@@ -188,6 +188,16 @@ class Settings(BaseSettings):
         return self.data_dir / "projects"
 
     @property
+    def fonts_dir(self) -> Path:
+        """Fonts that arrived inside a ``.template`` package.
+
+        Under ``data/`` rather than inside each project: text drawing resolves a *family*
+        name through ``media.fonts``, which has no idea which project is rendering. One shared
+        directory is what lets an imported template's 「Baigo」 work in every project.
+        """
+        return self.data_dir / "fonts"
+
+    @property
     def database_url(self) -> str:
         # SQLAlchemy needs forward slashes and an absolute path on Windows.
         return f"sqlite+pysqlite:///{self.db_path.as_posix()}"
@@ -195,6 +205,7 @@ class Settings(BaseSettings):
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.projects_dir.mkdir(parents=True, exist_ok=True)
+        self.fonts_dir.mkdir(parents=True, exist_ok=True)
 
 
 def load_settings(**overrides: object) -> Settings:

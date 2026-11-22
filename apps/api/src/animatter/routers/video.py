@@ -13,9 +13,10 @@ import shutil
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -31,6 +32,7 @@ from animatter.services import video as video_service
 from animatter.services import video_assets as asset_service
 from animatter.services import video_avatars, video_edits
 from animatter.services import video_render as video_render_service
+from animatter.services import video_template_package as package_service
 from animatter.services import video_templates as template_service
 
 router = APIRouter(prefix="/api", tags=["video"])
@@ -255,6 +257,87 @@ def template_asset(
     """Serve one compiled PNG. Only the file name is honoured — see the service."""
     path = template_service.asset_path(session, project_id, name)
     return FileResponse(path, media_type="image/png")
+
+
+@router.get("/projects/{project_id}/video/template/package")
+def export_template_package(
+    project_id: str,
+    request: Request,
+    session: Session = Depends(_session_dependency),
+) -> Response:
+    """Download the template as a ``.template`` file.
+
+    A ``Response`` rather than a temp file on disk: the zip is built in memory (1–2 MB) and
+    streamed back, so there is nothing to clean up if the connection drops.
+    """
+    settings: Settings = request.app.state.settings
+    filename, payload = package_service.export_package(session, settings, project_id)
+    return Response(
+        content=payload,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=\"template.template\"; filename*=UTF-8''{quote(filename)}"
+            ),
+            "X-Template-Bytes": str(len(payload)),
+        },
+    )
+
+
+@router.post("/projects/{project_id}/video/template/package", response_model=TemplateOut)
+async def import_template_package(
+    project_id: str,
+    request: Request,
+    session: Session = Depends(_session_dependency),
+    file: UploadFile = File(...),
+) -> TemplateOut:
+    """Install a ``.template`` package uploaded from the browser.
+
+    Read fully into memory before anything touches the disk: ``read_package`` is the only thing
+    that knows what a valid package is, and a refusal has to leave no half-imported template
+    behind. The size cap is re-checked while reading because the browser's ``Content-Length``
+    is a claim, not a fact.
+    """
+    settings: Settings = request.app.state.settings
+    chunks: list[bytes] = []
+    size = 0
+    while chunk := await file.read(1 << 20):
+        size += len(chunk)
+        if size > package_service.MAX_BYTES:
+            raise AppError(
+                "template_package_too_large",
+                f"模板包超过 {package_service.MAX_BYTES // 1024 // 1024} MB",
+                hint="模板包通常 1–3 MB，这个文件可能不是模板。",
+            )
+        chunks.append(chunk)
+    if not chunks:
+        raise AppError("template_package_empty", "这个文件是空的")
+
+    package_service.import_package(session, settings, project_id, b"".join(chunks))
+    session.commit()
+    view = template_service.view(session, project_id)
+    assert view is not None
+    return TemplateOut(**view.as_dict())  # type: ignore[arg-type]
+
+
+@router.post("/projects/{project_id}/video/template/default", response_model=TemplateOut)
+def install_default_template(
+    project_id: str,
+    request: Request,
+    session: Session = Depends(_session_dependency),
+) -> TemplateOut:
+    """Replace this project's template with the bundled default.
+
+    Replace, not merge: a template is one coherent poster, and there is no sensible answer to
+    "keep the old artwork and the new slots". The old build directory stays on disk because a
+    render may still be reading it — the same rule a re-import follows.
+    """
+    settings: Settings = request.app.state.settings
+    package_service.install_default(session, settings, project_id)
+    session.commit()
+    view = template_service.view(session, project_id)
+    assert view is not None
+    return TemplateOut(**view.as_dict())  # type: ignore[arg-type]
 
 
 # --- avatar bindings (P3) -----------------------------------------------
