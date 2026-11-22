@@ -67,7 +67,7 @@
 - `milestones.md` **只记结论和判据**，不记设计推理（那在主题文档里）和逐轮细节（那在 CHANGELOG）。
 - 主题文档（`video.md`、`frontend.md` 等）**只写现在的设计与实测**；「这一轮为什么这么改」属于
   CHANGELOG，只有当作设计约束留下时才写进主题文档。
-- 决策一旦拍板就进 `decisions.md` 并给编号（D1–D26，D27 起可用），主题文档里只引用编号，不复制理由。
+- 决策一旦拍板就进 `decisions.md` 并给编号（D1–D27，D28 起可用），主题文档里只引用编号，不复制理由。
 
 `§N` 编号跨文件保持全局唯一，源码注释里的 `AGENTS.md §6.4` 指的就是上表对应的那份。
 **§20 已经不存在**：它原是「实时预览与导出提速」的方案文档，七个阶段落地后按约定并进了
@@ -96,13 +96,13 @@ docs/                    本文件拆出来的设计文档
 
 ```powershell
 # 后端：在 apps/api 下跑
-..\..\.venv\Scripts\python.exe -m pytest -q -n 2      # 1526 passed, 2 skipped，约 90 s
+..\..\.venv\Scripts\python.exe -m pytest -q -n 2      # 1564 passed, 2 skipped，约 90 s
 ..\..\.venv\Scripts\python.exe -m ruff check src tests
-..\..\.venv\Scripts\python.exe -m mypy --strict src    # 112 files
+..\..\.venv\Scripts\python.exe -m mypy --strict src    # 114 files
 
 # 前端：在 apps/web 下跑
 npx tsc --noEmit
-npm test                                               # node --test，349 passed
+npm test                                               # node --test，377 passed
 npx vite build
 
 # 启动（仓库根）
@@ -125,7 +125,7 @@ npx vite build
 ..\..\.venv\Scripts\python.exe -m pytest -q -n 1        # 内存不够时用这个，慢约 60 %
 ```
 
-`-n 1` 连跑 **1526 passed / 2 skipped**（约 185 s）。看到那两类失败时先跑一遍 `-n 1`
+`-n 1` 连跑 **1564 passed / 2 skipped**（约 182 s）。看到那两类失败时先跑一遍 `-n 1`
 再判断是不是回归——**不要直接去查代码**，这条已经浪费过一次时间。
 
 **改完四个都要绿**：pytest、ruff + mypy、tsc、npm test。设计文档与实现不一致时，先改文档再改代码。

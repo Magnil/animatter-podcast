@@ -217,6 +217,22 @@ D:\Videos\费那奇MV-1080p24-v2.mp4
 | 字体跟着包走 | `services/video_template_package.py::_install_fonts`、`media/fonts.py::set_private_dir` | 导入后 `resolve("Baigo")` / `resolve("Alimama ShuHeiTi")` 非空 |
 | 界面上五条路 | `apps/web/src/VideoPanel.tsx`、`templatePackage.ts`、`download.ts` | 三条 CDP 走查全通过（按钮在视口内、不重叠、accept 含 `.template`） |
 
+### 视频 P10 交付清单（2026-11-22，第 139 轮）
+
+位置与大小不再是设计师的单方面决定。每个框都能在浏览器里拖，改的是 `edits_json.layout`，
+**`slots_json` 不被改写**——重编译不会吞掉用户的布局。设计在 `docs/video.md` §19.38，决策 D27。
+
+| 交付物 | 落在哪 | 验收 |
+|---|---|---|
+| 布局覆盖层（`box` / `texts` / `avatars`，每项 `{x,y,w,h,font_size?}`） | `core/layout.py`、`services/video_layout.py` | `tests/test_video_layout.py` 38 条；空布局时每个框逐字段等于编译值 |
+| 挪框时底板/描边按比例跟、字号跟两轴小者、头像名按位移平移 | `scale_art` / `scale_font` / `cascade_name_plate` | 同尺寸恒等（`{238,206,1444,815}` 不变）；标题 `617×109→720×130` 时 56→64 px |
+| 四个缓存键都带 `layout.signature()` | `video_edits.signature`、`_still_digest`、`_video_signature`、`video_plan._digest` | 移动标题后同刻静帧 URL 换 digest；`sort_keys` 保证顺序无关 |
+| 三个端点 + 两类拒绝 | `GET/PUT …/video/layout`、`POST …/layout/reset` | `content` 槽 → `layout_slot_fixed` 409；不存在的 key → `layout_slot_unknown` 404；未就绪 → `template_not_ready` |
+| 画布编辑器（第五页签） | `apps/web/src/LayoutEditor.tsx`、`layoutMath.ts` | `layoutMath.test.mjs` 28 条；`check-r139-layout-editor.mjs` 五组判据 `problems: []` |
+| 手势：松手提交 / 方向键 400 ms 防抖 / 缩放不吸附 / 框偶数 / 头像锁比例 | `layoutMath.ts` | 拖动一次一个请求；拖后 `location.reload()`「已改动」仍在 |
+| 两个恢复默认 | 单块 `PUT`、全部 `POST …/layout/reset` | 「全部恢复默认」后库里 `is_default=true`、`changed == {}` |
+| 画面只动该动的地方 | `video_render` 走 `video_layout` | 移动标题前后静帧 `ImageChops.difference` bbox = `(1002, 82, 1698, 181)` |
+
 ### 进度一览（2026-11-14 订正）
 
 ```
@@ -243,6 +259,7 @@ M6 ⬜ 稳定性
         决策 D19–D23
 视频 P8 ✅（11-21）：模板编译产物拆分——底板/描边各带 rect，**diff px = 0**、PSNR `inf`
 视频 P9 ✅（11-22）：模板包（`.template` 导出/导入）+ 默认模板随包发、新项目自带
+视频 P10 ✅（11-22）：布局覆盖层——画布编辑器拖框、`edits_json.layout`、四个缓存键带布局签名
 ```
 
 **P7 的预览侧三档（P0 / P1 / P2）与导出侧的全部档位（E1 / E2 / E3，E4 判定不做）已落地**，

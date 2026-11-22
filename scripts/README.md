@@ -38,6 +38,7 @@ Node 22+ 自带全局 `WebSocket`，所以没有额外依赖。
 | `check-r138-template-package.mjs` | 模板包三条路都在：ready 态的「导出模板包…」「换回默认模板」「导入模板包…」文案齐全，文件选择器 accept 含 `.template` |
 | `check-r138-template-package-layout.mjs` | 三个按钮量 `getBoundingClientRect`：在视口内、宽 ≥ 70、互不重叠、都可用（第 135 轮那种「挤在一起没人发现」的退化） |
 | `check-r138-template-empty-state.mjs` | 空态（没有模板时）有「用默认模板」和「导入模板包…」，且提到 `.template`。把 `/video/template` 的 fetch 截成 `null` 再 reload，因为界面没有切换项目的入口 |
+| `check-r139-layout-editor.mjs` | 布局页签：画布 6 张图（底板/描边/四头像）+ 底图、12 个框；用**真鼠标**拖「当期标题」后「已改动」亮、读数变、库里 `changed.texts.title` 存在；`location.reload()` 后牌子还在（布局真落库）；「全部恢复默认」后 `is_default` 为真 |
 
 ## 非浏览器验证
 

@@ -1,6 +1,6 @@
 # 变更记录
 
-> **这份文件不要通读。** 它是逐次变更的现场记录，一共 240 KB，其中大部分已经沉淀进
+> **这份文件不要通读。** 它是逐次变更的现场记录，一共 245 KB，其中大部分已经沉淀进
 > 上面几份设计文档。只在两种时候打开：
 >
 > 1. 想知道**某个东西当初为什么这么做**（某条设计看起来多余时，原因通常写在这里）；
@@ -3456,3 +3456,63 @@ files** 干净、`tsc --noEmit` 干净、`npm test` **349 passed**、`vite build
 **配套文档**：`docs/video.md` §19.36（包 / 拒绝表 / 默认模板 / 那个只坏在真机的 bug / 判据）与
 §19.37（十八个取舍的落地状态），决策 D26。
 
+## 第 139 轮：布局覆盖层——编译几何变成默认值（2026-11-22）
+
+**症状。** 用户把模板调到能用之后，第一个反馈是「标题太靠右，压到字了」。下一句是「能不能在界面
+里挪」。答案是不能：`slots_json` 里那九个 `rect` 是 PSD 里设计师放的位置，唯一改它的路是改 PSD
+重编译——而重编译会整体改写 `slots_json`，顺手把调好的文字和换过的头像全按 PSD 重置。
+
+**根因不是「少一个编辑器」，是几何只有一个来源。** 第 137 轮把「底板在哪」变成了数据（`art.rect`），
+第 138 轮把模板变成了文件，但**位置**仍然只存在于编译产物里。渲染、预览、导出、名字牌四处全读
+`slots_json[...]["rect"]`，谁的意图都不是——它是 PSD 的意思。
+
+**怎么修。** 加一层 `edits_json.layout`，`slots_json` 一个字不动：
+
+- 形状 `{box?, texts?{key}, avatars?{key}}`，每个值 `{x,y,w,h,font_size?}`。没有 key = 「没动过」，
+  所以空 layout 与没有 layout 等价，`is_default` 为真。
+- 读取顺序只在 `services/video_layout.py` 实现一次。四个消费者全部改走它：`video_render._layers` /
+  `_art` / 两处 `box_rect=`、`video_plan.build`、`video_edits.resolved_texts`、
+  `video_avatars._slots_of`。**代码里不再有第二处 `slots_json[...]["rect"]`**——读到它就是把用户
+  的改动丢掉，而且这种丢法不报错。
+- 三个纯函数在 `core/layout.py`：`scale_art`（框放大时底板/描边按相对偏移与比例跟）、
+  `scale_font`（`min(w/old_w, h/old_h)`，框只拉宽时字不变大）、`cascade_name_plate`（头像挪走，
+  名字跟着平移，不缩放——名字是标签）。
+- `save()` 末尾 `_drop_defaults()`：拖回原位与单槽「恢复默认」都会写出「等于编译值」的矩形。
+  不丢的话 `is_empty()` 永远为假（「已改动」常亮），而且四个缓存键白变一次。**四个轴差 ≤1 px 就
+  当没动**，因为偶数取整会带来 1 px 抖动。
+
+**为什么加一层而不是改 `slots_json`。** 重编译（换 PSD、重导入、`POST …/recompile`）会整体改写
+`slots_json`。把用户的布局存在那里，等于它活不到下一次重编译，而且没有任何提示。`edits_json`
+本来就是这个项目自己的编辑记录，重编译不动它。
+
+**四个缓存键都加了 `layout.signature()`。** `video_edits.signature`（决定文字 PNG / 静帧 / 导出
+文件名）、`_still_digest`、`_video_signature`、`video_plan._digest`。签名用
+`json.dumps(sort_keys=True, separators=(",",":"))`，空布局返回 `"-"`：**顺序无关**——同样的布局
+换个 dict 插入顺序就换一次缓存文件名，那等于每次重启都丢缓存。实测把标题拖走之后同刻静帧 URL
+从 `still-000075000-bb168ae033.png` 变成了新 digest。
+
+**那个只坏在真机的 bug。** `LayoutEditor` 量画布宽度的 `useEffect` 最初只依赖 `canvas.w`。首帧渲染
+的是「正在读取布局…」，`hostRef.current` 是 `null`，`ResizeObserver` 绑不上；数据回来时画布宽度
+并没有变（fallback 就是 `template.canvas_w`），effect 不再重跑，`scale` 永远停在初值 0.5。1920 宽
+的画面在 480 px 的栏里画成 960 px，右边被裁掉——**每个框的中心都在可见区域之外**。表现是「拖不
+动」，实际是「拖的地方没有框」。走查里看到的是标题中心 `y = 2252.75`（视口高 900）和
+`document.elementFromPoint` 返回 `null`。修法：依赖改成 `[canvas.w, state]`。
+
+**判据。** `tests/test_video_layout.py` 38 条（9 条 core 算术 + 17 条 service + 6 条 HTTP，余下是
+夹取与签名）；`apps/web/src/layoutMath.test.mjs` 28 条；
+`scripts/check-r139-layout-editor.mjs` 五组判据全过、`problems: []`——画布 6 张图 + 底图、12 个框，
+真鼠标拖完「已改动」亮、读数变、库里 `changed.texts.title` 在，**`location.reload()` 之后牌子还在**
+（只判前端记号是假判据，它可以在完全没写库的情况下亮着），「全部恢复默认」后 `is_default` 为真。
+画面侧：移动标题前后同刻静帧 `ImageChops.difference` 的 bbox 是 `(1002, 82, 1698, 181)`，恰好只动
+那一块。
+
+**闸门**：`pytest -n 1` **1564 passed / 2 skipped**（182 s）、ruff 干净、`mypy --strict` **114 files**
+干净、`tsc --noEmit` 干净、`npm test` **377 passed**、`vite build` 415.06 kB。
+
+**教训。** 重命名 `layoutEditor.ts` 时撞上 `TS1261`：`LayoutEditor.tsx` 与 `layoutEditor.ts` 在
+Windows 的文件名大小写上只差一个 S，tsc 认为它们是同一个文件。纯逻辑模块改名 `layoutMath.ts`。
+另外 API 必须从**仓库根**启动：`Settings.data_dir = Path("data")` 是相对 cwd 的，在 `apps/api` 下
+启动会得到一个空库，症状是 `video_template_missing` 而不是「库是空的」。
+
+**配套文档**：`docs/video.md` §19.38（三层几何 / 三个纯函数 / 缓存键 / 编辑器形态 / 手势 /
+不变量）、`docs/frontend.md` §7.10、决策 D27、`docs/milestones.md` 视频 P10。
