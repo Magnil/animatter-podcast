@@ -61,7 +61,14 @@ from animatter.models import Deck, Slide, TranscriptVersion, VideoAsset, VideoIt
 from animatter.services import clipping as clipping_service
 from animatter.services import decks as deck_service
 from animatter.services import projects as project_service
-from animatter.services import subtitles, transcript_facts, video_avatars, video_box, video_render
+from animatter.services import (
+    subtitles,
+    transcript_facts,
+    video_avatars,
+    video_box,
+    video_layout,
+    video_render,
+)
 from animatter.services import video as video_service
 from animatter.services import video_templates as template_service
 
@@ -359,7 +366,9 @@ def build(
 
     edl = clipping_service.build_edl(session, settings, version)
     items = video_service.list_items(session, version.project_id)
-    box_rect = template_service.box_rect_of(template)
+    # The **current** box and artwork rects: the layout editor moves both, and a plan built
+    # from the compiled geometry puts the panel's own handles somewhere the film never goes.
+    box_rect = video_layout.box_of(template)
     canvas_w = template.canvas_w or DEFAULT_CANVAS[0]
     canvas_h = template.canvas_h or DEFAULT_CANVAS[1]
     if facts is None:
@@ -470,7 +479,7 @@ def build(
         )
 
     background = video_render._base_background(template, tracks)
-    plate, stroke = template_service.art_of(template)
+    plate, stroke = video_layout.art_of(template)
 
     def art_url(item: template_service.Artwork | None) -> str | None:
         # `None` rather than a raise: a template that legitimately has no stroke (or one
@@ -578,11 +587,18 @@ def _digest(
         template.source_sha256 or "",
         template.box_rect or "",
         # Where the plate and the stroke actually are. `box_rect` alone is not enough: moving
-        # the artwork without moving the box still changes the picture, and round 138's editor
-        # can move either.
-        template_service.art_signature(template),
+        # the artwork without moving the box still changes the picture, and the layout editor
+        # (§19.38) can move either.
+        # Current artwork geometry, not the compiled one: the layout editor moves the plate and
+        # the stroke with the box, so the signature has to come from the same module that
+        # applies the overrides or the preview keeps serving the pre-drag digest.
+        video_layout.art_signature(template),
         template.bindings_json or "",
+        # Which includes the arrangement itself: a moved title changes pixels without touching
+        # a single character of text, and a digest that only hashes the text would hand back the
+        # old frame under the old URL (§19.11 trap 24).
         video_edits.signature(template),
+        video_layout.layout_of(template).signature(),
         json.dumps(avatar_names, sort_keys=True, ensure_ascii=False),
         ",".join(sorted(track.name for track in tracks)) or "-",
         f"{style.font_name}/{style.font_size}/{style.primary_colour}/{style.outline}/"

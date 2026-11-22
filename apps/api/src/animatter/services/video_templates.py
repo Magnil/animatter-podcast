@@ -452,6 +452,22 @@ def art_signature(row: VideoTemplate) -> str:
     return "|".join(parts)
 
 
+def slot_list(row: VideoTemplate) -> list[dict[str, object]]:
+    """Every avatar slot as the compile recorded it, in PSD stack order.
+
+    The compiled geometry, not the user's arrangement: :mod:`animatter.services.video_layout`
+    is the one place that applies overrides, and this function is what it starts from. Callers
+    that want "where the avatar is *now*" must ask that module — reading ``slots_json`` directly
+    is how a dragged frame stays in its old place in one of the five places that draw it.
+    """
+    try:
+        parsed = json.loads(row.slots_json or "{}")
+    except ValueError:
+        return []
+    avatars = parsed.get("avatars") if isinstance(parsed, dict) else None
+    return [item for item in avatars or [] if isinstance(item, dict) and "name" in item]
+
+
 def poster_of(row: VideoTemplate, *, bare: bool) -> Path:
     """The poster to draw before the artwork layer, with the media-box plate **removed**.
 
@@ -481,8 +497,10 @@ def box_source(row: VideoTemplate, box_rect: dict[str, int]) -> tuple[Path, tupl
     crops ``(box.x - origin_x, box.y - origin_y, box.w, box.h)``, which for the plate is a 1:1
     sub-rect (so no rescale, and the gap is pixel-identical to what the poster used to show).
 
-    When the box is not fully inside the plate — a layout the editor will allow in round 138 —
-    the poster is the only image that covers it, so that is what comes back.
+    When the box is not fully inside the plate — which the layout editor (§19.38) makes possible
+    by shrinking the box and moving it away — the poster is the only image that covers it, so
+    that is what comes back. The crop then costs a rescale of the poster down to the box size,
+    which is why the caller treats an empty box as the cheap case rather than the common one.
     """
     plate, _stroke = art_of(row)
     x = int(box_rect.get("x") or 0)

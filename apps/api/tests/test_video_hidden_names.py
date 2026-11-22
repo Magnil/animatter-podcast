@@ -12,7 +12,12 @@ from animatter.services import video_edits
 
 
 class _Row:
-    """The two columns ``video_edits`` reads, without a database."""
+    """The columns ``video_edits`` reads, without a database.
+
+    ``canvas_w``/``canvas_h`` joined the list when the layout overrides arrived (round 139):
+    ``video_layout.layout_of`` clamps stored rects to the canvas, so a row without them cannot
+    be resolved at all. They are the compiled canvas, not a preference.
+    """
 
     def __init__(self, slots: dict, edits: dict | None = None) -> None:
         import json
@@ -20,6 +25,8 @@ class _Row:
         self.id = "vtpl_test"
         self.source_path = "C:/tmp/video/templates/source.psd"
         self.background_path = "C:/tmp/video/templates/build/background.png"
+        self.canvas_w = 1920
+        self.canvas_h = 1080
         self.slots_json = json.dumps(slots, ensure_ascii=False)
         self.edits_json = json.dumps(edits or {}, ensure_ascii=False)
         self.bindings_json = "{}"

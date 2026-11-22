@@ -51,7 +51,13 @@ from animatter.models import Media, Render, TranscriptVersion, VideoItem, VideoT
 from animatter.services import clipping as clipping_service
 from animatter.services import projects as project_service
 from animatter.services import subtitles as subtitle_service
-from animatter.services import transcript_facts, video_avatars, video_box, video_edits
+from animatter.services import (
+    transcript_facts,
+    video_avatars,
+    video_box,
+    video_edits,
+    video_layout,
+)
 from animatter.services import video as video_service
 from animatter.services import video_templates as template_service
 
@@ -298,7 +304,7 @@ def prepare(
     tracks = avatar_tracks(session, template, version, edl)
     return PreparedVideo(
         template=template,
-        box_rect=template_service.box_rect_of(template),
+        box_rect=video_layout.box_of(template),
         items=items,
         edl=edl,
         duration_ms=edl.output_duration_ms,
@@ -360,7 +366,7 @@ def _layers(template: VideoTemplate) -> list[video_media.Layer]:
     express an ordering that interleaves with a list it does not receive. It is passed to
     ``render``/``render_still`` as their own ``text=`` argument instead.
     """
-    plate, stroke = template_service.art_of(template)
+    plate, stroke = video_layout.art_of(template)
     layers: list[video_media.Layer] = []
     for art in (plate, stroke):
         if art is None or not art.path.is_file():
@@ -561,7 +567,7 @@ def avatar_tracks(
 
 def _art(template: VideoTemplate) -> tuple[plate_bake.Art | None, plate_bake.Art | None]:
     """``(plate, stroke)`` in the bake module's own type, or ``None`` where there is none."""
-    plate, stroke = template_service.art_of(template)
+    plate, stroke = video_layout.art_of(template)
 
     def convert(item: template_service.Artwork | None) -> plate_bake.Art | None:
         if item is None or not item.path.is_file():
@@ -814,7 +820,7 @@ def preview_still(
         session,
         settings=settings,
         template=template,
-        box_rect=template_service.box_rect_of(template),
+        box_rect=video_layout.box_of(template),
         items=video_service.list_items(session, project_id),
         edl=edl,
     )
@@ -984,8 +990,12 @@ def _still_digest(
         template.bindings_json,
         # Where the plate and the stroke sit. Moving the box without this left every still
         # byte-identical under an unchanged URL (§19.11 trap 24) — and a moved box is exactly
-        # what round 138's layout editor does.
-        template_service.art_signature(template),
+        # what the layout editor (§19.38) does. Read from the layout module, so the digest
+        # follows the *drawn* rects rather than the compiled ones.
+        video_layout.art_signature(template),
+        # The arrangement itself: a moved title changes pixels without changing a character,
+        # and neither the text signature nor the art signature can see it.
+        video_layout.layout_of(template).signature(),
         # The title / episode number / avatar names are pixels too. Without this, typing a
         # new title left every still byte-identical and the browser kept showing the old
         # frame under an unchanged URL (§19.11 trap 24).
@@ -1110,7 +1120,8 @@ def _video_signature(prepared: PreparedVideo, options: ExportOptions) -> str:
         prepared.template.box_rect,
         # Artwork geometry, for the same reason it is in `_still_digest`: an export reused
         # across a moved plate would hand back a film of the old layout.
-        template_service.art_signature(prepared.template),
+        video_layout.art_signature(prepared.template),
+        video_layout.layout_of(prepared.template).signature(),
         prepared.template.bindings_json,
         # Text and avatar-photo overrides (§19.12). Reusing an export across an edit
         # would otherwise hand back a film with the old title, silently.

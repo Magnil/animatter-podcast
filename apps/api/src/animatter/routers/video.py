@@ -30,7 +30,7 @@ from animatter.models import Render, VideoItem
 from animatter.services import clipping as clipping_service
 from animatter.services import video as video_service
 from animatter.services import video_assets as asset_service
-from animatter.services import video_avatars, video_edits
+from animatter.services import video_avatars, video_edits, video_layout
 from animatter.services import video_render as video_render_service
 from animatter.services import video_template_package as package_service
 from animatter.services import video_templates as template_service
@@ -91,6 +91,64 @@ class AvatarPhotoIn(BaseModel):
     """``asset_id: null`` restores the PSD's own photo."""
 
     asset_id: str | None = None
+
+
+class LayoutRectIn(BaseModel):
+    """One rectangle from the canvas editor.
+
+    No ``ge``/``le`` bounds: clamping lives in ``core.layout`` next to the minimum sizes that
+    explain it, and a 422 from pydantic here would be a second, drifting copy of the rules.
+    """
+
+    x: int
+    y: int
+    w: int
+    h: int
+    font_size: int | None = None
+
+
+class LayoutIn(BaseModel):
+    """What to move. Absent means "leave where it is"; ``replace`` writes the whole object.
+
+    ``replace=True`` is what a drag *back to the compiled position* needs: the request carries
+    the slot's rect and the server stores it, so there is never a second endpoint for "forget
+    this override" that could disagree with the first.
+    """
+
+    box: LayoutRectIn | None = None
+    texts: dict[str, LayoutRectIn] | None = None
+    avatars: dict[str, LayoutRectIn] | None = None
+    replace: bool = False
+
+
+class SlotBoxOut(BaseModel):
+    key: str
+    kind: str
+    label: str
+    x: int
+    y: int
+    w: int
+    h: int
+    font_size: int | None = None
+
+
+class LayoutOut(BaseModel):
+    """The canvas editor's whole screen in one payload (§19.38).
+
+    Compiled geometry travels alongside the current geometry so 「恢复默认」 on a single slot
+    needs no second request, and so the editor can draw a "this one moved" mark without
+    guessing.
+    """
+
+    canvas: dict[str, int]
+    box: dict[str, int]
+    compiled_box: dict[str, int]
+    plate: dict[str, int] | None = None
+    stroke: dict[str, int] | None = None
+    texts: list[SlotBoxOut]
+    avatars: list[SlotBoxOut]
+    changed: dict[str, object]
+    is_default: bool
 
 
 class FontListOut(BaseModel):
@@ -338,6 +396,49 @@ def install_default_template(
     view = template_service.view(session, project_id)
     assert view is not None
     return TemplateOut(**view.as_dict())  # type: ignore[arg-type]
+
+
+@router.get("/projects/{project_id}/video/layout", response_model=LayoutOut)
+def get_layout(
+    project_id: str, session: Session = Depends(_session_dependency)
+) -> LayoutOut:
+    """Where everything currently sits, plus where the compile put it."""
+    row = template_service.require(session, project_id)
+    return LayoutOut(**video_layout.editor_state(row))
+
+
+@router.put("/projects/{project_id}/video/layout", response_model=LayoutOut)
+def set_layout(
+    project_id: str,
+    payload: LayoutIn,
+    session: Session = Depends(_session_dependency),
+) -> LayoutOut:
+    """Store the arrangement. Only the slot keys named in the payload change.
+
+    Deliberately *not* a whole-object PUT by default: the editor saves one drag at a time, and a
+    second browser tab open on the same project would otherwise wipe the first tab's work with
+    whatever stale rects it happened to be holding.
+    """
+    video_layout.save(
+        session,
+        project_id,
+        box=payload.box.model_dump() if payload.box is not None else None,
+        texts={key: item.model_dump() for key, item in (payload.texts or {}).items()},
+        avatars={key: item.model_dump() for key, item in (payload.avatars or {}).items()},
+        replace=payload.replace,
+    )
+    session.commit()
+    return LayoutOut(**video_layout.editor_state(template_service.require(session, project_id)))
+
+
+@router.post("/projects/{project_id}/video/layout/reset", response_model=LayoutOut)
+def reset_layout(
+    project_id: str, session: Session = Depends(_session_dependency)
+) -> LayoutOut:
+    """Back to the compiled layout — the only undo this editor has."""
+    video_layout.reset(session, project_id)
+    session.commit()
+    return LayoutOut(**video_layout.editor_state(template_service.require(session, project_id)))
 
 
 # --- avatar bindings (P3) -----------------------------------------------

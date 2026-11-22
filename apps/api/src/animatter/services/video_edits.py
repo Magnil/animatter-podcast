@@ -83,6 +83,12 @@ def edits_of(row: VideoTemplate) -> dict[str, Any]:
     return {
         "texts": texts if isinstance(texts, dict) else {},
         "photos": photos if isinstance(photos, dict) else {},
+        # The canvas arrangement (§19.38) shares this column with the other two. It is carried
+        # through untouched rather than parsed here: a text edit that rebuilt the blob from the
+        # fields it knew about used to drop everything else, and losing a saved layout silently
+        # when someone retypes a title is exactly the shape of bug this repository keeps
+        # re-learning.
+        "layout": data.get("layout"),
     }
 
 
@@ -129,7 +135,12 @@ def resolved_texts(
                 if value not in (None, ""):
                     merged[field] = value
         out.append(merged)
-    return out
+    # Last, because the arrangement is about *where* these slots sit and it is the only step
+    # that can change a rect without changing a character. Applied here rather than at each
+    # render site so the panel, the still and the export cannot disagree (§19.38).
+    from animatter.services import video_layout
+
+    return video_layout.apply_to_slots(row, out)
 
 
 def draw_slots(
@@ -238,9 +249,10 @@ def update_text(
         texts[key] = entry
     else:
         texts.pop(key, None)
-    row.edits_json = json.dumps(
-        {"texts": texts, "photos": data["photos"]}, ensure_ascii=False
-    )
+    payload: dict[str, Any] = {"texts": texts, "photos": data["photos"]}
+    if data.get("layout") is not None:
+        payload["layout"] = data["layout"]
+    row.edits_json = json.dumps(payload, ensure_ascii=False)
     session.flush()
     log.info("template.text_edited", template=row.id, key=key, fields=sorted(entry))
     return row
@@ -302,9 +314,10 @@ def set_photo(
 
     if asset_id is None:
         photos.pop(slot, None)
-        row.edits_json = json.dumps(
-            {"texts": data["texts"], "photos": photos}, ensure_ascii=False
-        )
+        payload: dict[str, Any] = {"texts": data["texts"], "photos": photos}
+        if data.get("layout") is not None:
+            payload["layout"] = data["layout"]
+        row.edits_json = json.dumps(payload, ensure_ascii=False)
         session.flush()
         log.info("template.photo_cleared", template=row.id, slot=slot)
         return row
@@ -341,7 +354,10 @@ def set_photo(
     overlay_media.dim(image_path=target, mask_path=mask, target=dim_target)
 
     photos[slot] = asset_id
-    row.edits_json = json.dumps({"texts": data["texts"], "photos": photos}, ensure_ascii=False)
+    payload = {"texts": data["texts"], "photos": photos}
+    if data.get("layout") is not None:
+        payload["layout"] = data["layout"]
+    row.edits_json = json.dumps(payload, ensure_ascii=False)
     session.flush()
     log.info("template.photo_set", template=row.id, slot=slot, asset=asset_id)
     return row
@@ -387,4 +403,11 @@ def signature(row: VideoTemplate) -> str:
     digest.update(json.dumps(data["texts"], sort_keys=True, ensure_ascii=False).encode())
     digest.update(b"|")
     digest.update(json.dumps(data["photos"], sort_keys=True, ensure_ascii=False).encode())
+    digest.update(b"|")
+    # The arrangement is drawn into the same PNG, so it belongs in the same key. A moved title
+    # changes no character and no colour, which is exactly the case a signature made only of
+    # those two things cannot see.
+    from animatter.core import layout as layout_core
+
+    digest.update(layout_core.parse(data.get("layout")).signature().encode())
     return digest.hexdigest()[:10]

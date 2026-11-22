@@ -164,12 +164,15 @@ def name_plates(session: Session, row: VideoTemplate) -> dict[str, str]:
 
 
 def _slots_of(row: VideoTemplate) -> list[dict[str, Any]]:
-    try:
-        parsed = json.loads(row.slots_json or "{}")
-    except ValueError:
-        return []
-    avatars = parsed.get("avatars") if isinstance(parsed, dict) else None
-    return [item for item in avatars or [] if isinstance(item, dict) and "name" in item]
+    """The avatar slots at their **current** positions (§19.38).
+
+    Delegates to :mod:`animatter.services.video_layout` rather than reading ``slots_json``: the
+    avatar track, the still preview and the panel all go through here, and a frame the user
+    dragged has to be in the same place in all three.
+    """
+    from animatter.services import video_layout
+
+    return video_layout.avatar_slots(row)
 
 
 def bound_slots(session: Session, row: VideoTemplate) -> list[SlotBinding]:
