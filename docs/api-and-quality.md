@@ -9,6 +9,19 @@
 
 ## 8. API 草案（REST + SSE）
 
+**这份清单是抄写版，不是权威。** 权威是跑起来的进程自己生成的 OpenAPI：
+`http://127.0.0.1:8317/openapi.json`（浏览器看 `/docs`）。实测它有 **103 条路径 / 121 个操作**，
+下面列的是读过、讨论过、被某个设计约束盯住的那一部分——**没列出来不等于没有**，问「有哪些接口」
+应当去 `/docs`，问「这条为什么长这样」才来这里。
+
+这个区分是第 142 轮补的。第 141 轮刚给视频那组补了 13 条模板与布局端点，回过头一数：**清单里
+60 条路径，进程里 103 条**——一半都不到，而清单读起来像完整的。**两者分工**：OpenAPI 回答
+「是什么」，这份文档回答「为什么」，所以新增端点时**不要求**同步到这里——但改了一条已经在下面
+写着的端点，就必须改。
+
+`GET /healthz` 是唯一不带 `/api` 前缀的一条，所以容易在清单里被漏掉：它答的是「这个进程现在真能
+干活吗」，ffmpeg 缺失或磁盘不足返回 **503** 而不是 200，拿它当探活用。
+
 ```
 POST   /api/projects                          创建
 GET    /api/projects/{id}
@@ -124,6 +137,8 @@ POST   /api/projects/{id}/export                       导出（kind 参数）
 | `edl.TimeMap` | 单调性、边界点、落在删除区间的查询、往返映射 |
 | `subtitle.wrap` | 超长句、CPS 超限、英文断词（不能在单词中间断） |
 | `hotword.sanitize` | 15 字符/7 词限制、去重、权重合并 |
+| `layout.scale_art` / `scale_font` / `cascade_name_plate` | 同尺寸恒等、框缩放按比例（含取偶）、字号取两轴小者、名字牌跟头像平移（§19.38.2） |
+| `video_workers.plan_workers` | 空值记 `inf` 不记 0、`inf // peak` 的 `nan` 要判 `math.isfinite`、8.3 GB 门限、硬上限 2（§19.34.1） |
 
 ### 9.2 集成测试（需要真实 API，用 `pytest -m live` 隔离）
 
@@ -135,8 +150,9 @@ POST   /api/projects/{id}/export                       导出（kind 参数）
 
 `tests/fixtures/` 放 3 个固定音频（30s 单speaker / 3min 双speaker / 10min 中英混排）+ 期望的 token 快照（JSON）。算法改动必须过快照 diff。
 
-> **实际状态（2026-11-13）**：`tests/fixtures/` 里只有一个 `audacity_full_labels.txt`（人工标注参照），
-> 三份音频与 token 快照都没做。回归目前靠 1393 条单元测试加真实项目手动走查。
+> **实际状态（2026-11-13 记，2026-11-23 核）**：`tests/fixtures/` 里只有一个
+> `audacity_full_labels.txt`（人工标注参照），三份音频与 token 快照都没做。回归目前靠
+> **1564 条**单元测试（`pytest -q -n 1`，约 185 s）加真实项目手动走查。
 > 这在算法改动上是真风险：没有快照 diff，一次「看起来更合理」的改动不会有人挡住。
 > 要补就优先补一条——**10 分钟的 token 快照**，比三份音频都值。见 `todolist.md` E3。
 

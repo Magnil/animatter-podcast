@@ -246,7 +246,7 @@ D:\Videos\费那奇MV-1080p24-v2.mp4
 |---|---|---|
 | 整片 plan（一次请求描述全片） | `services/video_plan.py`、`routers/video_plan.py`：`GET /versions/{id}/video/plan`、`/video/plan/file/{name}`、`/video/cue/{digest}/{i}.png`、`/video/backdrop/{digest}/{pos}.png` | 64 段、772 条字幕、161 KB；摘要进文件名 ⇒ `immutable` 缓存安全；`test_video_plan.py` 19 条 + `test_video_plan_api.py` 17 条 |
 | 按需烘焙（不预烘全片） | `media/cue_png.py`（libass 烘字幕带，76.6 ms/条）、`media/backdrop.py`（`boxblur`+`eq` 底图，**无损 PNG**） | JPEG 的 yuvj420p 往返把模糊环挪 4.5 % ⇒ 改无损后烘图与链自渲 **逐像素相同**（max delta 0） |
-| DOM 分层合成 | `apps/web/src/DomStage.tsx`、`videoPlan.ts`（`layersAt` 是**唯一**写图层顺序的地方）、`VideoPanel` 有 plan 就用舞台、无 plan 退回静帧按钮 | 图层顺序**量出来的**：`background → overlay(描边) → box → avatars → text → 全屏 → 字幕`；`plate`/`transparent` 段不画元素 |
+| DOM 分层合成 | `apps/web/src/DomStage.tsx`、`videoPlan.ts`（`layersAt` 是**唯一**写图层顺序的地方）、`VideoPanel` 有 plan 就用舞台、无 plan 退回静帧 | 图层顺序**量出来的**：`background → plate(底板) → overlay(描边) → box → avatars → text → 全屏 → 字幕`（`plate` 是第 137 轮拆出来的独立图层，§19.35）；`plate`/`transparent` **段**不画元素 |
 | 时钟 | `frameStartMs` / `filmFrame` / `localOffsetMs`；`SyncedVideo` 暂停时精确 seek、播放时 200 ms 容忍 | 前后端用**同一个表达式**（`frame_start_ms(at − segment.start)`），整数运算 |
 | 循环周期下发 | `loop_period_ms()` 探测 `stream=duration`（**不是** `format=duration`），随 `period_ms` 进 plan | 190.680 vs 190.763 s 差 83 ms ⇒ 三圈 4 帧；`test_a_looped_clip_publishes_the_stream_period...` 用 2.0 s 视频 + 2.4 s 音频的片段钉住 |
 | 静帧帧网格 | `box_track.build_single` 的 trim 界 = `frame_start_ms(offset) − 1/FPS + 1 ms` | 循环段 980 950 ms：**13.82 % → 0.00 %**；`test_video_still_seek.py` 26 帧 25 fps 红绿片段 |
@@ -348,7 +348,7 @@ D:\Videos\费那奇MV-1080p24-v2.mp4
 | OOM | 0 次 | **0 次**（14 块逐块 + 4 次并行组合 + 2 次接线） |
 | 接线（不是单测） | 真的开两个进程 | `workers=2`、`note`=「2 块，2 个并行…」、成片 **4 232 帧 = 2 259 + 1 973** |
 
-**验证规模**：后端 **1478 用例通过 / 2 skipped**（`-n 2`），`mypy --strict` **111** 文件零错误，
+**验证规模**（第 134 轮当时）：后端 **1478 用例通过 / 2 skipped**（`-n 2`），`mypy --strict` **111** 文件零错误，
 `ruff` 干净；前端 `tsc --noEmit` 干净、`npm test` **321 通过**、`vite build` 成功。
 新增测试：`test_video_workers.py` **20 条**（门限 / 硬上限 / `inf` 哨兵 / 理由文案 / 编码开关的
 正反两半 / 接线形态）、`videoExport.test.mjs` **2 条**（`render.note` 替换进度行的兜底文案）。
@@ -397,8 +397,10 @@ D:\Videos\费那奇MV-1080p24-v2.mp4
 | `scripts/check-r135-export-dialogs.mjs` | 29 条：菜单少 4 项、视频面板 2 文本框 + 2 勾选 + 无进度条、音频面板格式下拉 2 项 + 文件名同排 + 无取消 | **29/29** |
 | `scripts/check-r135-export-running.mjs` | 13 条：点导出 → 按钮变「停止」+ 进度条出现 + 输入框锁；点停止 → 「正在停止…」；终态「已停止」**黄色**、按钮回「导出」、输入框解锁 | **13/13** |
 
-**验证规模**：后端 **1490 passed / 2 skipped**（`-n 1`），`mypy --strict` **111** 文件零错误，`ruff`
-干净；前端 `tsc --noEmit` 干净、`npm test` **335 通过**、`vite build` 成功。
+**验证规模**（第 135 轮当时）：后端 **1490 passed / 2 skipped**（`-n 1`），`mypy --strict` **111**
+文件零错误，`ruff` 干净；前端 `tsc --noEmit` 干净、`npm test` **335 通过**、`vite build` 成功。
+（当前基线已随第 137–140 轮涨到 **1564 passed / 2 skipped**、mypy **114** 文件、`npm test` **377**，
+见 `AGENTS.md`「命令」。）
 新增测试：`test_video_cancel.py` **12 条**（真 `Popen` 量取消 / 区分超时 / stderr 仍可读 / 后缀三条
 规则 / 终态互斥）、`exportPanels.test.mjs` **20 条**（按钮文字、四种终态、本地日期、交付文案）。
 

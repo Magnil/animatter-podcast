@@ -749,7 +749,8 @@ contain` 保留：竖图不能被裁成 16:9。走查在 1440 和 1100 两个宽
 ### 7.7.1 DOM 实时预览（`<DomStage>`，第 129 轮）
 
 视频区在**有 plan 时**改用 DOM 分层合成：`VideoPanel` 取 `GET /versions/{id}/video/plan`，
-拿到就用 `<DomStage>` 画六层，取不到就退回原来的静帧按钮。两层是并存的，plan 是可选增强。
+拿到就用 `<DomStage>` 画图层，取不到就退回静帧路径（播放头停下自动出图；第 134 轮起没有按钮）。
+两层是并存的，plan 是可选增强。
 
 **图层顺序是量出来的**，不是猜的：`background → plate.png(底板) → overlay.png(描边) → box 内容
 → 头像 → text → 全屏(top) → 字幕`。注意**底板和描边都在素材框下面**（`build_filtergraph` 先铺

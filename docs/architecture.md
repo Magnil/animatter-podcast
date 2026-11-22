@@ -148,8 +148,10 @@ EDL 音频——否则一条 105 分钟的片子要多烧十几分钟 CPU。见 
 
 三个边界值得单独记一句：
 
-* `video_layout.py` 是**唯一**读 `slots_json[*]["rect"]` 的 service——别处要位置就问它，
-  否则「用户挪过」这件事会有一半代码不知道（§19.38.1）；
+* `video_layout.py` 是**唯一**把 `slots_json["texts"|"avatars"][*]["rect"]` 读成
+  「现在摆在哪儿」的 service——别处要位置就问它，否则「用户挪过」这件事会有一半代码不知道
+  （§19.38.1）。`video_templates.py` 也会读 `slots_json["art"][*]["rect"]`，但那是**编译产物**
+  自己的尺寸，不随用户拖动变化；
 * `template.py` 与 `plate_bake.py` 只被 `services/` 调用，不碰数据库；
 * `core/` 里唯一需要外部数字的是 `video_workers.py`，它的入参是空闲内存 GB，不是 `psutil`。
 
