@@ -96,7 +96,7 @@ docs/                    本文件拆出来的设计文档
 
 ```powershell
 # 后端：在 apps/api 下跑
-..\..\.venv\Scripts\python.exe -m pytest -q -n 2      # 1564 passed, 2 skipped，约 90 s
+..\..\.venv\Scripts\python.exe -m pytest -q -n 1      # 1564 passed, 2 skipped，约 185 s
 ..\..\.venv\Scripts\python.exe -m ruff check src tests
 ..\..\.venv\Scripts\python.exe -m mypy --strict src    # 114 files
 
@@ -114,7 +114,7 @@ npx vite build
 
 **这台机器上 `-n auto` 已经不可靠**：8 个 worker 同时跑 PSD 编译（`test_video_template_*`
 每次要 1440×2560 的 float32 画布）会偶发 `MemoryError: Unable to allocate 42.2 MiB`。
-**用 `-n 2`**；单文件 `-n0` 全过。
+**用 `-n 2`**；单文件 `-n0` 全过。**空闲内存低于约 6 GB 时直接上 `-n 1`**，别先跑 `-n 2` 再看。
 
 **但 `-n 2` 也不是永远全绿**：空闲内存低于约 5 GB 时（浏览器开着、后台还在跑别的），
 `test_video_template_edits.py` 会成批 ERROR（就是上面那条 `MemoryError`），
@@ -125,7 +125,7 @@ npx vite build
 ..\..\.venv\Scripts\python.exe -m pytest -q -n 1        # 内存不够时用这个，慢约 60 %
 ```
 
-`-n 1` 连跑 **1564 passed / 2 skipped**（约 182 s）。看到那两类失败时先跑一遍 `-n 1`
+`-n 1` 连跑 **1564 passed / 2 skipped**（约 185 s，实测 182–188 s）。看到那两类失败时先跑一遍 `-n 1`
 再判断是不是回归——**不要直接去查代码**，这条已经浪费过一次时间。
 
 **改完四个都要绿**：pytest、ruff + mypy、tsc、npm test。设计文档与实现不一致时，先改文档再改代码。
