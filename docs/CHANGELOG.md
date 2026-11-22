@@ -1,6 +1,6 @@
 # 变更记录
 
-> **这份文件不要通读。** 它是逐次变更的现场记录，一共 235 KB，其中大部分已经沉淀进
+> **这份文件不要通读。** 它是逐次变更的现场记录，一共 240 KB，其中大部分已经沉淀进
 > 上面几份设计文档。只在两种时候打开：
 >
 > 1. 想知道**某个东西当初为什么这么做**（某条设计看起来多余时，原因通常写在这里）；
@@ -3398,4 +3398,61 @@ plan digest、烘焙 digest）全部加 `art_signature`，`PLATE_VERSION` 1→2 
 8 条，钉的是老行兼容与 bad JSON 降级，不是 happy path。）
 
 **配套文档**：`docs/video.md` §19.35（含四次失败）、决策 D25、`milestones.md` 视频 P8。
+
+## 第 138 轮：模板变成可以交出去的文件，新项目自带一个（2026-11-22）
+
+**为什么做。** 第 137 轮把布局变成了数据（§19.35），但数据只住在一个项目的
+`build-<sha>/` 目录里，路径还带项目 id。「把这个模板给我同事用」只有一条路：把 PSD 发过去，
+请他重新导入、重新调九条文字、重新换四个头像。这不是模板功能该有的样子。
+
+**做了什么。** 三件，每一件都能单独交付：`.template` 包（导出 / 导入）、随程序发布的默认模板、
+新项目建完就装上默认模板。
+
+包的形状在 `services/video_template_package.py`：`manifest.json` + `art/*.png` + `fonts/*.ttf`，
+zip + `.template` 扩展名，24 个成员、一个真模板 1.72 MB。**故意不打包 `edits_json` 和
+`bindings_json`** —— 前者是这一期片子的标题和换过的头像，后者是槽到说话人的自增 id；打进去的
+后果是「导入模板」静默把别人的片名写到你的成片上。
+
+**一次只坏在真机上的 bug。** 第一次导出**成功**，manifest 里六张共享图齐全，`read_package()`
+回读全对，而四个头像一张都没进包。原因：`compile_template` 写进 `slots_json` 的是**相对进程
+cwd** 的路径（`data\projects\…`，因为 `Settings.data_dir = Path("data")`），而导出侧写的是
+「不是绝对路径就拼到海报目录上」，拼出来的 `<build>\data\projects\…` 永远不存在，
+`is_file()` 为假，于是**跳过而不是报错**。包仍然合法、导入仍然成功、用户拿到一个没有头像的
+模板——面板上四个槽是空的，看起来就像这个模板本来就没有头像。
+
+修法 `_slot_art(value, base)`：绝对路径先按原样试、相对路径先按「海报目录 + 文件名」试，两种
+读法各试一次。回归测试 `test_avatar_art_travels_even_when_the_slot_path_is_relative` 用
+`monkeypatch.chdir(tmp_path)` 造相对形式（pytest 的 `tmp_path` 常在另一个盘，不 chdir 写不出跨
+盘相对路径），**并已验证去掉修复后它确实会红**——否则它只是在描述当前实现。
+
+**默认模板的四个决定。** ① 用 `build_package` 生成，不手搓 zip：它和用户导出的必须是同一个产物，
+否则第一个漂移的就是格式。② 走用户导入那条路（`install_default = import_package(default_package())`），
+所以它不是唯一没被任何代码路径练过的包——反过来导入路径的 bug 会在「新建项目」时就暴露。
+③ 装不上不连累建项目（`try/except` + `log.warning`），用户看到「还没有模板」，那里有按钮能再试。
+④ 四个头像槽是**一张通用占位人像**、环色保持 PSD 各自的黄/黄/粉/蓝；不是那张粉环绿圆的测试图
+（历史残留，当默认头像会让人以为程序坏了）。四个文字槽名加宽到 64×18，因为 PSD 原来的 30 px
+宽会把三字名 `_fit` 缩到 12 px（§19.13 的旧账）。
+
+字体跟着包走（`data/fonts/` + `fonts.set_private_dir`）。版权风险不清算，这是用户明确拍板的
+取舍：程序只做「带上我用到的字体」这一件事。
+
+**判据。** `scripts/verify-r138-template-package.py` 四步零差异：导出 1,723,077 B → 装进临时项目
+→ 22 张图**逐字节**相同 → 从导入的项目再导出，25 个成员 `lost=0 changed=0`（`manifest.json`
+因 `created_at` 合法漂移，单独排除）→ 五个指针（poster / poster_bare / plate / stroke / box）
+全部指向新 build 目录里**存在**的文件 → 两套字体 `resolve()` 非空。画面本身的逐像素等价由
+§19.35.1 的 `render_still` PSNR `inf` 钉住，这里不重复跑一分钟编码。
+
+**界面。** 空态加「用默认模板」「导入模板包…」，ready 态加「导出模板包…」「换回默认模板」
+「导入模板包…」。三条走查脚本 `check-r138-template-{package,package-layout,empty-state}.mjs`
+全部通过：三个按钮在视口内、宽 ≥ 70、不重叠（实测 x=944/1059/1178, w=109/113/109, y=406 h=36），
+文件选择器 accept 含 `.template`。空态那条没法用真实项目验证——界面没有切换项目的入口，
+所以用 `Page.addScriptToEvaluateOnNewDocument` 把 `/video/template$` 的 fetch 截成 `null` 再 reload。
+
+**闸门**：`pytest -n 1` **1526 passed / 2 skipped**（185 s）、ruff 干净、`mypy --strict` **112
+files** 干净、`tsc --noEmit` 干净、`npm test` **349 passed**、`vite build` 402.94 kB。
+新增测试 `tests/test_video_template_package.py` 17 条、`test_video_template_default.py` 8 条、
+`apps/web/src/templatePackage.test.mjs` 8 条。
+
+**配套文档**：`docs/video.md` §19.36（包 / 拒绝表 / 默认模板 / 那个只坏在真机的 bug / 判据）与
+§19.37（十八个取舍的落地状态），决策 D26。
 

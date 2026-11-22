@@ -896,3 +896,42 @@ URL 不变，浏览器继续显示旧帧，看起来像「点了没反应」。
 顺带一句关于默认值：拖进时间轴的素材块是**静音，也就是 M 亮**。第 115 轮中途试过默认 S，用户
 随即更正；第 116 轮用户又把「默认」说得更明确——「M 亮起，即静音」，并且「不允许两者都不亮」。
 成片的声音默认是播客，素材的声音永远是用户主动要求的。
+### 7.9 模板包与默认模板的五个按钮（第 138 轮）
+
+模板第一次可以离开这台机器（`docs/video.md` §19.36）。界面上它有五条路，分布在两个状态里：
+
+| 状态 | 按钮 | 做什么 |
+|---|---|---|
+| 还没有模板（或上次编译失败） | 导入并编译（主按钮） | 导入本机 PSD 路径 —— 老路 |
+| | 用默认模板（ghost） | `POST …/video/template/default`，**不确认** |
+| | 导入模板包…（ghost） | 选一个 `.template` 文件 |
+| 模板已就绪 | 导出模板包…（ghost） | `GET …/video/template/package` → `saveBlob` |
+| | 换回默认模板（ghost） | 同一个端点，**先确认** |
+| | 导入模板包…（ghost） | 同上，有模板时**先确认** |
+
+三条不写在代码里就会踩的：
+
+* **「用默认模板」不确认，「换回默认模板」要确认。** 不是措辞不一致：前者发生在空态——那时
+  屏幕上没有任何可失去的东西，弹窗只是多一次点击；后者会替换一个用户已经调过九条文字和四个
+  头像的模板。确认文案（`templatePackage.ts::REPLACE_WARNING`）明说两件事：「换模板会替换现在的
+  文字和头像；原来导入的 PSD 不会被删。」第二句是必须的——不说清楚，用户会因为怕丢 PSD 而不敢按。
+* **文件名从 `Content-Disposition` 里读，不在前端拼。** 服务端给的是
+  `attachment; filename="template.template"; filename*=UTF-8''<percent-encoded 项目名>.template`。
+  `api.ts` 只把**未解析的头**交出来（它刻意不 import 任何本地模块，`api.test.mjs` 在 `node --test`
+  下严格解析扩展名），解析在 `templatePackage.ts::filenameFromDisposition`：优先 RFC 5987 的
+  `filename*`，`decodeURIComponent` 失败就落回老式 `filename=`，都没有才用兜底名。
+  项目名里有中文和空格，`filename=` 那份在某些浏览器上会被截断，所以两条都要留。
+* **文件选择器是自己画的 `<input type="file" hidden>`。** 原生选择器的按钮文案不可控（「选择文件」
+  与三栏布局的语言不一致），所以 ghost 按钮负责「看起来」，`ref.current?.click()` 负责行为，
+  `accept=".template,application/zip"` 负责过滤。上传后不论成败都在 `finally` 里清 `input.value`：
+  不清的话选同一个文件第二次不会触发 `change`，用户会以为按钮坏了。
+
+`saveBlob` 从 `App.tsx` 提进了 `download.ts`。原因不是复用，是它里面有一行容易写错又只在真机上
+显现的东西：`setTimeout(() => URL.revokeObjectURL(url), 60_000)`。立即 revoke 在大文件上会让下载
+中途断掉（Chrome 有时已经在读了，有时还没有）。两个副本里只要有一个漏了这一行，症状就是
+「导出模板包没反应」——而被怀疑的永远是后端。
+
+**空态怎么走查。** 界面上没有切换项目的入口（`App` 只认启动时加载的那个项目），所以拿不到一个
+真实的无模板项目。`check-r138-template-empty-state.mjs` 用
+`Page.addScriptToEvaluateOnNewDocument` 把 `GET /video/template` 的响应截成 `null` 再 reload：
+判的是「空态界面长什么样」，不是「后端会不会返回 null」——后者已有单测。

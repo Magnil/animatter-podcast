@@ -2808,3 +2808,147 @@ path 过 `Path(name).name` 是第一道边界（`asset_path` 早就这么做）�
 导出速度**不变**（图层数从 1 变 2，但 plate 是 1444×815 而不是全画布，实测 PSNR `inf` 的那次
 只差几毫秒）。
 
+### 19.36 模板包与默认模板：模板第一次可以离开这台机器（第 138 轮）
+
+§19.35 让布局变成了数据，但数据仍然只住在一个项目的 `build-<hash>/` 目录里，路径还带项目 id。
+「我调好的模板给我同事用」这件事因此只有一条路：把 PSD 发过去，请他重新导入、重新调文字、
+重新换头像。第 138 轮把这条路换成一个文件。
+
+包里是 **24 个成员**（一个真模板实测 1 723 077 B，压缩后）：
+
+```
+manifest.json                     schema / 画布 / box_rect / fit / slots / art / 每文件 sha256
+art/background.png                海报（头像已压平）
+art/background_open.png           海报（没有头像）
+art/background_bare.png           同一个 twin，无头像无底板
+art/background_bare_open.png
+art/plate.png          1444×815   底板，rect 在 manifest 的 art 里
+art/overlay.png        1456×829   描边
+art/avatar<N>_{lit,dim,frame,mask}.png   ×4 槽
+fonts/<字体文件名>.ttf
+```
+
+`art/` 里只放**文件名**，不放路径：`build-<hash>` 的目录名取决于 PSD 的 sha256，而导入端的
+sha256 一定是数据目录下的另一个值。这也是 `slots_json.art` 只存文件名的同一条理由（§19.35）。
+
+#### 19.36.1 故意不打包的两样
+
+- **`edits_json`** —— 这一期片子的标题、期号、换过的头像。它属于**项目**，不属于模板。打进去
+  的后果是「导入模板」把别人的片名静默写到你的成片上。
+- **`bindings_json`** —— 槽 → 说话人的 id。id 是这张库里的自增值，换台机器指向另一位说话人，
+  换不了就是空。
+
+`content` 角色的文字槽在导出时整条剥掉（§19.37 ⑦）：它从来不渲染，留着只会在导入端的
+模板面板里多出一个改了也没用的输入框。
+
+#### 19.36.2 导入是唯一一条「外部字节变成磁盘文件」的路
+
+`POST /api/projects/{id}/video/template/package` 是本项目里第一个接受**外部二进制**的端点
+（其余上传都是本机路径或本项目自己的素材）。因此拒绝条件写得比功能多：
+
+| 拒绝 | 代码 | 挡住的是 |
+|---|---|---|
+| 压缩包 > 64 MB / 解压后单文件 > 16 MB / 成员 > 200 | `template_package_too_large` 等 | zip 炸弹 |
+| 成员名是绝对路径、含 `..`、首段带盘符 | `template_package_unsafe` | 写到目标目录之外 |
+| 后缀不在 `.json/.png/.ttf/.ttc/.otf` | `template_package_type` | 掉一个 `.exe` 进来 |
+| `manifest.json` 缺失/不是对象/没有 `schema` | `template_package_no_manifest` | 一个普通 zip |
+| `schema` 比本程序新 | `template_package_newer` | 半懂不懂地渲染出一个错模板 |
+| 每个成员与 manifest 记的 sha256 不符 | `template_package_corrupt` | 下载中断（会渲染出「稍微不对」的海报） |
+| `art.plate` / `art.stroke` 缺失或指向包外的文件 | `template_package_incomplete` | 第 137 轮之前导出的格式 |
+
+哈希这一条不是洁癖：截断的下载和手工改过的 manifest 是包出错的两种主要方式，**两种都不会报错**，
+只会渲染出一张边框错位的海报。
+
+#### 19.36.3 默认模板：新项目的起点
+
+`apps/api/src/animatter/defaults/default.template`（1 292 670 B）随包发布，
+`create_project()` 建完目录就调 `install_default()`。三件事按顺序决定了这个设计：
+
+1. **默认模板用 `build_package` 生成**，不是手搓一个 zip。它和用户导出的包必须是同一个产物，
+   否则第一个漂移的就是格式，而漂移只会在用户第一次导出时被发现。
+2. **默认模板走用户导入那条路**（`install_default` = `import_package(default_package())`）。
+   它因此不是唯一没被任何代码路径练过的包——反过来，导入路径的每个 bug 都会在「新建项目」时就暴露。
+3. **装不上不连累建项目**（`try/except Exception` + `log.warning`）。一个坏掉的内置资源不该让人
+   连项目都建不出来；用户看到的是「还没有模板」，那里有「用默认模板」按钮可以再试一次。
+
+包内 7 个文字槽：期号 `EP.**01**`、标题两行「漫**物质**播客 / 把**动漫画**当回事」、四个头像名
+（`主播1` `主播2` `嘉宾1` `嘉宾2`，**矩形加宽到 64×18**——PSD 原来的 30 px 宽会把三字名 `_fit`
+缩到 12 px，那是 §19.13 的旧账）、页脚「欢迎关注@漫物质AniMatter」。两个 `content` 槽已剥，
+`box_fit_default` 是 `blur_fill`。
+
+四个头像槽是**一张通用占位人像**（浅灰圆 + 深灰头肩剪影），环色保持 PSD 各自的黄/黄/粉/蓝
+（§19.37 ⑤）。不是四张一样的图：`lit` 的字节不同，因为环不同；也不是那张粉环绿圆的测试图，
+那是历史残留，当默认头像会让人以为程序坏了。
+
+字体跟着包走（§19.37 ⑥）：`Baigo` 与 `Alimama ShuHeiTi` 落到 `data/fonts/`，由
+`fonts.set_private_dir()` 加入扫描目录。版权风险不清算——这条是用户明确拍板的取舍，程序里
+只做了「带上我用到的字体」这一件事。
+
+#### 19.36.4 一个只坏在真机上的 bug：相对路径
+
+包的第一次真机导出**成功**，manifest 里 6 张共享图齐全，`read_package()` 回读也全对，而
+**四个头像一张都没进包**。
+
+原因在 `slots_json` 的存法：`compile_template` 写的是
+`data\projects\<id>\video\templates\build-x\avatar0_lit.png` —— **相对进程 cwd** 的路径，
+因为 `Settings.data_dir` 就是相对路径 `Path("data")`。导出侧原来的写法是「不是绝对路径就拼到
+海报目录上」，拼出来的 `<build>\data\projects\…` 永远不存在，`is_file()` 为假，于是**跳过而不是报错**。
+
+这不是「路径解析写错了」这么简单：包仍然合法，manifest 仍然自洽，导入仍然成功，用户拿到的
+是一个没有头像的模板——而模板面板上四个槽是空的，看起来就像这个模板本来就没有头像。
+
+修法是 `_slot_art(value, base)`：绝对路径先按原样试、相对路径先按「海报目录 + 文件名」试，
+两种读法都试一次，都失败才放弃。测试
+`test_avatar_art_travels_even_when_the_slot_path_is_relative` 用 `monkeypatch.chdir(tmp_path)`
+造出相对形式（pytest 的 `tmp_path` 常在另一个盘上，不 chdir 写不出跨盘相对路径），并已确认
+**去掉修复后这条测试会红**——否则它只是在描述当前实现。
+
+#### 19.36.5 判据
+
+`scripts/verify-r138-template-package.py` 四步，判据是**零差异**：
+
+```
+1. exported  播客-费那奇MV.template  1,723,077 B
+2. installed vtpl=…  project=…（临时项目，finally 删掉）
+3. compared 22 images  missing=0  differing=0
+4. re-exported  members=25  lost=0  changed=0
+5. pointers  poster=background_open.png  plate=plate.png  stroke=overlay.png  box=plate.png
+   box origin (238, 206)
+6. fonts     AlimamaShuHeiTi-Bold.ttf, Baigo-Regular.ttf
+```
+
+第 3 步是逐字节，第 4 步把导入的项目**再导出一次**比成员哈希（`manifest.json` 因 `created_at`
+与项目名合法漂移，单独排除）。第 5 步是「渲染能不能用」的可判据版本：`background_path` 是所有
+其他路径的锚点，锚点错了文件仍在磁盘上，只是没人读——所以要求五个指针**都指向新 build 目录里
+存在的文件**。画面本身的逐像素等价由 §19.35.1 的 `render_still` PSNR `inf` 钉住，这里不重复跑。
+
+### 19.37 模板优化的十八个取舍（第 138 轮）
+
+第 137–138 轮动手前逐条拍板。前四列是决定，最后一列是它落在哪：**已落地** = 有代码有测试；
+**第三期** = 画布编辑器，还没做（`todolist.md`）。
+
+| # | 决定 | 落在哪 |
+|---|---|---|
+| ① | 底板、描边拆成独立 PNG，各带 rect | 已落地（§19.35） |
+| ② | 头像名槽随头像框级联位移 | 第三期（`edits_json.layout`） |
+| ③ | 布局进四个缓存键 | 已落地（§19.35.3） |
+| ④ | 保留「漫物质会客厅」品牌底图 | 已落地（默认模板用同一张海报） |
+| ⑤ | 默认头像 = 一张通用占位人像 + **各槽自身环色** | 已落地（§19.36.3） |
+| ⑥ | 打包字体，版权风险由用户承担 | 已落地（`data/fonts/` + `set_private_dir`） |
+| ⑦ | 去掉两个 `role=content` 槽 | 已落地（导出时剥、导入时再剥一遍） |
+| ⑧ | `box_fit_default` 默认 `blur_fill` | 已落地（默认模板 manifest） |
+| ⑨ | 包 = zip，扩展名 `.template` | 已落地（§19.36） |
+| ⑩ | `manifest.json` + `art/*.png` + `fonts/*.ttf` | 已落地（§19.36） |
+| ⑪ | 包内不放 `edits_json` / `bindings_json`，解压校验路径穿越与大小 | 已落地（§19.36.1、§19.36.2） |
+| ⑫ | 两个真实项目从 PSD 重编译，不手改库 | 已落地（§19.35.1） |
+| ⑬ | 框放大时字号按比例放大 | 第三期 |
+| ⑭ | 头像框锁定宽高比 | 第三期 |
+| ⑮ | 布局要有「恢复默认」 | 第三期 |
+| ⑯ | 素材框强制偶数 | 已落地（`even_rect`，§19.13） |
+| ⑰ | 保留 `**` 换色机制，只是不再常驻提示 | 已落地（默认文案带 `**`，界面上不解释） |
+| ⑱ | 画布编辑器的底图用海报（不是烘焙图） | 第三期 |
+
+⑬⑭⑮⑱ 都依赖同一件还不存在的东西：`edits_json.layout`。它决定「用户挪过的框在哪」，也决定
+恢复默认要把什么恢复回去。在那之前，画布上看到的一切几何都来自 `slots_json`——那是编译产物，
+不是用户意图。
+

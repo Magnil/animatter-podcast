@@ -202,6 +202,21 @@ D:\Videos\费那奇MV-1080p24-v2.mp4
 | 前端 plan 字段 `overlay_url` → `plate_url`/`plate_rect` + `stroke_url`/`stroke_rect` | `apps/web/src/videoPlan.ts`、`DomStage.tsx`、`api.ts` | 层序 `background → plate → stroke → media`，plate 用自己 rect |
 | 老行（无 `art`）不迁移也不降级 | `art_of()` 的兼容分支、`poster_of()` 的回退 | `tests/test_video_template_art.py` 8 条 |
 
+### 视频 P9 交付清单（2026-11-22，第 138 轮）
+
+模板**可以交出去**了：一个 `.template` 文件带走海报、底板、描边、四个头像和两套字体。设计、
+拒绝表与那个只坏在真机的 bug 在 `docs/video.md` §19.36–§19.37，决策 D26。
+
+| 交付物 | 落在哪 | 验收 |
+|---|---|---|
+| 导出 `.template`（zip：`manifest.json` + `art/*.png` + `fonts/*.ttf`） | `services/video_template_package.py::build_package`、`GET …/video/template/package` | 真模板 1,723,077 B / 25 成员；包里**无** `edits_json`、`bindings_json`，`content` 槽被剥 |
+| 导入（唯一一条外部字节变磁盘文件的路） | `import_package`、`POST …/video/template/package` | 22 张图**逐字节**相同；再导出 25 成员 `lost=0 changed=0`；五个指针全落新目录 |
+| 七类拒绝（炸弹 / 穿越 / 后缀 / 无 manifest / 新 schema / 哈希不符 / 缺 art） | `read_package` / `_safe_name` / `_check_hashes` | `tests/test_video_template_package.py` 17 条，判据是错误码 |
+| 默认模板随包发布，新项目自动装 | `defaults/default.template`、`services/projects.py::create_project`、`POST …/template/default` | `test_video_template_default.py` 8 条；内置包装坏时项目仍建成 |
+| 占位头像一张人像 + 各槽自身环色 | `.tmp/work/make_default.py`（一次性生成脚本） | 四张 `lit` 内圈一致（8×8 缩略两两差 ≤ 12，实测 5）、环色 ≥ 2 种 |
+| 字体跟着包走 | `services/video_template_package.py::_install_fonts`、`media/fonts.py::set_private_dir` | 导入后 `resolve("Baigo")` / `resolve("Alimama ShuHeiTi")` 非空 |
+| 界面上五条路 | `apps/web/src/VideoPanel.tsx`、`templatePackage.ts`、`download.ts` | 三条 CDP 走查全通过（按钮在视口内、不重叠、accept 含 `.template`） |
+
 ### 进度一览（2026-11-14 订正）
 
 ```
@@ -227,6 +242,7 @@ M6 ⬜ 稳定性
         设计与实测并入 `docs/video.md` §19.31–§19.34（预览架构、播放与降级、静帧、导出并行与编码），
         决策 D19–D23
 视频 P8 ✅（11-21）：模板编译产物拆分——底板/描边各带 rect，**diff px = 0**、PSNR `inf`
+视频 P9 ✅（11-22）：模板包（`.template` 导出/导入）+ 默认模板随包发、新项目自带
 ```
 
 **P7 的预览侧三档（P0 / P1 / P2）与导出侧的全部档位（E1 / E2 / E3，E4 判定不做）已落地**，

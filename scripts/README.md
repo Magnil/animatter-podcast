@@ -35,6 +35,9 @@ Node 22+ 自带全局 `WebSocket`，所以没有额外依赖。
 | `check-r135-export-dialogs.mjs` | 两个导出面板：菜单少 4 项、视频面板 2 文本框 + 2 勾选 + 无进度条、音频面板格式下拉 2 项且与文件名同排、两个面板都没有「取消」 |
 | `check-r135-export-running.mjs` | 「导出 ⇄ 停止」真的换成：点导出后按钮变「停止」+ 进度条出现 + 输入框锁；点停止后「正在停止…」；终态「已停止」是**黄色**、按钮回「导出」、输入框解锁 |
 | `check-r136-saved-text.mjs` | 保存完不再挂着「正在保存…」：把 `save-to` 打桩成 400 ms 的假成功、其余真跑，断言先「正在保存…」（ok 色调 100 %）再「已保存到 <路径>」，按钮回「导出」 |
+| `check-r138-template-package.mjs` | 模板包三条路都在：ready 态的「导出模板包…」「换回默认模板」「导入模板包…」文案齐全，文件选择器 accept 含 `.template` |
+| `check-r138-template-package-layout.mjs` | 三个按钮量 `getBoundingClientRect`：在视口内、宽 ≥ 70、互不重叠、都可用（第 135 轮那种「挤在一起没人发现」的退化） |
+| `check-r138-template-empty-state.mjs` | 空态（没有模板时）有「用默认模板」和「导入模板包…」，且提到 `.template`。把 `/video/template` 的 fetch 截成 `null` 再 reload，因为界面没有切换项目的入口 |
 
 ## 非浏览器验证
 
@@ -49,6 +52,12 @@ Node 22+ 自带全局 `WebSocket`，所以没有额外依赖。
 `scripts/verify-e1-plate.py` 验收「烘焙 plate 与旧图逐位相同」：单帧约 2 s；`--chunk N`
 真编一个 chunk 两遍（旧图 / 烘焙图）并逐帧比 PSNR，约 1 min。判据是 **`inf`**——头像补丁
 如果画错缩放器会掉到 54 dB，肉眼几乎看不出，所以这条不能靠目视。
+
+`scripts/verify-r138-template-package.py` 验收「模板包导出再导入，什么都不丢」：真端点导出
+1.72 MB → 装进一个临时项目 → 22 张图**逐字节**比 → 从导入的项目**再导出**比成员哈希（`manifest.json`
+因 `created_at` 合法漂移，单独排除）→ 五个指针（poster / plate / stroke / box）必须落在**新** build
+目录且文件存在 → 两套字体 `resolve()` 非空。判据是零差异：包坏掉的方式是不报错。画面本身的逐像素
+等价由第 137 轮的 `render_still` PSNR `inf` 钉住，这里不重复跑编码。
 
 `scripts/verify-e3-workers.py` 验收导出并行度：`formula` 打印「空闲内存 × 块形状」的档位表
 （纯函数，不跑 ffmpeg）；`wire` 把内存探针桩成 12 GB 跑真的 `_render_picture`，判据是日志
