@@ -228,10 +228,12 @@ D:\Videos\费那奇MV-1080p24-v2.mp4
 | 挪框时底板/描边按比例跟、字号跟两轴小者、头像名按位移平移 | `scale_art` / `scale_font` / `cascade_name_plate` | 同尺寸恒等（`{238,206,1444,815}` 不变）；标题 `617×109→720×130` 时 56→64 px |
 | 四个缓存键都带 `layout.signature()` | `video_edits.signature`、`_still_digest`、`_video_signature`、`video_plan._digest` | 移动标题后同刻静帧 URL 换 digest；`sort_keys` 保证顺序无关 |
 | 三个端点 + 两类拒绝 | `GET/PUT …/video/layout`、`POST …/layout/reset` | `content` 槽 → `layout_slot_fixed` 409；不存在的 key → `layout_slot_unknown` 404；未就绪 → `template_not_ready` |
-| 画布编辑器（第五页签） | `apps/web/src/LayoutEditor.tsx`、`layoutMath.ts` | `layoutMath.test.mjs` 28 条；`check-r139-layout-editor.mjs` 五组判据 `problems: []` |
+| 画布编辑器（模板页签里「编辑布局…」打开的弹窗） | `apps/web/src/LayoutEditor.tsx`、`layoutMath.ts` | `layoutMath.test.mjs` 28 条；`check-r139-layout-editor.mjs` 五组判据 `problems: []` |
 | 手势：松手提交 / 方向键 400 ms 防抖 / 缩放不吸附 / 框偶数 / 头像锁比例 | `layoutMath.ts` | 拖动一次一个请求；拖后 `location.reload()`「已改动」仍在 |
 | 两个恢复默认 | 单块 `PUT`、全部 `POST …/layout/reset` | 「全部恢复默认」后库里 `is_default=true`、`changed == {}` |
 | 画面只动该动的地方 | `video_render` 走 `video_layout` | 移动标题前后静帧 `ImageChops.difference` bbox = `(1002, 82, 1698, 181)` |
+
+第 140 轮把入口从「第五个页签」改成模板页签里的「编辑布局…」按钮 + 模态框：布局一次调完就不再动，页签等于每期都问一句。对话框 980 px，画布实测 944 px，比页签里的 478 px 宽一倍；页脚只有「关闭」。决策 D28。
 
 ### 进度一览（2026-11-14 订正）
 
