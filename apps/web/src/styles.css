@@ -3001,6 +3001,20 @@ button.small,
   margin-left: auto;
 }
 
+/* Round 140: the canvas moved from its own tab into a dialog, so it can be wider than the 480 px
+   设置栏 ever was. Capped by viewport height as well: the canvas is 16:9 and the bar/note below it
+   are fixed height, so a phone-height window would push the note out of the modal. */
+.modal.layout-modal {
+  width: min(980px, 94vw);
+}
+
+/* The canvas keeps its 16:9 instead of being squeezed: a drag surface whose aspect ratio changed
+   with the window would make every coordinate readout meaningless. On a short window the body
+   scrolls, which is what every other modal here already does. */
+.layout-modal .modal-body {
+  overflow-y: auto;
+}
+
 /* Narrow window: the settings column would be squeezed under the preview and the
    preview would lose more width than the column gains. Stack instead. */
 @media (max-width: 1180px) {
