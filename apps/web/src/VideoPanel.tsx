@@ -54,11 +54,21 @@ import { formatTime } from "./format";
 import { playheadClock } from "./playheadClock";
 import { timeMapFrom, toOutputClamped, type Keep } from "./timeMap";
 import { VideoTrack } from "./VideoTrack";
+import { saveBlob } from "./download";
+import { REPLACE_WARNING, filenameFromDisposition, packageSize } from "./templatePackage";
 import type { View } from "./waveView";
 import { FITS, blockName, dropRange, orphanedBlocks, summaryLine } from "./videoTimeline";
 
 interface Props {
   projectId: string;
+  /**
+   * The project's name, for the template package's fallback filename.
+   *
+   * Only a fallback: the server names the download after the same project, and its
+   * `Content-Disposition` wins. Passed anyway so a header-less response still produces
+   * 「第 3 期.template」 instead of 「模板.template」.
+   */
+  projectName: string;
   versionId: string;
   /** Playhead on the **original** timeline; the preview is asked for output time. */
   positionMs: number;
@@ -147,6 +157,7 @@ function LiveDomStage({
 
 export function VideoPanel({
   projectId,
+  projectName,
   versionId,
   positionMs,
   keeps,
@@ -167,6 +178,14 @@ export function VideoPanel({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [importPath, setImportPath] = useState("");
+  /**
+   * The hidden `<input type="file">` for a `.template` package.
+   *
+   * A real file input rather than a path field (which is what the PSD import still uses)
+   * because a package is something the user just downloaded and has no path for: the browser
+   * hands over bytes, and a path box would ask them to find it in 下载 themselves.
+   */
+  const packageInput = useRef<HTMLInputElement | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewAt, setPreviewAt] = useState(0);
   /**
@@ -275,6 +294,67 @@ export function VideoPanel({
       onNotice(caught instanceof Error ? caught.message : String(caught));
     } finally {
       setBusy(false);
+    }
+  };
+
+  /**
+   * Swap in the bundled default template.
+   *
+   * No confirm dialog: the empty state is the only place the button appears bare, and there
+   * is nothing to lose there. Replacing an existing template goes through
+   * `doReplaceWithDefault`, which warns first.
+   */
+  const doUseDefault = async (): Promise<void> => {
+    setBusy(true);
+    try {
+      setTemplate(await api.installDefaultTemplate(projectId));
+      onNotice("已换上默认模板");
+      await load();
+    } catch (caught) {
+      onNotice(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Ask before replacing a template that already exists; see `REPLACE_WARNING`. */
+  const doReplaceWithDefault = async (): Promise<void> => {
+    if (!window.confirm(REPLACE_WARNING)) return;
+    await doUseDefault();
+  };
+
+  const doDownloadPackage = async (): Promise<void> => {
+    setBusy(true);
+    try {
+      const { blob, disposition, bytes } = await api.templatePackage(projectId);
+      const cleaned = projectName.replace(/[\\/:*?"<>|]/g, "_").trim();
+      const filename = filenameFromDisposition(disposition, `${cleaned || "模板"}.template`);
+      saveBlob(blob, filename);
+      onNotice(`已导出 ${filename}（${packageSize(bytes)}）`);
+    } catch (caught) {
+      onNotice(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doUploadPackage = async (files: FileList | null): Promise<void> => {
+    const file = files?.[0];
+    if (!file) return;
+    if (template !== null && !window.confirm(REPLACE_WARNING)) {
+      if (packageInput.current) packageInput.current.value = "";
+      return;
+    }
+    setBusy(true);
+    try {
+      setTemplate(await api.uploadTemplatePackage(projectId, file));
+      onNotice(`已导入 ${file.name}`);
+      await load();
+    } catch (caught) {
+      onNotice(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+      if (packageInput.current) packageInput.current.value = "";
     }
   };
 
@@ -695,6 +775,35 @@ export function VideoPanel({
               </button>
             ) : null}
           </div>
+          {/*
+            Two ways out of the empty state that are not "find a PSD and type its path".
+            The default is the one most projects want; a `.template` is what people exchange
+            with each other. Both sit below the PSD row because the PSD is the advanced path,
+            not the first thing to try.
+          */}
+          <p className="section-note">
+            没有 PSD 也可以：用程序自带的默认模板，或者导入别人给的 <code>.template</code> 文件。
+          </p>
+          <div className="edl-actions">
+            <button type="button" className="ghost" disabled={busy} onClick={() => void doUseDefault()}>
+              用默认模板
+            </button>
+            <button
+              type="button"
+              className="ghost"
+              disabled={busy}
+              onClick={() => packageInput.current?.click()}
+            >
+              导入模板包…
+            </button>
+            <input
+              ref={packageInput}
+              type="file"
+              accept=".template,application/zip"
+              hidden
+              onChange={(event) => void doUploadPackage(event.target.files)}
+            />
+          </div>
         </div>
       ) : template.status === "pending" || template.status === "compiling" ? (
         <p className="section-note">正在编译模板（约 6 秒）…</p>
@@ -820,6 +929,45 @@ export function VideoPanel({
                         ))}
                       </select>
                     </label>
+                    {/*
+                      Sharing the template itself. A `.template` carries the poster, the slot
+                      geometry and the two fonts — everything except this project's text and
+                      avatar bindings — so another project (or another person) gets the same
+                      layout without needing the PSD's fonts installed.
+                    */}
+                    <div className="edl-actions">
+                      <button
+                        type="button"
+                        className="ghost"
+                        disabled={busy}
+                        onClick={() => void doDownloadPackage()}
+                      >
+                        导出模板包…
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost"
+                        disabled={busy}
+                        onClick={() => void doReplaceWithDefault()}
+                      >
+                        换回默认模板
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost"
+                        disabled={busy}
+                        onClick={() => packageInput.current?.click()}
+                      >
+                        导入模板包…
+                      </button>
+                      <input
+                        ref={packageInput}
+                        type="file"
+                        accept=".template,application/zip"
+                        hidden
+                        onChange={(event) => void doUploadPackage(event.target.files)}
+                      />
+                    </div>
                   </>
                 ) : null}
 

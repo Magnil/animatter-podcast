@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "node --test src/logic.test.mjs src/transcript.test.mjs src/waveView.test.mjs src/virtualList.test.mjs src/transcriptLoad.test.mjs src/renderProgress.test.mjs src/api.test.mjs src/envelope.test.mjs src/titleCount.test.mjs src/playbackRecovery.test.mjs src/videoTimeline.test.mjs src/videoExport.test.mjs src/timeMap.test.mjs src/videoPlan.test.mjs src/usePlaybackClock.test.mjs src/mediaDeck.test.mjs src/videoDegrade.test.mjs src/exportPanels.test.mjs"
+    "test": "node --test src/logic.test.mjs src/transcript.test.mjs src/waveView.test.mjs src/virtualList.test.mjs src/transcriptLoad.test.mjs src/renderProgress.test.mjs src/api.test.mjs src/envelope.test.mjs src/titleCount.test.mjs src/playbackRecovery.test.mjs src/videoTimeline.test.mjs src/videoExport.test.mjs src/timeMap.test.mjs src/videoPlan.test.mjs src/usePlaybackClock.test.mjs src/mediaDeck.test.mjs src/videoDegrade.test.mjs src/exportPanels.test.mjs src/templatePackage.test.mjs"
   },
   "dependencies": {
     "react": "^19.1.0",

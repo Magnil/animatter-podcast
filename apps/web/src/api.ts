@@ -870,6 +870,57 @@ export const api = {
       body: JSON.stringify({ box_fit_default: boxFitDefault }),
     }),
 
+  /**
+   * Install the bundled default template over whatever this project has.
+   *
+   * Replace, not merge — a template is one poster, and 「keep the old artwork, take the new
+   * slots」 has no sensible answer.
+   */
+  installDefaultTemplate: (projectId: string) =>
+    request<VideoTemplate>(`/api/projects/${projectId}/video/template/default`, {
+      method: "POST",
+    }),
+
+  /**
+   * Download the template as a `.template` file.
+   *
+   * The download name comes back **unparsed** (`disposition`). This module deliberately
+   * imports nothing — `api.test.mjs` loads it under `node --test`, which resolves extensions
+   * strictly — so the header parsing lives in `templatePackage.ts` where it is unit-tested,
+   * and the caller joins the two.
+   */
+  templatePackage: async (
+    projectId: string,
+  ): Promise<{ blob: Blob; disposition: string | null; bytes: number }> => {
+    const response = await rawRequest(`/api/projects/${projectId}/video/template/package`);
+    const blob = await response.blob();
+    const declared = Number(response.headers.get("X-Template-Bytes") ?? 0);
+    return {
+      blob,
+      disposition: response.headers.get("Content-Disposition"),
+      // The header is the server's own count; the blob is what actually arrived. Prefer the
+      // header when it is a real number, because a proxied response can re-encode the body.
+      bytes: Number.isFinite(declared) && declared > 0 ? declared : blob.size,
+    };
+  },
+
+  /**
+   * Install a `.template` package chosen in the browser.
+   *
+   * Same shape as the asset upload: a `File` has no path, so the bytes go up as multipart and
+   * the server decides whether they are a package at all.
+   */
+  uploadTemplatePackage: async (projectId: string, file: File): Promise<VideoTemplate> => {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    const response = await fetch(`/api/projects/${projectId}/video/template/package`, {
+      method: "POST",
+      body: form,
+    });
+    if (!response.ok) throw await failure(response, `导入 ${file.name} 失败`);
+    return (await response.json()) as VideoTemplate;
+  },
+
   videoTimeline: (versionId: string) =>
     request<VideoTimeline>(`/api/versions/${versionId}/video/timeline`),
 

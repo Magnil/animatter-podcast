@@ -45,6 +45,7 @@ import {
   previousSentence,
   sentenceAtOrBefore,
 } from "./navigation";
+import { saveBlob } from "./download";
 import { usePlayback } from "./usePlayback";
 import { formatDuration, formatTime } from "./format";
 
@@ -1244,6 +1245,7 @@ function Desk({
           */}
           <VideoPanel
             projectId={boot.projectId}
+            projectName={boot.projectName}
             versionId={boot.version.id}
             positionMs={playback.positionMs}
             keeps={edl?.keeps ?? []}
@@ -1567,21 +1569,3 @@ function describe(caught: unknown): string {
   return String(caught);
 }
 
-/**
- * Hand a blob to the browser as a download.
- *
- * Shared by every "导出" action: without it the file only exists in the app's
- * data directory, which is how "点保存项目时没有弹出文件下载" happened.
- */
-function saveBlob(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  // Revoking immediately can cancel the download in some browsers; one minute
-  // is generous and the blob is small relative to the audio it describes.
-  setTimeout(() => URL.revokeObjectURL(url), 60_000);
-}
