@@ -401,26 +401,40 @@ class VideoTemplate(Base):
     source_sha256: Mapped[str] = mapped_column(String(64), default="")
     canvas_w: Mapped[int] = mapped_column(Integer, default=0)
     canvas_h: Mapped[int] = mapped_column(Integer, default=0)
-    #: The poster with the media-box plate but no content, avatars and all text
-    #: flattened out. Rendered by us, never re-read from the PSD.
+    #: The poster with the media-box plate and the avatars flattened in, no box content
+    #: and no text. Also **the anchor** for every other compiled path (they all live in its
+    #: parent directory). Rendered by us, never re-read from the PSD. Its twins in the same
+    #: directory: ``background_open.png`` (no avatars), ``background_bare{,_open}.png``
+    #: (no plate either) -- see ``services/video_templates.py::poster_of``.
     background_path: Mapped[str] = mapped_column(Text, default="")
-    #: The layers that must sit *above* the box content (its border/stroke).
+    #: The layers that must sit *above* the box content (its border/stroke). Since round 137
+    #: this PNG is cropped to its own alpha bbox, so it needs the rect kept in
+    #: ``slots_json["art"]["stroke"]`` to be placed correctly.
     overlay_path: Mapped[str] = mapped_column(Text, default="")
     #: ``{"x","y","w","h"}`` in canvas coordinates — where content goes.
     box_rect: Mapped[str] = mapped_column(Text, default="{}")
     box_fit_default: Mapped[str] = mapped_column(String(16), default="blur_fill")
-    #: ``{"avatars": [...], "texts": [...]}``; see services/video_templates.py.
+    #: The compiled geometry: ``{"avatars": [...], "texts": [...], "art": {"plate": {...},
+    #: "stroke": {...}}}``; see services/video_templates.py. Rows compiled before round 137
+    #: have no ``art`` key and no rects -- ``art_of()`` falls back to a full-canvas stroke.
+    #: **This is where things were compiled, not where the user put them**: read positions
+    #: through ``services/video_layout.py``, which layers ``edits_json["layout"]`` on top.
     slots_json: Mapped[str] = mapped_column(Text, default="{}")
     #: ``{"<slot name>": <speaker local_id>}`` — which speaker each avatar slot shows.
     #: Kept on the row rather than inside ``slots_json`` so a recompile (which rewrites
     #: the slots from the PSD) does not silently drop the user's bindings.
     bindings_json: Mapped[str] = mapped_column(Text, default="{}")
     #: ``{"texts": {<slot key>: {"text","font","colour","size"}},
-    #:   "photos": {<slot name>: <asset id>}}`` — the user's edits to the template's own
-    #: artwork. A third column for the same reason as ``bindings_json``: ``slots_json`` is
-    #: rewritten from the PSD on every compile, so an override stored there would vanish the
-    #: first time the same template was re-imported, and the symptom would be "my title went
-    #: back to the designer's placeholder" with nothing to explain it.
+    #:   "photos": {<slot name>: <asset id>},
+    #:   "layout": {"box": {...}, "texts": {<key>: {"x","y","w","h","font_size"}},"avatars": {...}}}``
+    #: — the user's edits to the template's own artwork. A third column for the same reason as
+    #: ``bindings_json``: ``slots_json`` is rewritten from the PSD on every compile, so an
+    #: override stored there would vanish the first time the same template was re-imported, and
+    #: the symptom would be "my title went back to the designer's placeholder" with nothing to
+    #: explain it. ``layout`` is absent when the user never moved anything (round 139: entries
+    #: equal to the compiled rect are dropped on write, so ``is_default`` stays honest).
+    #: Three writers share this column -- ``services/video_edits.py`` (texts, photos) and
+    #: ``services/video_layout.py`` (layout) -- so each one must preserve the other two keys.
     edits_json: Mapped[str] = mapped_column(Text, default="{}")
     status: Mapped[str] = mapped_column(String(16), default="pending")
     #: Human-readable reason for ``status == 'failed'``. A compile can fail on a
